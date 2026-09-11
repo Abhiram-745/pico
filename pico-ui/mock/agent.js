@@ -45,10 +45,11 @@ export class MockAgent {
     this.heldModifiers = [];
     this.phase = 'Idle';
     this.settings = {
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.4-nano',
       pauseOnPhysicalInput: true,
       maximumComputerTurns: 100,
-      hasApiKey: true,
+      // Set true only once a provider is actually attached.
+      hasApiKey: false,
     };
     transport.onCommand((msg) => this.handle(msg));
 

@@ -99,6 +99,7 @@ export class LLM {
     this.tiers = tiers;
     this.model = tiers.fast;
     this.onDowngrade = null;
+    this._noReasoningEffort = false;
   }
 
   static async fromEnv() {
@@ -138,9 +139,11 @@ export class LLM {
     const body = { model, messages, stream };
     if (/^gpt-5/.test(model)) {
       body.max_completion_tokens = maxTokens;
-      // Planning a handful of UI steps does not need an extended budget, and
-      // asking for one is most of the latency on a reasoning-capable model.
-      body.reasoning_effort = 'minimal';
+      // Planning a handful of UI steps needs no thinking budget, and asking
+      // for one is most of the latency on a reasoning-capable model.
+      // The accepted values differ by model, so `_noReasoningEffort` drops
+      // the parameter entirely if a model rejects it.
+      if (!this._noReasoningEffort) body.reasoning_effort = 'none';
     } else {
       body.max_tokens = maxTokens;
       body.temperature = 0.3;
@@ -158,6 +161,13 @@ export class LLM {
       body: JSON.stringify(this._body(model, messages, maxTokens, stream)),
       signal: signal ?? AbortSignal.timeout(90_000),
     });
+  }
+
+  /** Models disagree on which reasoning_effort values they accept. */
+  _rejectsReasoningEffort(status, body) {
+    return status === 400
+      && !this._noReasoningEffort
+      && /reasoning_effort/i.test(body?.error?.message || '');
   }
 
   _error(status, body) {
@@ -190,6 +200,10 @@ export class LLM {
       if (res.status === 402 && useModel !== this.tiers.fast) {
         this.onDowngrade?.(useModel, this.tiers.fast);
         return this.stream(messages, { model: this.tiers.fast, maxTokens, onDelta, signal });
+      }
+      if (this._rejectsReasoningEffort(res.status, body)) {
+        this._noReasoningEffort = true;
+        return this.stream(messages, { model: useModel, maxTokens, onDelta, signal });
       }
       throw this._error(res.status, body);
     }
@@ -240,6 +254,10 @@ export class LLM {
       if (res.status === 402 && useModel !== this.tiers.fast) {
         this.onDowngrade?.(useModel, this.tiers.fast);
         return this.chat(messages, { model: this.tiers.fast, maxTokens, signal });
+      }
+      if (this._rejectsReasoningEffort(res.status, body)) {
+        this._noReasoningEffort = true;
+        return this.chat(messages, { model: useModel, maxTokens, signal });
       }
       throw this._error(res.status, body);
     }

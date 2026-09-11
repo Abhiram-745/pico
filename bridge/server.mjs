@@ -132,7 +132,11 @@ class Bridge {
     };
     this.agent.planner = (task) => llm.plan(task);
     this.agent.summariser = (task, steps) => llm.summarise(task, steps);
-    this.agent.settings = { ...this.agent.settings, model: llm.model };
+    this.agent.settings = {
+      ...this.agent.settings,
+      model: llm.tiers.fast,
+      hasApiKey: true,
+    };
     this.emitSettings();
   }
 

@@ -295,14 +295,28 @@ export function mountApp(host = document.body) {
     const model = el('div', 'panel');
     model.append(el('div', 'panel__title', 'Model'));
     model.append(el('p', 'panel__sub',
-      'Set in the .env file on this machine, so the key never reaches a page. ' +
-      'Fast tasks use a nano model; writing and comparison use a mini one.'));
+      'Simple tasks use a fast nano model; writing and comparison use a mini one. ' +
+      'Pico picks per task.'));
+
     const mrow = el('div', 'row');
     const mmain = el('div', 'row__main');
     mmain.append(el('div', 'row__title', store.state.settings.model || 'not configured'));
-    mmain.append(el('div', 'row__sub', store.state.settings.hasApiKey ? 'Key loaded' : 'No key found in .env'));
+    mmain.append(el('div', 'row__sub', 'Chosen automatically'));
     mrow.append(mmain);
     model.append(mrow);
+
+    // Deliberately read-only. Putting a key field here would mean routing a
+    // secret through the browser and over the socket to reach the machine it
+    // already needs to live on.
+    const krow = el('div', 'row');
+    const kmain = el('div', 'row__main');
+    kmain.append(el('div', 'row__title', 'API key'));
+    kmain.append(el('div', 'row__sub',
+      store.state.settings.hasApiKey
+        ? 'Configured in .env on this machine'
+        : 'Set OPENAI_API_KEY in the .env file next to Start Pico.cmd'));
+    krow.append(kmain);
+    model.append(krow);
     wrap.append(model);
 
     return wrap;

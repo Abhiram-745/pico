@@ -4,20 +4,22 @@
    Backed by the real settings.json shape:
      { installationId, model, pauseOnPhysicalInput, maximumComputerTurns,
        overlayLeft, overlayTop }
-   The API key is deliberately *not* in that file — it lives in Windows
-   Credential Manager, so this form is write-only for the key and the host
-   only ever reports whether one exists.
+   There is deliberately no key field here. The key lives in .env beside the
+   bridge (or in Windows Credential Manager for the C# host); typing it into a
+   page would mean routing a secret through the browser and over the socket to
+   reach the machine it already has to live on. The host only ever reports
+   whether one exists.
    ========================================================================== */
 
 import { store } from './store.js';
 import { bridge } from './bridge.js';
 
-/* Only models that support the Responses API computer tool can drive the
-   desktop loop. The field stays free-text because the host accepts any safe
-   model ID, but these are the known-good ones. */
+/* Free-text: the host accepts any safe model ID. Driving the desktop needs a
+   model with the Responses API computer tool; planning does not. */
 const KNOWN_MODELS = [
-  'gpt-5.6',
+  'gpt-5.4-nano',
   'gpt-5.4-mini',
+  'gpt-5.6',
   'computer-use-preview',
 ];
 
@@ -106,19 +108,18 @@ export function renderSettings(state) {
     turnsWrap,
   ));
 
-  // --- api key ------------------------------------------------------------
+  // --- where the key lives --------------------------------------------------
+  // No input here on purpose. The key is read from .env by the bridge, which
+  // runs on this machine; a field in the page would mean putting a secret
+  // through the browser and over the socket to get it there.
   const keyWrap = el('div', 'setting__control');
-  const key = el('input', 'input');
-  key.type = 'password';
-  key.autocomplete = 'off';
-  key.placeholder = s.hasApiKey
-    ? 'A key is already stored. Leave blank to keep it.'
-    : 'No key is stored yet. An API key is required to run tasks.';
-  keyWrap.append(key);
+  const keyState = el('div', 'setting__inline-label',
+    s.hasApiKey ? 'A key is configured' : 'No key found');
+  keyWrap.append(keyState);
 
   root.append(field(
-    'OpenAI API key',
-    'Stored in Windows Credential Manager, never in settings.json or the audit log.',
+    'API key',
+    'Set OPENAI_API_KEY in the .env file next to Start Pico.cmd. It stays on this machine and is never sent to your phone or embedded in a page.',
     keyWrap,
   ));
 
@@ -139,9 +140,7 @@ export function renderSettings(state) {
       pauseOnPhysicalInput: pauseToggle.getAttribute('aria-checked') === 'true',
       maximumComputerTurns: Math.max(1, Number(turns.value) || s.maximumComputerTurns),
     };
-    if (key.value) patch.apiKey = key.value;
     bridge.send('saveSettings', patch);
-    key.value = '';
     store.setSettingsOpen(false);
   });
   actions.append(save);
