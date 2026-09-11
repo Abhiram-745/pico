@@ -2,7 +2,7 @@
 
 Pico is a Windows-first personal computer-use agent with a floating companion instead of a normal application window. It can observe the active desktop, carry out mouse and keyboard actions, pause for consequential decisions, and hand control back for credentials, CAPTCHAs, UAC, or other human-only steps.
 
-**[Download the latest release](https://github.com/Abhiram-745/pico/releases/latest)** · **[Website](https://abhiram-745.github.io/pico/)**
+**[Download the latest release](https://github.com/Abhiram-745/pico/releases/latest)** · **[Website](https://blurt-ai.me/pico/)**
 
 This repository is an early personal-use build. It is deliberately conservative around sensitive and irreversible actions.
 
