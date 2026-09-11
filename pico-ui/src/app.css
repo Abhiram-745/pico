@@ -1,0 +1,327 @@
+/* ==========================================================================
+   Pico — the full app window
+
+   A calm two-column shell: a narrow sidebar of sections, and one content
+   column with a generous measure. Quiet chrome, one accent, real hierarchy
+   from type and space rather than borders everywhere.
+   ========================================================================== */
+
+.app {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--ink-0);
+}
+
+/* ==========================================================================
+   Sidebar
+   ========================================================================== */
+.side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px 10px;
+  gap: 2px;
+  background: color-mix(in oklab, var(--ink-1) 70%, transparent);
+  border-right: 1px solid var(--glass-border);
+}
+
+.side__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 16px;
+}
+.side__brand .pet { --pet-size: 30px; flex: none; }
+.side__brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side__nav { display: flex; flex-direction: column; gap: 1px; }
+
+.navlink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-mid);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .14s, color .14s;
+}
+.navlink:hover { background: color-mix(in oklab, #ffffff 5%, transparent); color: var(--text-hi); }
+.navlink[aria-current="page"] {
+  background: color-mix(in oklab, #ffffff 8%, transparent);
+  color: var(--text-hi);
+  font-weight: 550;
+}
+.navlink svg { width: 17px; height: 17px; flex: none; opacity: .85; }
+
+.navlink__badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--ink-0);
+  font-size: 10.5px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.side__foot { margin-top: auto; padding: 8px; }
+
+.side__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.side__status i {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ink-5);
+  flex: none;
+}
+[data-conn="connected"] .side__status i { background: #4ade80; box-shadow: 0 0 8px rgba(74,222,128,.5); }
+[data-conn="connecting"] .side__status i,
+[data-conn="reconnecting"] .side__status i { background: #fbbf24; }
+
+/* ==========================================================================
+   Main column
+   ========================================================================== */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.main__head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 26px 34px 18px;
+}
+.main__title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -.025em;
+}
+.main__sub {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.main__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 34px 34px;
+}
+.main__body::-webkit-scrollbar { width: 10px; }
+.main__body::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--ink-5) 75%, transparent);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.measure { max-width: 640px; }
+
+/* ==========================================================================
+   Cards
+   ========================================================================== */
+.panel {
+  padding: 18px;
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--ink-2) 55%, transparent);
+  border: 1px solid var(--glass-border);
+  margin-bottom: 12px;
+}
+.panel:last-child { margin-bottom: 0; }
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.panel__title { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.panel__sub { font-size: 12.5px; color: var(--text-mid); line-height: 1.5; }
+.panel__actions { margin-left: auto; display: flex; gap: 8px; }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--glass-border);
+}
+.row:last-child { border-bottom: 0; padding-bottom: 0; }
+.row:first-child { padding-top: 0; }
+.row__main { flex: 1; min-width: 0; }
+.row__title { font-size: 13.5px; font-weight: 550; }
+.row__sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; line-height: 1.45; }
+.row__action { flex: none; }
+
+/* ==========================================================================
+   Updates
+   ========================================================================== */
+.update {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklab, var(--ink-2) 55%, transparent);
+}
+/* Fixed colour, not --accent: the accent tracks the agent's phase and is
+   slate while idle, which made an actionable card look inert. */
+.update[data-state="available"] {
+  --update-accent: #38bdf8;
+  border-color: color-mix(in oklab, var(--update-accent) 48%, transparent);
+  background: color-mix(in oklab, var(--update-accent) 10%, transparent);
+}
+.update[data-state="available"] .update__icon {
+  background: color-mix(in oklab, var(--update-accent) 20%, transparent);
+  color: var(--update-accent);
+}
+
+.update__icon {
+  flex: none;
+  width: 42px; height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklab, #ffffff 7%, transparent);
+  color: var(--text-mid);
+}
+.update__icon svg { width: 20px; height: 20px; }
+
+.update__main { flex: 1; min-width: 0; }
+.update__title { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.update__sub { font-size: 12.5px; color: var(--text-mid); margin-top: 3px; }
+
+.progress {
+  margin-top: 10px;
+  height: 4px;
+  border-radius: 99px;
+  background: color-mix(in oklab, var(--ink-5) 70%, transparent);
+  overflow: hidden;
+}
+.progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width .25s var(--ease-out);
+}
+
+.build {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* ==========================================================================
+   Chat
+   ========================================================================== */
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.chat__scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+.chat__list { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
+
+.bubble {
+  max-width: 84%;
+  padding: 11px 15px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: row-in .26s var(--ease-out) both;
+}
+.bubble--you {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--ink-0);
+  border-bottom-right-radius: 6px;
+  font-weight: 500;
+}
+.bubble--pico {
+  align-self: flex-start;
+  background: color-mix(in oklab, #ffffff 6%, transparent);
+  border-bottom-left-radius: 6px;
+}
+.bubble--event {
+  align-self: center;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  padding: 0;
+}
+
+.composer2 {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 640px;
+  padding: 0 14px;
+  height: 50px;
+  border-radius: 14px;
+  background: color-mix(in oklab, #ffffff 5%, transparent);
+  border: 1px solid var(--glass-border);
+  transition: border-color .16s, box-shadow .16s;
+}
+.composer2:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.composer2 input {
+  flex: 1; min-width: 0;
+  border: 0; background: none; outline: none;
+  color: var(--text-hi);
+  font: inherit; font-size: 14.5px;
+}
+.composer2 input::placeholder { color: var(--text-dim); }
+
+/* ==========================================================================
+   Empty state
+   ========================================================================== */
+.empty {
+  padding: 44px 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+@media (max-width: 780px) {
+  .app { grid-template-columns: 64px 1fr; }
+  .side__brand-name, .navlink span:not(.navlink__badge), .side__status span { display: none; }
+  .navlink { justify-content: center; }
+  .main__head, .main__body { padding-inline: 20px; }
+}

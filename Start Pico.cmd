@@ -36,7 +36,7 @@ if not exist ".env" (
   )
 )
 
-set "URL=http://localhost:4177/pico-ui/desktop.html"
+set "URL=http://localhost:4177/pico-ui/app.html"
 
 rem Prefer an app window - no tabs, no address bar - so it reads as an app.
 set "BROWSER=%ProgramFiles%\Google\Chrome\Application\chrome.exe"

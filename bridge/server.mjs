@@ -28,7 +28,8 @@ import { networkInterfaces } from 'node:os';
 import { upgrade } from './ws.mjs';
 import { encode, toTerminal, toSVG } from './qr.mjs';
 import { MockAgent } from '../pico-ui/mock/agent.js';
-import { LLM } from './llm.mjs';
+import { LLM, PROVIDERS } from './llm.mjs';
+import { check as checkUpdate, install as installUpdate, localBuild } from './updater.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
@@ -126,6 +127,9 @@ class Bridge {
    */
   attachLLM(llm) {
     this.llm = llm;
+    llm.onDowngrade = (from, to) => {
+      console.warn(`[bridge] ${from} unavailable, using ${to} for this request`);
+    };
     this.agent.planner = (task) => llm.plan(task);
     this.agent.summariser = (task, steps) => llm.summarise(task, steps);
     this.agent.settings = { ...this.agent.settings, model: llm.model };
@@ -224,6 +228,14 @@ class Bridge {
 
     // --- normal commands --------------------------------------------------
     const { command, payload = {} } = msg;
+
+    // Loopback clients are auto-paired, but still send the handshake on
+    // connect. Acknowledge it rather than logging it as a rejected command.
+    if (command === 'pair') {
+      client.conn.sendJSON({ type: 'paired', payload: { ok: true, token: null, name: 'this laptop' } });
+      return;
+    }
+
     if (!ALLOWED_COMMANDS.has(command)) {
       console.warn(`[bridge] rejected command "${command}" from ${client.ip}`);
       return;
@@ -271,6 +283,7 @@ const TYPES = {
   '.ico': 'image/x-icon',
 };
 
+const BUILD = await localBuild();
 const bridge = new Bridge();
 
 const server = createServer(async (req, res) => {
@@ -281,6 +294,47 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+  // --- updates -----------------------------------------------------------
+  // Loopback only: an update rewrites files on disk, so a paired phone on the
+  // network must not be able to trigger one.
+  if (url.pathname.startsWith('/update/')) {
+    const isLocal = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
+    if (!isLocal) { res.writeHead(403).end('Updates are local-only.'); return; }
+
+    if (url.pathname === '/update/check') {
+      try {
+        const info = await checkUpdate();
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(info));
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: String(err.message) }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/update/install' && req.method === 'POST') {
+      // Streamed as newline-delimited JSON so the UI can show real progress
+      // rather than a spinner that means nothing.
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' });
+      try {
+        const out = await installUpdate((stage, pct) => {
+          res.write(`${JSON.stringify({ stage, pct })}
+`);
+        });
+        res.end(`${JSON.stringify({ stage: 'done', pct: 100, ...out })}
+`);
+      } catch (err) {
+        res.end(`${JSON.stringify({ error: String(err.message) })}
+`);
+      }
+      return;
+    }
+
+    res.writeHead(404).end('Not found');
+    return;
+  }
 
   // Pairing QR, rendered server-side so the laptop can show it anywhere.
   if (url.pathname === '/pair.svg') {
@@ -375,23 +429,23 @@ if (llm) {
   const status = await llm.check();
   if (status.ok) {
     bridge.attachLLM(llm);
-    console.log(`[bridge] model: ${llm.model} via BazaarLink (key "${status.label}"` +
-      `${status.freeTier ? ', free tier' : ''})`);
+    const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
+    console.log(`[bridge] ${label}: ${llm.tiers.fast} (fast) / ${llm.tiers.hard} (hard)`);
   } else {
     console.warn(`[bridge] model provider unavailable (${status.reason}); using scripted scenarios`);
   }
 } else {
-  console.log('[bridge] no BAZAARLINK_API_KEY in .env; using scripted scenarios');
+  console.log('[bridge] no API key in .env - add OPENAI_API_KEY to use a model; running scripted scenarios');
 }
 
 server.listen(PORT, '0.0.0.0', () => {
   const line = '─'.repeat(52);
   console.log(`\n${line}`);
-  console.log('  Pico bridge is running');
+  console.log(`  Pico bridge is running${BUILD.sha ? `  (build ${BUILD.sha})` : ''}`);
   console.log(line);
   console.log(`\n  Phone:   ${pairingUrl()}`);
   console.log(`  Code:    ${bridge.pairCode}`);
-  console.log(`  Desktop: http://localhost:${PORT}/pico-ui/desktop.html\n`);
+  console.log(`  Desktop: http://localhost:${PORT}/pico-ui/app.html\n`);
   console.log(toTerminal(encode(pairingUrl())));
   console.log('  Scan with your phone camera, on the same Wi-Fi.');
   console.log('  Local network only — nothing is exposed to the internet.\n');
