@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1224">
+<title>Pico for phone</title>
+<meta name="description" content="Install the Pico phone app and control your laptop from anywhere on your Wi-Fi.">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #05070d; --line: rgba(255,255,255,.1);
+    --text: #eef2fb; --mid: #a9b4cc; --dim: #6b7793; --accent: #22d3ee;
+    --font: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Code", ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: var(--font); color: var(--text); background: var(--ink);
+    background-image: radial-gradient(800px 500px at 50% -10%, rgba(34,211,238,.15), transparent 70%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased; line-height: 1.55;
+  }
+  main {
+    max-width: 560px; margin-inline: auto;
+    padding: clamp(40px,10vh,80px) calc(env(safe-area-inset-right) + 22px)
+             calc(env(safe-area-inset-bottom) + 60px) calc(env(safe-area-inset-left) + 22px);
+  }
+  .back { display: inline-block; margin-bottom: 26px; font-size: 13px; color: var(--dim); text-decoration: none; }
+  .back:hover { color: var(--text); }
+  img.hero { width: clamp(96px,26vw,128px); height: auto; display: block; margin-inline: auto;
+             filter: drop-shadow(0 16px 34px rgba(0,0,0,.7)); }
+  h1 { margin: 12px 0 0; font-size: clamp(28px,7.5vw,36px); font-weight: 700; letter-spacing: -.03em; text-align: center; }
+  .lede { margin: 12px auto 0; max-width: 34ch; text-align: center; font-size: 15px; color: var(--mid); }
+
+  .card {
+    margin: 30px 0 0; padding: 20px; border-radius: 16px;
+    border: 1px solid var(--line); background: rgba(17,23,38,.65); backdrop-filter: blur(20px);
+  }
+  .card h2 { margin: 0 0 10px; font-size: 15px; font-weight: 650; display: flex; align-items: center; gap: 9px; }
+  .card h2 .os {
+    font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 99px; background: rgba(34,211,238,.16); color: var(--accent);
+  }
+  .card ol { margin: 0; padding-left: 20px; font-size: 14.5px; color: var(--mid); }
+  .card ol li { margin-bottom: 7px; }
+  .card ol li:last-child { margin-bottom: 0; }
+  .card strong { color: var(--text); font-weight: 620; }
+
+  code { font-family: var(--mono); font-size: .88em; padding: 2px 7px; border-radius: 6px;
+         background: rgba(255,255,255,.07); word-break: break-word; }
+
+  .note { margin: 26px 0 0; padding: 15px 17px; border-radius: 13px; border: 1px solid var(--line);
+          background: rgba(17,23,38,.5); font-size: 13px; color: var(--mid); }
+  .note strong { color: var(--text); }
+
+  footer { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--line);
+           font-size: 12.5px; color: var(--dim); }
+  footer a { color: var(--mid); text-decoration: none; }
+  footer a:hover { color: var(--text); text-decoration: underline; }
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="./">← Pico</a>
+
+  <img class="hero" src="icon.png" alt="" width="512" height="512">
+  <h1>Pico on your phone</h1>
+  <p class="lede">
+    There is no app store download. The phone app is served by your own laptop,
+    and installs straight from the browser.
+  </p>
+
+  <div class="card">
+    <h2>Set it up <span class="os">3 minutes</span></h2>
+    <ol>
+      <li>On your laptop, open a terminal in the Pico folder and run <code>node bridge/server.mjs</code>.</li>
+      <li>A <strong>QR code</strong> appears in the terminal, with a pairing code beneath it.</li>
+      <li>Point your phone camera at it, on the <strong>same Wi-Fi</strong>. Tap the link.</li>
+      <li>Pico opens and pairs itself. You only do this once — it remembers.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>Add to home screen <span class="os">Android</span></h2>
+    <ol>
+      <li>Tap <strong>Install</strong> when Pico offers it, or open the ⋮ menu.</li>
+      <li>Choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>Add to home screen <span class="os">iPhone</span></h2>
+    <ol>
+      <li>Open the link in <strong>Safari</strong> (not Chrome).</li>
+      <li>Tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>.</li>
+    </ol>
+  </div>
+
+  <p class="note">
+    <strong>Why not an .apk?</strong> Pico is served by your own laptop over your own
+    Wi-Fi, so there is nothing to sideload and nothing to keep updated — you always
+    get the version your laptop is running. Installing it this way works on iPhone
+    too, which an Android package never would.
+  </p>
+
+  <p class="note">
+    <strong>Nothing leaves your network.</strong> Your phone connects straight to your
+    laptop's local address. There is no relay, no account, and no cloud service in
+    between. Approvals and takeovers still happen — the phone can answer them, never
+    skip them.
+  </p>
+
+  <footer>
+    <a href="https://github.com/Abhiram-745/pico">GitHub</a> ·
+    <a href="https://github.com/Abhiram-745/pico/blob/main/SAFETY.md">Safety</a>
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico UI harness</title>
+<link rel="stylesheet" href="src/theme.css">
+<link rel="stylesheet" href="src/motion.css">
+<link rel="stylesheet" href="src/companion.css">
+<link rel="stylesheet" href="src/palette.css">
+<link rel="stylesheet" href="src/harness.css">
+</head>
+<body>
+
+<!-- A stand-in Windows desktop, so the overlay can be judged in context -->
+<div class="desk">
+  <div class="desk__wall"></div>
+  <div class="desk__window desk__window--a">
+    <div class="desk__chrome"><span></span><span></span><span></span></div>
+    <div class="desk__lines"></div>
+  </div>
+  <div class="desk__window desk__window--b">
+    <div class="desk__chrome"><span></span><span></span><span></span></div>
+    <div class="desk__lines"></div>
+  </div>
+  <div class="desk__taskbar"></div>
+  <div class="desk__companion" id="companion-slot"></div>
+</div>
+
+<!-- Control deck -->
+<aside class="deck glass">
+  <header class="deck__head">
+    <div>
+      <h1 class="deck__title">Pico UI harness</h1>
+      <p class="deck__sub">Mock host speaking the real bridge contract</p>
+    </div>
+    <span class="pill" id="deck-phase">Idle</span>
+  </header>
+
+  <section class="deck__section">
+    <h2 class="deck__label">Scenarios</h2>
+    <div class="deck__grid">
+      <button class="btn" data-scenario="scenarioHappy">Benign task</button>
+      <button class="btn" data-scenario="scenarioApproval">Needs approval</button>
+      <button class="btn" data-scenario="scenarioTakeover">Needs takeover</button>
+      <button class="btn" data-scenario="scenarioFailure">Local failure</button>
+      <button class="btn btn--primary deck__wide" data-scenario="scenarioThrash">
+        Replay the real held-modifier bug
+      </button>
+    </div>
+    <p class="deck__note">
+      The last one replays the logged 11:24:37&ndash;11:24:43 session where three
+      resume presses were silently re-paused.
+    </p>
+  </section>
+
+  <section class="deck__section">
+    <h2 class="deck__label">Force phase</h2>
+    <div class="deck__chips" id="deck-phases"></div>
+  </section>
+
+  <section class="deck__section">
+    <h2 class="deck__label">Fire action</h2>
+    <div class="deck__chips" id="deck-actions"></div>
+  </section>
+
+  <section class="deck__section">
+    <h2 class="deck__label">Host state</h2>
+    <div class="deck__row">
+      <button class="btn" id="deck-guardian">Guardian: ready</button>
+      <button class="btn" id="deck-palette">Open palette</button>
+    </div>
+    <div class="deck__row">
+      <button class="btn" id="deck-mods">Hold Ctrl+Shift</button>
+      <button class="btn" id="deck-reset">Reset</button>
+    </div>
+    <div class="deck__row">
+      <button class="btn deck__wide" id="deck-load-log">Load the real 106-event log</button>
+    </div>
+  </section>
+
+  <section class="deck__section deck__section--grow">
+    <h2 class="deck__label">Bridge traffic</h2>
+    <div class="deck__log" id="deck-log"></div>
+  </section>
+
+  <footer class="deck__foot">
+    <span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">P</span>
+    <span class="deck__foot-label">palette</span>
+    <span class="deck__foot-sep"></span>
+    <span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">Space</span>
+    <span class="deck__foot-label">pause</span>
+  </footer>
+</aside>
+
+<script type="module">
+  import { store, PHASES, ACTION_COPY } from './src/store.js';
+  import { connect, bridge } from './src/bridge.js';
+  import { mountCompanion } from './src/companion.js';
+  import { mountPalette } from './src/palette.js';
+  import { installHotkeys } from './src/hotkeys.js';
+  import { MockAgent } from './mock/agent.js';
+
+  const { transport } = connect();
+  const agent = new MockAgent(transport);
+
+  mountCompanion(document.getElementById('companion-slot'));
+  const palette = mountPalette(document.body);
+
+  let heldFromKeyboard = [];
+  installHotkeys({
+    palette,
+    onModifiers: (m) => { heldFromKeyboard = m; agent.setHeldModifiers(m); },
+  });
+
+  agent.start();
+
+  // --- deck wiring --------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+
+  for (const btn of document.querySelectorAll('[data-scenario]')) {
+    btn.addEventListener('click', () => {
+      store.reset();
+      store.setGuardian({ ready: true });
+      store.setSettings(agent.settings);
+      agent.cancelled = false;
+      agent.paused = false;
+      agent[btn.dataset.scenario]();
+    });
+  }
+
+  const phaseWrap = $('deck-phases');
+  for (const p of PHASES) {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.textContent = p;
+    b.addEventListener('click', () => { agent.setPhase(p); });
+    phaseWrap.append(b);
+  }
+
+  const actionWrap = $('deck-actions');
+  for (const a of Object.keys(ACTION_COPY)) {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.textContent = a;
+    b.addEventListener('click', () => {
+      agent.setPhase('Acting');
+      agent.emit('action', { type: a });
+      agent.audit('action_executed', { action_type: a });
+    });
+    actionWrap.append(b);
+  }
+
+  let guardianReady = true;
+  $('deck-guardian').addEventListener('click', (e) => {
+    guardianReady = !guardianReady;
+    agent.emit('guardian', { ready: guardianReady });
+    e.currentTarget.textContent = `Guardian: ${guardianReady ? 'ready' : 'offline'}`;
+    e.currentTarget.classList.toggle('btn--danger', !guardianReady);
+  });
+
+  $('deck-palette').addEventListener('click', () => palette.toggle());
+
+  let modsHeld = false;
+  $('deck-mods').addEventListener('click', (e) => {
+    modsHeld = !modsHeld;
+    agent.setHeldModifiers(modsHeld ? ['ctrl', 'shift'] : []);
+    e.currentTarget.textContent = modsHeld ? 'Release Ctrl+Shift' : 'Hold Ctrl+Shift';
+    e.currentTarget.classList.toggle('btn--primary', modsHeld);
+  });
+
+  // Replays the redacted copy of the user's own audit log into the timeline,
+  // so the activity view can be judged against real data rather than fixtures.
+  $('deck-load-log').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const text = await fetch('mock/audit-sample.jsonl').then((r) => r.text());
+      store.clearTimeline();
+      for (const line of text.trim().split('\n')) {
+        if (line.trim()) store.pushEvent(JSON.parse(line));
+      }
+      palette.open();
+      document.querySelector('.palette__timeline-toggle')?.click();
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $('deck-reset').addEventListener('click', () => {
+    agent.cancelled = true;
+    store.reset();
+    store.setGuardian({ ready: guardianReady });
+    agent.setPhase('Idle');
+  });
+
+  // --- log ----------------------------------------------------------------
+  const log = $('deck-log');
+  const line = (dir, label, detail) => {
+    const row = document.createElement('div');
+    row.className = `deck__log-row deck__log-row--${dir}`;
+    row.innerHTML = `<span class="deck__log-dir">${dir === 'up' ? '↑' : '↓'}</span>`;
+    const t = document.createElement('span');
+    t.className = 'deck__log-label';
+    t.textContent = label;
+    row.append(t);
+    if (detail) {
+      const d = document.createElement('span');
+      d.className = 'deck__log-detail';
+      d.textContent = detail;
+      row.append(d);
+    }
+    log.prepend(row);
+    while (log.childElementCount > 60) log.lastElementChild.remove();
+  };
+
+  bridge.onSend((command, payload) => line('up', command, summarise(payload)));
+
+  const origEmit = agent.emit.bind(agent);
+  agent.emit = (type, payload) => { line('down', type, summarise(payload)); origEmit(type, payload); };
+
+  function summarise(p) {
+    if (!p || typeof p !== 'object') return '';
+    if (p.phase) return p.phase;
+    if (p.event_type) return p.event_type;
+    if (p.type) return p.type;
+    if (p.blockedReason) return `blocked: ${p.blockedReason}`;
+    if ('paused' in p) return p.paused ? `paused (${p.source})` : `resumed (${p.source})`;
+    if ('ready' in p) return p.ready ? 'ready' : 'offline';
+    if (p.text) return `"${String(p.text).slice(0, 32)}"`;
+    if (p.id) return p.id;
+    return '';
+  }
+
+  store.subscribe((state) => { $('deck-phase').textContent = state.phase; });
+  document.body.dataset.phase = 'Idle';
+  store.subscribe((s) => { document.body.dataset.phase = s.phase; });
+
+  window.pico = { store, agent, palette, bridge };
+</script>
+</body>
+</html>

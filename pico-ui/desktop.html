@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico</title>
+<link rel="icon" href="../phone/icons/icon-192.png">
+<link rel="stylesheet" href="src/theme.css">
+<link rel="stylesheet" href="src/motion.css">
+<link rel="stylesheet" href="src/companion.css">
+<link rel="stylesheet" href="src/palette.css">
+<style>
+  /* The laptop's own view while the bridge is running. Same surfaces the
+     WebView2 host shows, minus the development harness. */
+  html, body { height: 100%; }
+  body {
+    display: grid;
+    place-items: center;
+    background: var(--ink-0);
+    background-image:
+      radial-gradient(1000px 620px at 25% 12%, color-mix(in oklab, var(--accent) 14%, transparent), transparent 65%),
+      radial-gradient(820px 560px at 82% 88%, #2a1a47 0%, transparent 62%);
+    background-attachment: fixed;
+    transition: background-image .8s var(--ease-out);
+  }
+
+  .hint {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 14px;
+    border-radius: 999px;
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .conn {
+    position: fixed;
+    top: 18px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-lo);
+  }
+  .conn__led {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-dim);
+    transition: background .3s, box-shadow .3s;
+  }
+  [data-conn="connected"]    .conn__led { background: #4ade80; box-shadow: 0 0 10px rgba(74,222,128,.6); }
+  [data-conn="connecting"]   .conn__led,
+  [data-conn="reconnecting"] .conn__led { background: #fbbf24; }
+  [data-conn="offline"]      .conn__led { background: #f87171; }
+</style>
+</head>
+<body>
+
+<div class="conn"><span class="conn__led"></span><span id="conn-text">Connecting</span></div>
+
+<div id="companion-slot"></div>
+
+<div class="hint">
+  <span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">P</span>
+  <span>to open the palette</span>
+</div>
+
+<script type="module">
+  import { store } from './src/store.js';
+  import { connect } from './src/bridge.js';
+  import { mountCompanion } from './src/companion.js';
+  import { mountPalette } from './src/palette.js';
+  import { installHotkeys } from './src/hotkeys.js';
+
+  const setConn = (s) => {
+    document.body.dataset.conn = s;
+    document.getElementById('conn-text').textContent =
+      ({ connected: 'Bridge connected', connecting: 'Connecting', reconnecting: 'Reconnecting', offline: 'Offline' })[s] || s;
+  };
+
+  const { mode, transport } = connect({ onStatus: setConn });
+
+  mountCompanion(document.getElementById('companion-slot'));
+  const palette = mountPalette(document.body);
+  installHotkeys({ palette });
+
+  if (mode === 'mock') {
+    // Opened without the bridge: drive it locally so the page still works.
+    setConn('offline');
+    const { MockAgent } = await import('./mock/agent.js');
+    const agent = new MockAgent(transport);
+    agent.start();
+    window.pico = { store, agent, palette };
+  } else {
+    window.pico = { store, palette };
+  }
+
+  store.subscribe((s) => { document.body.dataset.phase = s.phase; });
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pico-ui",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["pico-ui/dev-server.mjs"],
+      "port": 4173
+    }
+  ]
+}

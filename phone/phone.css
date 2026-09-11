@@ -1,0 +1,374 @@
+/* ==========================================================================
+   Pico phone companion — mobile first, thumb first.
+   ========================================================================== */
+
+html {
+  /* iOS: stop a focused input from zooming the whole page */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100svh;
+  background: var(--ink-0);
+  background-image:
+    radial-gradient(900px 500px at 20% -5%, color-mix(in oklab, var(--accent) 16%, transparent), transparent 70%),
+    radial-gradient(700px 420px at 90% 100%, #2a1a47 0%, transparent 65%);
+  transition: background-image .8s var(--ease-out);
+  overscroll-behavior-y: contain;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+  /* keep content clear of the notch and the home indicator */
+  padding:
+    calc(env(safe-area-inset-top) + 10px)
+    calc(env(safe-area-inset-right) + 16px)
+    calc(env(safe-area-inset-bottom) + 12px)
+    calc(env(safe-area-inset-left) + 16px);
+  max-width: 560px;
+  margin-inline: auto;
+  width: 100%;
+}
+
+/* ==========================================================================
+   Top bar
+   ========================================================================== */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px 14px;
+}
+
+.bar__name {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+.bar__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-lo);
+}
+
+.bar__led {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background .3s, box-shadow .3s;
+}
+[data-conn="connected"]    .bar__led { background: #4ade80; box-shadow: 0 0 10px rgba(74,222,128,.6); }
+[data-conn="connecting"]   .bar__led,
+[data-conn="reconnecting"] .bar__led { background: #fbbf24; animation: led-blink 1s ease-in-out infinite; }
+[data-conn="offline"]      .bar__led,
+[data-conn="unpaired"]     .bar__led { background: #f87171; }
+@keyframes led-blink { 50% { opacity: .25; } }
+
+.bar__unpair {
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-family: inherit;
+  padding: 4px;
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   Stage — mascot + status
+   ========================================================================== */
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 4px 0 18px;
+}
+
+.stage .pet { --pet-size: 148px; }
+
+.stage__title {
+  margin: 2px 0 0;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+}
+
+.stage__detail {
+  margin: 5px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-mid);
+  min-height: 18px;
+}
+
+.stage__turn {
+  margin-top: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ==========================================================================
+   Composer
+   ========================================================================== */
+.composer {
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.composer__box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 20px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-lift);
+}
+
+.composer__input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 132px;
+  padding: 12px 8px;
+  border: 0;
+  background: none;
+  color: var(--text-hi);
+  font-family: inherit;
+  /* 16px minimum, or iOS zooms on focus */
+  font-size: 16px;
+  line-height: 1.35;
+  resize: none;
+  outline: none;
+}
+.composer__input::placeholder { color: var(--text-dim); }
+
+.composer__send {
+  flex: none;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--accent);
+  color: var(--ink-0);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform .14s var(--ease-spring), opacity .16s, background .3s;
+}
+.composer__send:disabled { opacity: .32; }
+.composer__send:not(:disabled):active { transform: scale(.9); }
+.composer__send svg { width: 20px; height: 20px; }
+
+.composer__note {
+  margin: 9px 4px 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* Recent task chips */
+.recents {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 0 0 10px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.recents::-webkit-scrollbar { display: none; }
+
+.recents__chip {
+  flex: none;
+  max-width: 220px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklab, var(--ink-3) 70%, transparent);
+  color: var(--text-mid);
+  font-family: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.recents__chip:active { background: var(--accent-soft); }
+
+/* ==========================================================================
+   Transport controls
+   ========================================================================== */
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px 0 0;
+}
+.controls[hidden] { display: none; }
+
+.controls .btn { height: 48px; font-size: 14px; border-radius: 14px; }
+
+/* ==========================================================================
+   Decision sheet — slides up and owns the screen
+   ========================================================================== */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  background: color-mix(in oklab, var(--ink-0) 60%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.sheet[hidden] { display: none; }
+
+.sheet__panel {
+  width: 100%;
+  max-height: 88svh;
+  overflow-y: auto;
+  padding:
+    20px 20px calc(env(safe-area-inset-bottom) + 20px);
+  border-radius: 26px 26px 0 0;
+  background: var(--glass-bg-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-top: 1px solid var(--glass-border-hi);
+  animation: sheet-up .34s var(--ease-out) both;
+}
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.sheet__grip {
+  width: 38px; height: 4px;
+  border-radius: 99px;
+  background: var(--ink-5);
+  margin: -6px auto 16px;
+}
+
+/* On the phone the card chrome is redundant — the sheet is the card. */
+.sheet .card {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  animation: none;
+}
+.sheet .card__actions {
+  flex-direction: column-reverse;
+  gap: 10px;
+  margin-top: 22px;
+}
+.sheet .card__actions .btn { width: 100%; height: 52px; font-size: 15px; border-radius: 15px; }
+.sheet .card__summary { font-size: 22px; }
+
+/* ==========================================================================
+   Pairing
+   ========================================================================== */
+.pair {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  text-align: center;
+  gap: 18px;
+  padding: 20px 4px;
+}
+
+.pair .pet { --pet-size: 132px; margin-inline: auto; }
+
+.pair__title { margin: 0; font-size: 24px; font-weight: 680; letter-spacing: -.025em; }
+.pair__sub { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-mid); }
+
+.pair__code {
+  display: flex;
+  justify-content: center;
+  gap: 7px;
+}
+
+.pair__input {
+  width: 100%;
+  max-width: 320px;
+  margin-inline: auto;
+  height: 60px;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklab, var(--ink-2) 80%, transparent);
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: .28em;
+  text-align: center;
+  text-transform: uppercase;
+  outline: none;
+}
+.pair__input:focus {
+  border-color: color-mix(in oklab, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.pair__error {
+  min-height: 18px;
+  font-size: 12.5px;
+  color: #ffb4b4;
+}
+
+.pair__btn { width: 100%; max-width: 320px; margin-inline: auto; height: 52px; font-size: 15px; border-radius: 15px; }
+
+.pair__help {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.pair__help code {
+  font-family: var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--ink-3) 80%, transparent);
+  color: var(--text-mid);
+}
+
+/* ==========================================================================
+   Install prompt
+   ========================================================================== */
+.install {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px 13px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+  font-size: 12.5px;
+  color: var(--accent-text);
+}
+.install[hidden] { display: none; }
+.install .btn { height: 32px; font-size: 12px; margin-left: auto; flex: none; }
+
+/* ==========================================================================
+   Larger phones / small tablets
+   ========================================================================== */
+@media (min-height: 780px) {
+  .stage { padding-top: 22px; }
+  .stage .pet { --pet-size: 178px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet__panel { animation: none; }
+}

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1224">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pico">
+<meta name="robots" content="noindex">
+<title>Pico</title>
+
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+
+<link rel="stylesheet" href="../pico-ui/src/theme.css">
+<link rel="stylesheet" href="../pico-ui/src/motion.css">
+<link rel="stylesheet" href="../pico-ui/src/palette.css">
+<link rel="stylesheet" href="phone.css">
+</head>
+<body>
+
+<div class="app" id="app" data-phase="Idle" data-conn="connecting">
+
+  <!-- ===================== Pairing ===================== -->
+  <section class="pair" id="pair" hidden>
+    <div id="pair-pet"></div>
+    <h1 class="pair__title">Pair with your laptop</h1>
+    <p class="pair__sub">
+      Enter the code shown on your laptop, or scan the QR code with your camera.
+    </p>
+
+    <input class="pair__input" id="pair-input" type="text"
+           inputmode="latin" autocomplete="off" autocapitalize="characters"
+           spellcheck="false" placeholder="XXXXXXXX" aria-label="Pairing code">
+
+    <p class="pair__error" id="pair-error" role="alert"></p>
+
+    <button class="btn btn--primary pair__btn" id="pair-btn" type="button" disabled>Pair</button>
+
+    <p class="pair__help">
+      On your laptop run <code>node bridge/server.mjs</code>.<br>
+      Both devices must be on the same Wi-Fi. Nothing goes over the internet.
+    </p>
+  </section>
+
+  <!-- ===================== Main ===================== -->
+  <div id="main" hidden style="display:contents">
+
+    <header class="bar">
+      <span class="bar__name" id="host-name">Pico</span>
+      <span class="bar__status">
+        <span class="bar__led"></span>
+        <span id="conn-text">Connecting</span>
+      </span>
+      <button class="bar__unpair" id="unpair" type="button">Unpair</button>
+    </header>
+
+    <main class="stage">
+      <div id="stage-pet"></div>
+      <h1 class="stage__title" id="stage-title">Tell me what to do</h1>
+      <p class="stage__detail" id="stage-detail"></p>
+      <p class="stage__turn" id="stage-turn" hidden></p>
+    </main>
+
+    <div class="controls" id="controls" hidden>
+      <button class="btn" id="btn-pause" type="button">Pause</button>
+      <button class="btn btn--danger" id="btn-stop" type="button">Stop</button>
+    </div>
+
+    <div class="composer">
+      <div class="recents" id="recents"></div>
+
+      <div class="composer__box">
+        <textarea class="composer__input" id="task-input" rows="1"
+                  placeholder="What should I do?" autocomplete="off"
+                  autocapitalize="sentences" aria-label="Task"></textarea>
+        <button class="composer__send" id="task-send" type="button" aria-label="Send task" disabled>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 12h13M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <p class="composer__note" id="composer-note" hidden></p>
+
+      <div class="install" id="install" hidden>
+        <span>Add Pico to your home screen</span>
+        <button class="btn" id="install-btn" type="button">Install</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Decision sheet ===================== -->
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-label="Pico needs you">
+  <div class="sheet__panel">
+    <div class="sheet__grip"></div>
+    <div id="sheet-body"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

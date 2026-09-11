@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico companion</title>
+<link rel="stylesheet" href="src/theme.css">
+<link rel="stylesheet" href="src/motion.css">
+<link rel="stylesheet" href="src/companion.css">
+<style>
+  /* WebView2 target #1. The host window is transparent and click-through
+     except where this surface paints, so the page must not paint a ground. */
+  html, body {
+    background: transparent;
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 8px;
+  }
+  /* Only used when opening this file directly, to make the pet visible */
+  body.is-preview { background: #0b1020; align-items: center; }
+</style>
+</head>
+<body>
+<script type="module">
+  import { store } from './src/store.js';
+  import { connect } from './src/bridge.js';
+  import { mountCompanion } from './src/companion.js';
+
+  const { mode, transport } = connect();
+  mountCompanion(document.body);
+
+  if (mode === 'mock') {
+    // Opened directly in a browser: give it a ground and a demo driver.
+    document.body.classList.add('is-preview');
+    const { MockAgent } = await import('./mock/agent.js');
+    const agent = new MockAgent(transport);
+    agent.start();
+    window.pico = { store, agent };
+  }
+</script>
+</body>
+</html>

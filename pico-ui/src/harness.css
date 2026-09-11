@@ -1,0 +1,191 @@
+/* ==========================================================================
+   Pico — development harness only.
+   None of this ships inside the WebView2 surfaces.
+   ========================================================================== */
+
+body {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--ink-0);
+}
+
+/* ==========================================================================
+   Fake desktop
+   ========================================================================== */
+.desk { position: relative; overflow: hidden; }
+
+.desk__wall {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1100px 700px at 22% 18%, #1d3a63 0%, transparent 62%),
+    radial-gradient(900px 620px at 82% 78%, #3a2352 0%, transparent 58%),
+    linear-gradient(150deg, #0d1526 0%, #131a2e 45%, #0a0f1c 100%);
+}
+.desk__wall::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: .3;
+  mix-blend-mode: overlay;
+  background-image: var(--noise);
+}
+
+.desk__window {
+  position: absolute;
+  border-radius: 10px;
+  background: rgba(12, 18, 32, .82);
+  border: 1px solid rgba(255, 255, 255, .07);
+  box-shadow: 0 30px 70px -20px rgba(0, 0, 0, .8);
+  overflow: hidden;
+}
+.desk__window--a { left: 6%;  top: 12%; width: 46%; height: 54%; }
+.desk__window--b { left: 40%; top: 40%; width: 44%; height: 46%; }
+
+.desk__chrome {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, .04);
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+}
+.desk__chrome span { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,.16); }
+
+.desk__lines {
+  padding: 16px;
+  display: grid;
+  gap: 9px;
+  grid-auto-rows: 9px;
+  grid-template-columns: repeat(12, 1fr);
+}
+.desk__lines::before,
+.desk__lines::after { content: ""; }
+.desk__lines {
+  background-image:
+    linear-gradient(rgba(255,255,255,.055) 9px, transparent 9px);
+  background-size: 100% 22px;
+  background-position: 16px 16px;
+  background-repeat: repeat-y;
+}
+
+.desk__taskbar {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 44px;
+  background: rgba(8, 12, 22, .78);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255, 255, 255, .07);
+}
+
+.desk__companion {
+  position: absolute;
+  left: 50%;
+  top: 26%;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+/* ==========================================================================
+   Control deck
+   ========================================================================== */
+.deck {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 0;
+  border-width: 0 0 0 1px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--ink-1) 92%, transparent);
+}
+
+.deck__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.deck__title { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+.deck__sub { margin: 3px 0 0; font-size: 11px; color: var(--text-dim); }
+
+.deck__section {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.deck__section--grow { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.deck__label {
+  margin: 0 0 9px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.deck__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.deck__wide { grid-column: 1 / -1; }
+.deck__grid .btn { height: 32px; font-size: 12px; padding: 0 10px; }
+
+.deck__row { display: flex; gap: 6px; margin-top: 6px; }
+.deck__row:first-of-type { margin-top: 0; }
+.deck__row .btn { flex: 1; height: 32px; font-size: 12px; padding: 0 8px; }
+
+.deck__note { margin: 9px 0 0; font-size: 10.5px; line-height: 1.45; color: var(--text-dim); }
+
+.deck__chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklab, var(--ink-3) 70%, transparent);
+  color: var(--text-mid);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .14s, color .14s, border-color .14s;
+}
+.chip:hover { background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
+
+/* --- log ---------------------------------------------------------------- */
+.deck__log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.deck__log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 6px;
+  border-radius: 5px;
+}
+.deck__log-row--down { color: var(--text-lo); }
+.deck__log-row--up   { color: var(--accent-text); background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.deck__log-dir { opacity: .6; }
+.deck__log-label { font-weight: 600; }
+.deck__log-detail { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.deck__foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 11px 18px;
+}
+.deck__foot-label { font-size: 10.5px; color: var(--text-dim); margin: 0 4px 0 3px; }
+.deck__foot-sep { flex: 1; }
+
+@media (max-width: 900px) {
+  body { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; }
+  .deck { border-width: 1px 0 0; }
+}

@@ -1,0 +1,68 @@
+name: Release
+
+# Publishing a release is what makes "Download latest" on the website point at
+# new bits, so it is driven by a tag rather than by every push to main.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.8)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # The companion bundle is everything needed to run the phone bridge and
+      # the interface. The Windows binaries are uploaded separately, because
+      # they are ~350 MB and are not in git.
+      - name: Package companion bundle
+        run: |
+          mkdir -p out/pico-companion
+          cp -r pico-ui phone bridge out/pico-companion/
+          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 out/pico-companion/
+          cd out
+          zip -qr "pico-companion-${{ steps.v.outputs.version }}.zip" pico-companion
+          sha256sum *.zip > SHA256SUMS.txt
+          ls -la
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.v.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/*.zip out/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" \
+              --title "Pico $TAG" \
+              --generate-notes \
+              out/*.zip out/SHA256SUMS.txt
+          fi
+
+      # The website reads the newest release from the GitHub API at page load,
+      # so there is nothing to rebuild — but Pages still needs a nudge if the
+      # site itself changed in this tag.
+      - name: Summary
+        run: |
+          echo "Published **${{ steps.v.outputs.tag }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The Windows binaries are uploaded separately:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo 'gh release upload ${{ steps.v.outputs.tag }} Pico-<version>-win-x64.zip' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
