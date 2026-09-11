@@ -84,18 +84,22 @@
   </div>
 
   <div class="card">
-    <h2>Add to home screen <span class="os">Android</span></h2>
+    <h2>Add to home screen <span class="os">iPhone</span></h2>
     <ol>
-      <li>Tap <strong>Install</strong> when Pico offers it, or open the ⋮ menu.</li>
-      <li>Choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.</li>
+      <li>Open the link in <strong>Safari</strong> (not Chrome).</li>
+      <li>Tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>.</li>
+      <li>You get a real full-screen app, with its own icon.</li>
     </ol>
   </div>
 
   <div class="card">
-    <h2>Add to home screen <span class="os">iPhone</span></h2>
+    <h2>Add to home screen <span class="os">Android</span></h2>
     <ol>
-      <li>Open the link in <strong>Safari</strong> (not Chrome).</li>
-      <li>Tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>.</li>
+      <li>Open the ⋮ menu and choose <strong>Add to Home screen</strong>.</li>
+      <li>You get an icon that opens Pico straight away.</li>
+      <li>Chrome only offers a full <strong>Install</strong> over HTTPS, and your
+          laptop is on a plain local address. Everything works the same either
+          way — see below if you want the real install.</li>
     </ol>
   </div>
 
@@ -104,6 +108,15 @@
     Wi-Fi, so there is nothing to sideload and nothing to keep updated — you always
     get the version your laptop is running. Installing it this way works on iPhone
     too, which an Android package never would.
+  </p>
+
+  <p class="note">
+    <strong>Want the full Android install?</strong> Chrome reserves it for sites served
+    over HTTPS with a trusted certificate, which a local address like
+    <code>10.0.0.7</code> cannot have. Running the bridge behind
+    <a href="https://tailscale.com/kb/1312/serve" style="color:var(--accent)">Tailscale Serve</a>
+    gives it a real certificate and a stable name, and then Chrome offers
+    <strong>Install app</strong> like any other site.
   </p>
 
   <p class="note">

@@ -304,9 +304,18 @@ showPairing(!(read(TOKEN_KEY) || pendingCode));
 setConn('connecting');
 connect();
 
-if ('serviceWorker' in navigator) {
-  // Registered from the page so it also works when opened over plain http on
-  // the LAN, which browsers treat as a secure-enough context for localhost
-  // and, in practice, for installed PWAs over private addresses.
+/* Service workers require a secure context. Over the LAN this page is served
+   from http://<private-ip>:4177, which is *not* one — so registration is
+   skipped rather than failing noisily in the console.
+
+   Consequences, which the phone page documents honestly:
+     iPhone  — Add to Home Screen works anyway; iOS does not require a service
+               worker, so you get a real standalone app.
+     Android — you get a home-screen shortcut, but Chrome only offers a true
+               install over trusted HTTPS. Serving the bridge through something
+               like Tailscale (which issues a real certificate) enables it.
+   Everything else works identically either way; only offline caching is lost,
+   and the app is useless without the laptop anyway. */
+if ('serviceWorker' in navigator && window.isSecureContext) {
   navigator.serviceWorker.register('./sw.js').catch(() => { /* non-fatal */ });
 }
