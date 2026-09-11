@@ -100,8 +100,8 @@ h2 {
 }
 
 section {
-  margin-top: clamp(48px, 8vh, 72px);
-  padding-top: clamp(32px, 5vh, 44px);
+  margin-top: clamp(40px, 5.5vh, 56px);
+  padding-top: clamp(26px, 3.5vh, 34px);
   border-top: 1px solid var(--line);
 }
 
@@ -240,7 +240,7 @@ kbd {
    Footer
    ========================================================================== */
 footer {
-  margin-top: clamp(48px, 8vh, 72px);
+  margin-top: clamp(40px, 5.5vh, 56px);
   padding-top: 1.5rem;
   border-top: 1px solid var(--line);
   display: flex;
