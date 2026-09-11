@@ -34,7 +34,7 @@
   </p>
 
   <div class="actions">
-    <a class="btn" id="download" href="https://github.com/Abhiram-745/pico/releases/latest">
+    <a class="btn" id="download" href="install.ps1" download="install-pico.ps1">
       Download for Windows
     </a>
     <span class="meta" id="meta">v0.1.7 · Windows 10 2004+ / 11</span>
@@ -46,11 +46,11 @@
     <h2>Setup</h2>
     <ol class="steps">
       <li>Install <a href="https://nodejs.org">Node.js</a> if you don't have it.</li>
-      <li>Unzip the download and double-click <code>Start Pico.cmd</code>.</li>
-      <li>Paste your OpenAI key into the <code>.env</code> file it opens, save, run it again.</li>
-      <li>Pico appears as a notch at the top of your screen. Click it, or press
-          <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>.</li>
+      <li>Run the installer. It downloads, installs and starts Pico — nothing to unzip.</li>
+      <li>Paste your OpenAI key when Pico asks. That's the whole setup.</li>
     </ol>
+    <p class="hint">Prefer one line? Paste this into PowerShell:</p>
+    <pre class="cmd"><code>irm https://blurt-ai.me/pico/install.ps1 | iex</code></pre>
   </section>
 
   <section>
@@ -101,11 +101,10 @@
                || assets.find(a => /\.zip$/i.test(a.name));
       if (!zip) return;
 
-      document.getElementById('download').href = zip.browser_download_url;
       const mb = zip.size / 1048576;
       const size = mb < 10 ? `${Math.round(mb * 10) / 10} MB` : `${Math.round(mb)} MB`;
       document.getElementById('meta').textContent =
-        `${rel.tag_name} · ${size} · Windows · needs Node.js`;
+        `build ${(/Build\s+`?([0-9a-f]{7,})`?/i.exec(rel.body || '') || [])[1] ?? rel.tag_name} · ${size}`;
     } catch {
       /* offline or rate-limited — the static /releases/latest link still works */
     }

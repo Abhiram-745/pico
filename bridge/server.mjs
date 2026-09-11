@@ -20,7 +20,7 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, writeFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -288,6 +288,26 @@ const TYPES = {
   '.ico': 'image/x-icon',
 };
 
+/** Write the key into .env without disturbing anything else in it. */
+async function saveKey(key) {
+  const envPath = join(ROOT, '.env');
+  let lines = [];
+  try {
+    lines = (await readFile(envPath, 'utf8')).split('\n')
+      .filter((l) => !l.trim().startsWith('OPENAI_API_KEY'))
+      .filter((l, i, a) => !(l.trim() === '' && a[i + 1]?.trim() === ''));
+  } catch { /* first run, no file yet */ }
+
+  const body = [
+    ...lines,
+    '# Written by Pico setup. Keep this file private.',
+    `OPENAI_API_KEY=${key}`,
+    '',
+  ].join('\n').replace(/^\s+/, '');
+
+  await writeFile(envPath, body, { encoding: 'utf8', mode: 0o600 });
+}
+
 const BUILD = await localBuild();
 const bridge = new Bridge();
 
@@ -299,6 +319,74 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+  // --- setup -------------------------------------------------------------
+  // Loopback only, like updates. Entering a key is safe from the machine the
+  // key already has to live on; it must never be reachable from the phone.
+  if (url.pathname === '/setup/key' && req.method === 'POST') {
+    const isLocal = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
+    if (!isLocal) { res.writeHead(403).end('Setup is local-only.'); return; }
+
+    let raw = '';
+    for await (const chunk of req) {
+      raw += chunk;
+      if (raw.length > 4096) { res.writeHead(413).end('{}'); return; }
+    }
+
+    let key = '';
+    try { key = String(JSON.parse(raw).key || '').trim(); } catch { /* handled below */ }
+
+    const reply = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!key) { reply(400, { ok: false, error: 'Paste a key first.' }); return; }
+    if (!/^sk-[A-Za-z0-9_-]{20,}$/.test(key)) {
+      reply(400, { ok: false, error: 'That does not look like an OpenAI key. They start with "sk-".' });
+      return;
+    }
+
+    // Prove it works before writing it, so a typo fails here rather than on
+    // the first task.
+    try {
+      const probe = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (probe.status === 401) { reply(400, { ok: false, error: 'OpenAI rejected that key.' }); return; }
+      if (!probe.ok) { reply(400, { ok: false, error: `OpenAI returned ${probe.status}. Try again.` }); return; }
+    } catch {
+      reply(502, { ok: false, error: 'Could not reach OpenAI. Check your connection.' });
+      return;
+    }
+
+    try {
+      await saveKey(key);
+    } catch (err) {
+      // Never echo the key, even in an error.
+      reply(500, { ok: false, error: `Could not save the key: ${String(err.message).replace(key, '***')}` });
+      return;
+    }
+
+    const fresh = await LLM.fromEnv();
+    if (fresh) {
+      bridge.attachLLM(fresh);
+      console.log('[bridge] key saved; model provider attached');
+    }
+    reply(200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/setup/state') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({
+      hasKey: Boolean(bridge.llm),
+      provider: bridge.llm?.provider ?? null,
+      local: /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, '')),
+    }));
+    return;
+  }
 
   // --- updates -----------------------------------------------------------
   // Loopback only: an update rewrites files on disk, so a paired phone on the

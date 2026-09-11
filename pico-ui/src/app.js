@@ -501,8 +501,7 @@ export function mountApp(host = document.body) {
       // Release bodies are generated from commit subjects; show the first few
       // rather than the whole wall of text.
       const lines = String(updateInfo.notes)
-        .split('
-')
+        .split('\n')
         .map((l) => l.replace(/^[-*]\s*/, '').trim())
         .filter((l) => l && !/^build\s/i.test(l) && !l.startsWith('**') && !l.startsWith('#'))
         .slice(0, 6);

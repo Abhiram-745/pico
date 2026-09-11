@@ -22,6 +22,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # A broken build must not reach the download button.
+      - name: Check
+        run: node scripts/check.mjs
+
       - name: Work out what we are publishing
         id: v
         run: |

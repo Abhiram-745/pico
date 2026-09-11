@@ -30,6 +30,13 @@
   let app;
   const { mode, transport } = connect({ onStatus: (s) => app?.setConn(s) });
 
+  // First run: nothing else is usable without a provider, so ask once here
+  // rather than sending people to edit a file.
+  const { needsSetup, mountSetup } = await import('./src/setup.js');
+  if (await needsSetup()) {
+    mountSetup(document.body, { onDone: () => window.location.reload() });
+  }
+
   app = mountApp(document.body);
   const palette = mountPalette(document.body);
   installHotkeys({ palette });

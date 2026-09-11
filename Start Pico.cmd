@@ -24,17 +24,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist ".env" (
-  if exist ".env.example" (
-    copy /y ".env.example" ".env" >nul
-    echo.
-    echo   Created .env - open it, paste your OpenAI API key, save,
-    echo   then run this again.
-    echo.
-    notepad ".env"
-    exit /b 0
-  )
-)
+rem No .env step here: the app asks for a key on first run.
 
 set "URL=http://localhost:4177/pico-ui/app.html"
 
