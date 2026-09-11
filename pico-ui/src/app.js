@@ -33,6 +33,9 @@ const ICONS = {
   update:  'M20 11a8 8 0 1 0-.6 3M20 5v6h-6',
   gear:    'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1l-.3-2.5h-4l-.3 2.5a7.6 7.6 0 0 0-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.6 7.6 0 0 0 1.7-1l2.3 1 2-3.4z',
   send:    'M5 12h13M12 5l7 7-7 7',
+  cloud:   'M7 18.5a4 4 0 0 1-.4-8A6 6 0 0 1 18 9.3a3.6 3.6 0 0 1-.6 9.2z',
+  cloudDown: 'M7 17.5a4 4 0 0 1-.4-8A6 6 0 0 1 18 8.3a3.6 3.6 0 0 1 .6 7.1 M12 12v7m0 0-2.6-2.6M12 19l2.6-2.6',
+  cloudCheck: 'M7 17.5a4 4 0 0 1-.4-8A6 6 0 0 1 18 8.3a3.6 3.6 0 0 1 .6 7.1 M9.4 16.6 11.6 19l4-5',
 };
 
 const icon = (d) => {
@@ -122,10 +125,24 @@ export function mountApp(host = document.body) {
   }
 
   const sideFoot = el('div', 'side__foot');
+
+  // The build you are running, always visible, with a live update indicator.
+  // Previously you had to open Updates to learn either.
+  const build = el('button', 'buildchip');
+  build.type = 'button';
+  build.title = 'Updates';
+  const buildIcon = el('span', 'buildchip__icon');
+  const buildText = el('span', 'buildchip__text');
+  const buildLabel = el('span', 'buildchip__label', 'Checking…');
+  const buildSha = el('span', 'buildchip__sha', '');
+  buildText.append(buildLabel, buildSha);
+  build.append(buildIcon, buildText);
+  build.addEventListener('click', () => go('updates'));
+
   const status = el('div', 'side__status');
   const statusText = el('span', null, 'Connecting');
   status.append(el('i'), statusText);
-  sideFoot.append(status);
+  sideFoot.append(build, status);
 
   side.append(brand, nav, sideFoot);
 
@@ -467,6 +484,33 @@ export function mountApp(host = document.body) {
     render(store.state);
   }
 
+  function renderBuildChip() {
+    const dev = updateInfo?.current?.sha === 'dev' || updateInfo?.current?.sha === 'local-dev';
+    const state = updateError ? 'error'
+      : updateBusy ? 'checking'
+      : updateInfo?.available ? 'available'
+      : updateInfo ? 'current'
+      : 'unknown';
+
+    build.dataset.state = state;
+    buildIcon.replaceChildren(icon(
+      state === 'available' ? ICONS.cloudDown
+        : state === 'current' ? ICONS.cloudCheck
+        : ICONS.cloud,
+    ));
+    buildLabel.textContent = {
+      available: 'Update ready',
+      current: dev ? 'Development build' : 'Up to date',
+      checking: 'Checking…',
+      error: 'Check failed',
+      unknown: 'Build',
+    }[state];
+    buildSha.textContent = updateInfo?.current?.sha ?? '';
+    build.title = state === 'available'
+      ? `Install ${updateInfo.latest.sha}`
+      : 'Updates';
+  }
+
   function render(state) {
     root.dataset.phase = state.phase;
     mascot.setPhase(state.phase);
@@ -491,6 +535,8 @@ export function mountApp(host = document.body) {
       }
     }
 
+    renderBuildChip();
+
     bodyEl.replaceChildren(
       section === 'activity' ? (state.timeline.length
         ? renderTimeline(state)
@@ -512,8 +558,25 @@ export function mountApp(host = document.body) {
     render(state);
   });
 
-  // Check once shortly after launch, quietly.
-  setTimeout(() => checkUpdates(true), 2500);
+  /* Checking once at launch meant a build published while the window was open
+     was never noticed. Poll on a slow interval, and again whenever the window
+     regains focus — that covers the common case of pushing a change and coming
+     back to it. Unauthenticated GitHub allows 60 requests an hour per address;
+     this uses four. */
+  const UPDATE_POLL_MS = 15 * 60 * 1000;
+
+  setTimeout(() => checkUpdates(true), 1500);
+  setInterval(() => {
+    if (!updateBusy) checkUpdates(true);
+  }, UPDATE_POLL_MS);
+
+  let lastFocusCheck = Date.now();
+  window.addEventListener('focus', () => {
+    // Don't re-check on every alt-tab; once a minute at most.
+    if (updateBusy || Date.now() - lastFocusCheck < 60_000) return;
+    lastFocusCheck = Date.now();
+    checkUpdates(true);
+  });
 
   return {
     root, mascot, go,

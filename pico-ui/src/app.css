@@ -415,3 +415,89 @@
 @media (prefers-reduced-motion: reduce) {
   .skeleton { animation: none; }
 }
+
+/* ==========================================================================
+   Build chip — what you are running, and whether there is something newer.
+   Sits in the sidebar so neither fact requires opening a section.
+   ========================================================================== */
+.buildchip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  margin-bottom: 6px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-mid);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .16s, color .16s;
+}
+.buildchip:hover { background: color-mix(in oklab, #ffffff 6%, transparent); }
+
+.buildchip__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px; height: 26px;
+  border-radius: 8px;
+  background: color-mix(in oklab, #ffffff 6%, transparent);
+  color: var(--text-lo);
+  transition: background .2s, color .2s;
+}
+.buildchip__icon svg { width: 15px; height: 15px; }
+
+.buildchip__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.buildchip__label {
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--text-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.buildchip__sha {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* An update waiting is the one state worth colour. */
+.buildchip[data-state="available"] {
+  background: color-mix(in oklab, #38bdf8 12%, transparent);
+}
+.buildchip[data-state="available"] .buildchip__icon {
+  background: color-mix(in oklab, #38bdf8 22%, transparent);
+  color: #7dd3fc;
+}
+.buildchip[data-state="available"] .buildchip__label { color: #bae6fd; }
+.buildchip[data-state="available"] .buildchip__icon svg {
+  animation: nudge-down 2.4s var(--ease-in-out) infinite;
+}
+@keyframes nudge-down {
+  0%, 72%, 100% { transform: translateY(0); }
+  82%           { transform: translateY(2px); }
+}
+
+.buildchip[data-state="checking"] .buildchip__icon { color: var(--text-mid); }
+.buildchip[data-state="checking"] .buildchip__icon svg { animation: pulse-soft 1.4s var(--ease-in-out) infinite; }
+@keyframes pulse-soft { 50% { opacity: .4; } }
+
+.buildchip[data-state="error"] .buildchip__icon { color: #f9a8a8; background: color-mix(in oklab, #f87171 16%, transparent); }
+
+@media (max-width: 780px) {
+  .buildchip__text { display: none; }
+  .buildchip { justify-content: center; padding: 8px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .buildchip__icon svg { animation: none !important; }
+}
