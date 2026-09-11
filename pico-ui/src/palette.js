@@ -249,7 +249,9 @@ export function mountPalette(host) {
       els.runTitle.textContent = copy.title;
       const detail = state.phase === 'Acting' && state.action?.detail
         ? state.action.detail
-        : copy.detail;
+        : state.phase === 'Completed' && state.summary
+          ? state.summary
+          : copy.detail;
       els.runDetail.textContent = detail;
       els.runDetail.hidden = !detail;
       els.runTurn.textContent = state.turn

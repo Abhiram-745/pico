@@ -73,6 +73,7 @@ const initial = () => ({
   approval: null,          // { id, summary, target, risk }
   takeover: null,          // { id, reason, appName }
   error: null,             // { title, message, recoverable }
+  summary: null,           // closing sentence, written after a run completes
 
   // The bug this redesign exists to fix: `blockedReason` is what the old UI
   // never surfaced, leaving the user pressing the resume chord in a loop.
@@ -132,6 +133,7 @@ class Store {
       this.state.turn = 0;
       this.state.error = null;
     }
+    if (phase === 'Starting') this.state.summary = null;
     this.emit({ type: 'phase', phase, previous, ...meta });
   }
 
@@ -150,6 +152,11 @@ class Store {
   setTakeover(takeover) {
     this.state.takeover = takeover;
     this.emit({ type: 'takeover', takeover });
+  }
+
+  setSummary(text) {
+    this.state.summary = text || null;
+    this.emit({ type: 'summary', summary: this.state.summary });
   }
 
   setError(error) {

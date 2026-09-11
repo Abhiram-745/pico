@@ -70,8 +70,11 @@ export function mountCompanion(host, { size = 190 } = {}) {
     const copy = PHASE_COPY[phase] || PHASE_COPY.Idle;
     els.title.textContent = copy.title;
 
-    // While acting, the action's own line is more informative than the phase's
-    const detail = (phase === 'Acting' && action?.detail) ? action.detail : copy.detail;
+    // While acting, the action's own line is more informative than the phase's.
+    // Once complete, the model's closing sentence beats a generic phase string.
+    const detail = (phase === 'Acting' && action?.detail) ? action.detail
+      : (phase === 'Completed' && state.summary) ? state.summary
+      : copy.detail;
     els.detail.textContent = detail;
     els.detail.hidden = !detail;
 

@@ -21,6 +21,7 @@ export const HOST_EVENTS = [
   'pauseState',  // { paused, source, blockedReason?, heldModifiers? }
   'guardian',    // { ready }
   'settings',    // { model, pauseOnPhysicalInput, maximumComputerTurns, hasApiKey }
+  'summary',     // { text } — written after a run completes
   'auditEvent',  // raw audit.jsonl record
   'error',       // { title, message, recoverable }
 ];
@@ -88,6 +89,10 @@ class Bridge {
 
       case 'settings':
         store.setSettings(payload);
+        break;
+
+      case 'summary':
+        store.setSummary(payload.text);
         break;
 
       case 'auditEvent':

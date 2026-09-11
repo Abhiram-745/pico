@@ -63,6 +63,27 @@ The phone is you, so it can *answer* an approval — it can never skip one.
 
 ---
 
+## Model provider
+
+The Windows app talks to OpenAI directly and stores its key in Windows
+Credential Manager. The **bridge** is separate, and can use any
+OpenAI-compatible gateway — it ships configured for
+[BazaarLink](https://bazaarlink.ai):
+
+```bash
+cp .env.example .env      # paste your key, then start the bridge
+```
+
+Keys live in `.env`, which is gitignored and read only by `bridge/llm.mjs` on
+your own machine. Nothing is ever embedded in a page or sent to the phone.
+
+Note that BazaarLink cannot drive the desktop loop: it does not support the
+Responses API `computer_use_preview` tool. It plans and summarises; moving the
+mouse still needs a model with the computer tool. See
+[`bridge/README.md`](bridge/README.md).
+
+---
+
 ## Build
 
 Requirements:

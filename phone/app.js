@@ -246,7 +246,9 @@ store.subscribe((state, meta) => {
 
   const copy = PHASE_COPY[phase] || PHASE_COPY.Idle;
   els.title.textContent = copy.title;
-  els.detail.textContent = (phase === 'Acting' && action?.detail) ? action.detail : copy.detail;
+  els.detail.textContent = (phase === 'Acting' && action?.detail) ? action.detail
+    : (phase === 'Completed' && state.summary) ? state.summary
+    : copy.detail;
 
   els.turn.textContent = state.turn ? `${state.turn} of ${state.settings.maximumComputerTurns} turns` : '';
   els.turn.hidden = !state.turn;

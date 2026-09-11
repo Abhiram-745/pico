@@ -22,6 +22,20 @@ const ALLOW_RISK = {
   reason: 'No protected or high-impact operation was detected.',
 };
 
+/** Map a planned step onto the action type whose motion best matches it. */
+function inferActionType(step) {
+  const t = String(step).toLowerCase();
+  // Word boundaries matter: without them "enter" matches "center" and
+  // "alt" matches "salt", which mislabels the step.
+  if (/\btyp(?:e|ing)\b|\bwrite\b|\binput\b/.test(t)) return 'Type';
+  if (/\bpress\b|\bkeys?\b|\bshortcut\b|\bctrl\b|\benter\b/.test(t)) return 'Keypress';
+  if (/\bscroll\b/.test(t)) return 'Scroll';
+  if (/\bclicks?\b|\bselect\b|\bchoose\b|\bopens?\b|\blaunch\b/.test(t)) return 'Click';
+  if (/\bwait\b|\buntil\b/.test(t)) return 'Wait';
+  if (/\blook\b|\bcheck\b|\bfind\b|\bverify\b/.test(t)) return 'Screenshot';
+  return 'Move';
+}
+
 export class MockAgent {
   constructor(transport) {
     this.t = transport;
@@ -37,6 +51,12 @@ export class MockAgent {
       hasApiKey: true,
     };
     transport.onCommand((msg) => this.handle(msg));
+
+    /* Optional. When the bridge has an LLM configured, this turns a task into
+       real steps instead of the scripted ones. Left null in the browser, where
+       there is no key and must never be one. */
+    this.planner = null;
+    this.summariser = null;
   }
 
   // --- plumbing ------------------------------------------------------------
@@ -68,10 +88,10 @@ export class MockAgent {
     return this.gate();
   }
 
-  async action(type, extra = {}) {
+  async action(type, { detail, ...extra } = {}) {
     if (!(await this.gate())) return false;
     this.audit('action_assessed', { action_type: type, risk: ALLOW_RISK, ...extra });
-    this.emit('action', { type });
+    this.emit('action', detail ? { type, detail } : { type });
     await sleep(420);
     if (!(await this.gate())) return false;
     this.audit('action_executed', { action_type: type, risk: ALLOW_RISK, ...extra });
@@ -201,21 +221,53 @@ export class MockAgent {
     return this.action('Screenshot');
   }
 
-  async scenarioHappy() {
+  async scenarioHappy(task = '') {
     if (!(await this._begin())) return;
     if (!(await this.step(600))) return;
 
     this.setPhase('Thinking');
-    if (!(await this.step(1100))) return;
+
+    // With a planner attached the steps come from the model, so the run shows
+    // what it actually intends to do rather than a fixed sequence.
+    let steps = null;
+    if (this.planner) {
+      try {
+        steps = await this.planner(task);
+      } catch (err) {
+        this.setPhase('Failed');
+        this.audit('run_failed', { metadata: { failure_class: 'model_error' } });
+        this.emit('error', { title: 'Model error', message: err.message, recoverable: true });
+        return;
+      }
+      if (this.cancelled) return;
+    }
+    if (!(await this.step(steps ? 250 : 1100))) return;
 
     this.setPhase('Acting');
-    for (const a of ['Move', 'Click', 'Type', 'Keypress', 'Screenshot', 'Move', 'Click']) {
-      if (!(await this.action(a))) return;
-      if (!(await this.step(520))) return;
+
+    if (steps) {
+      for (const step of steps) {
+        if (!(await this.action(inferActionType(step), { detail: step }))) return;
+        if (!(await this.step(700))) return;
+      }
+    } else {
+      for (const a of ['Move', 'Click', 'Type', 'Keypress', 'Screenshot', 'Move', 'Click']) {
+        if (!(await this.action(a))) return;
+        if (!(await this.step(520))) return;
+      }
     }
 
     this.setPhase('Completed');
-    this.audit('run_completed', { metadata: { completed_actions: 7 } });
+    this.audit('run_completed', { metadata: { completed_actions: steps ? steps.length : 7 } });
+
+    // The summary is written after the run is already marked complete. On a
+    // free reasoning model it takes ~30s, and blocking Completed on it makes a
+    // finished task look stuck.
+    if (this.summariser && steps) {
+      this.summariser(task, steps)
+        .then((text) => { if (!this.cancelled) this.emit('summary', { text }); })
+        .catch(() => { /* a missing summary must not fail a completed run */ });
+    }
   }
 
   async scenarioApproval() {

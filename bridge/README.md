@@ -35,6 +35,49 @@ No dependencies. The WebSocket server and the QR encoder are both implemented he
 
 ---
 
+## Model provider
+
+The bridge can call an LLM to turn a task into real steps instead of running a
+scripted sequence. It speaks the OpenAI-compatible API, and is configured for
+[BazaarLink](https://bazaarlink.ai):
+
+```bash
+cp .env.example .env      # then paste your key
+node bridge/server.mjs
+```
+
+```
+BAZAARLINK_API_KEY=sk-bl-...
+BAZAARLINK_BASE_URL=https://api.bazaarlink.ai/v1
+PICO_MODEL=auto:free
+```
+
+Without a key the bridge still runs, using the scripted scenarios — the UI is
+always demonstrable.
+
+**The key never leaves the laptop.** It is read from `.env` by
+`bridge/llm.mjs`, used server-side, and scrubbed from any error text by
+`redact()` before it can reach a log or a client. The phone receives the
+resulting steps and nothing else. `.env` is gitignored; `.env.example` is the
+committed template. Never import `llm.mjs` from anything under `phone/` or
+`pico-ui/` — those run in a browser, where any key is readable.
+
+### What it cannot do
+
+BazaarLink does **not** support the Responses API `computer_use_preview` tool —
+verified, it returns `400 The model service rejected the request parameters`.
+That tool is what returns structured click/type/screenshot actions, and it is
+the thing Pico's desktop loop is built on. So BazaarLink can plan and summarise,
+but it cannot drive the mouse and keyboard. Actually controlling the desktop
+still needs a model with the computer tool.
+
+Free-tier keys are limited to 20 requests a minute; `llm.mjs` self-throttles to
+stay under that. Free routing lands on reasoning models that spend most of the
+token budget thinking, so the client retries once with a larger budget when
+`content` comes back empty.
+
+---
+
 ## Message contract
 
 Identical to the one the WebView2 host implements — see [`pico-ui/INTEGRATION.md`](../pico-ui/INTEGRATION.md). The bridge is a fan-out hub: it keeps a snapshot of host state, replays it to every client on connect so a phone joining mid-task is not staring at a blank screen, and broadcasts every subsequent change.
@@ -56,3 +99,4 @@ Today the host is the mock agent in `pico-ui/mock/agent.js`, which is what makes
 | `server.mjs` | HTTP + WebSocket, pairing, allowlist, static serving |
 | `ws.mjs` | RFC 6455 server — text frames, ping/pong, fragmentation, close |
 | `qr.mjs` | QR encoder, byte mode, EC level L, versions 1–5. Renders to a terminal or to SVG |
+| `llm.mjs` | BazaarLink client — planning and summaries. Reads `.env`; never client-facing |

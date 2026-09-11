@@ -10,6 +10,13 @@ dist/
 bin/
 obj/
 
+# Secrets — never commit. The repo is public.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
 # Local state — never publish an audit log or a stored setting
 audit.jsonl
 settings.json

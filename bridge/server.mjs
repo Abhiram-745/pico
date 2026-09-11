@@ -28,6 +28,7 @@ import { networkInterfaces } from 'node:os';
 import { upgrade } from './ws.mjs';
 import { encode, toTerminal, toSVG } from './qr.mjs';
 import { MockAgent } from '../pico-ui/mock/agent.js';
+import { LLM } from './llm.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
@@ -100,6 +101,7 @@ class Bridge {
     // joining mid-task is not staring at a blank screen.
     this.snapshot = {
       phase: { phase: 'Idle' },
+      summary: null,
       guardian: { ready: false },
       settings: null,
       pauseState: { paused: false },
@@ -114,6 +116,24 @@ class Bridge {
 
     this.agent = new MockAgent(this.transport);
     this.agent.start();
+    this.llm = null;
+  }
+
+  /**
+   * Attach the model provider. The key lives only in this process — the
+   * planner runs server-side and the phone receives nothing but the resulting
+   * steps.
+   */
+  attachLLM(llm) {
+    this.llm = llm;
+    this.agent.planner = (task) => llm.plan(task);
+    this.agent.summariser = (task, steps) => llm.summarise(task, steps);
+    this.agent.settings = { ...this.agent.settings, model: llm.model };
+    this.emitSettings();
+  }
+
+  emitSettings() {
+    this._fromHost('settings', this.agent.settings);
   }
 
   /** Host -> every connected client. */
@@ -347,6 +367,22 @@ server.on('upgrade', (req, socket, head) => {
 
 const host = lanAddress();
 const pairingUrl = () => `http://${host}:${PORT}/#p=${bridge.pairCode}`;
+
+// Model provider is optional: without a key the bridge still runs the
+// scripted scenarios, so the UI is always demonstrable.
+const llm = await LLM.fromEnv();
+if (llm) {
+  const status = await llm.check();
+  if (status.ok) {
+    bridge.attachLLM(llm);
+    console.log(`[bridge] model: ${llm.model} via BazaarLink (key "${status.label}"` +
+      `${status.freeTier ? ', free tier' : ''})`);
+  } else {
+    console.warn(`[bridge] model provider unavailable (${status.reason}); using scripted scenarios`);
+  }
+} else {
+  console.log('[bridge] no BAZAARLINK_API_KEY in .env; using scripted scenarios');
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   const line = '─'.repeat(52);
