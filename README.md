@@ -53,7 +53,7 @@ Start the bridge on your laptop:
 node bridge/server.mjs
 ```
 
-A QR code appears in the terminal with a pairing code beneath it. Scan it with your phone on the same Wi-Fi and the phone app opens and pairs itself. Add it to your home screen and it behaves like any other app — on Android **and** iPhone.
+A QR code appears in the terminal with a pairing code beneath it. Scan it with your phone on the same Wi-Fi and the phone app opens and pairs itself. Add it to your home screen: on iPhone that gives you a real standalone app, and on Android an icon that opens Pico straight away. (Chrome reserves its full *Install* for sites on trusted HTTPS, which a local address cannot have — [the phone guide](https://blurt-ai.me/pico/phone.html) covers the difference.)
 
 From your phone you can send tasks, watch what Pico is doing step by step, pause or stop it, and answer approvals and takeovers.
 
