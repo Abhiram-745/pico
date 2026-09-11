@@ -501,3 +501,22 @@
 @media (prefers-reduced-motion: reduce) {
   .buildchip__icon svg { animation: none !important; }
 }
+
+/* Release notes, trimmed to the lines that say something */
+.notes { display: grid; gap: 7px; margin-top: 10px; }
+.notes__line {
+  position: relative;
+  padding-left: 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-mid);
+  text-wrap: pretty;
+}
+.notes__line::before {
+  content: "";
+  position: absolute;
+  left: 3px; top: 8px;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}

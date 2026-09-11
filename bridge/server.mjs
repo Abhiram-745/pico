@@ -19,6 +19,7 @@
    ========================================================================== */
 
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -315,6 +316,34 @@ const server = createServer(async (req, res) => {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: String(err.message) }));
       }
+      return;
+    }
+
+    // Restarting is the last step of an update, so it belongs with it. The
+    // replacement is spawned detached and waits for this process to release
+    // the port before binding; clients reconnect on their own.
+    if (url.pathname === '/update/restart' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ restarting: true }));
+
+      setTimeout(() => {
+        try {
+          const script = fileURLToPath(new URL('server.mjs', import.meta.url));
+          spawn(
+            process.platform === 'win32' ? 'cmd' : 'sh',
+            process.platform === 'win32'
+              ? ['/c', 'timeout', '/t', '2', '/nobreak', '>nul', '&&', process.execPath, script]
+              : ['-c', `sleep 2; "${process.execPath}" "${script}"`],
+            { detached: true, stdio: 'ignore', cwd: ROOT, windowsHide: true },
+          ).unref();
+        } catch (err) {
+          console.error('[bridge] restart failed:', err.message);
+          return;   // stay alive rather than exiting with no replacement
+        }
+        console.log('[bridge] restarting');
+        server.close();
+        process.exit(0);
+      }, 250);
       return;
     }
 

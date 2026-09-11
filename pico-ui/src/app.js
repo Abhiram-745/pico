@@ -344,6 +344,7 @@ export function mountApp(host = document.body) {
   let updateBusy = false;
   let updateMsg = '';
   let updateError = null;
+  let updateDone = false;
   let updatePct = 0;
 
   async function checkUpdates(auto = false) {
@@ -386,7 +387,8 @@ export function mountApp(host = document.body) {
           render(store.state);
         }
       }
-      updateMsg = 'Installed. Restart Pico to use the new build.';
+      updateMsg = 'Installed.';
+      updateDone = true;
       updateInfo = null;
     } catch (err) {
       updateError = err.message;
@@ -396,8 +398,40 @@ export function mountApp(host = document.body) {
     }
   }
 
+  async function restart() {
+    updateMsg = 'Restarting…';
+    updateBusy = true;
+    render(store.state);
+    try {
+      await fetch('/update/restart', { method: 'POST' });
+    } catch {
+      /* the server goes away mid-request by design */
+    }
+    // The socket reconnects on its own; reload once it is back up.
+    setTimeout(() => window.location.reload(), 4000);
+  }
+
   function renderUpdates() {
     const wrap = el('div', 'measure');
+
+    if (updateDone) {
+      const card = el('div', 'update');
+      card.dataset.state = 'available';
+      const ic = el('div', 'update__icon');
+      ic.append(icon(ICONS.update));
+      const m = el('div', 'update__main');
+      m.append(el('div', 'update__title', 'Update installed'));
+      m.append(el('div', 'update__sub', 'Restart to run the new build.'));
+      const act = el('div', 'row__action');
+      const b = el('button', 'btn btn--primary', updateBusy ? 'Restarting…' : 'Restart now');
+      b.type = 'button';
+      b.disabled = updateBusy;
+      b.addEventListener('click', restart);
+      act.append(b);
+      card.append(ic, m, act);
+      wrap.append(card);
+      return wrap;
+    }
 
     // First check of the session: show the shape of the answer, not a spinner.
     if (updateBusy && !updateInfo && updatePct === 0) {
@@ -459,6 +493,25 @@ export function mountApp(host = document.body) {
 
     if (updateMsg && updateInfo?.available) {
       wrap.append(el('p', 'panel__sub', updateMsg));
+    }
+
+    if (updateInfo?.available && updateInfo.notes) {
+      const notes = el('div', 'panel');
+      notes.append(el('div', 'panel__title', 'What changed'));
+      // Release bodies are generated from commit subjects; show the first few
+      // rather than the whole wall of text.
+      const lines = String(updateInfo.notes)
+        .split('
+')
+        .map((l) => l.replace(/^[-*]\s*/, '').trim())
+        .filter((l) => l && !/^build\s/i.test(l) && !l.startsWith('**') && !l.startsWith('#'))
+        .slice(0, 6);
+      if (lines.length) {
+        const ul = el('div', 'notes');
+        for (const l of lines) ul.append(el('div', 'notes__line', l));
+        notes.append(ul);
+        wrap.append(notes);
+      }
     }
 
     const info = el('div', 'panel');
