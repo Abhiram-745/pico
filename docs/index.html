@@ -45,9 +45,11 @@
   <section>
     <h2>Setup</h2>
     <ol class="steps">
-      <li>Unzip, run <code>Pico.exe</code>, add your OpenAI key in Settings.</li>
-      <li>Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd> and type what you want done.</li>
-      <li>For your phone, run <code>node bridge/server.mjs</code> and scan the QR code.</li>
+      <li>Install <a href="https://nodejs.org">Node.js</a> if you don't have it.</li>
+      <li>Unzip the download and double-click <code>Start Pico.cmd</code>.</li>
+      <li>Paste your OpenAI key into the <code>.env</code> file it opens, save, run it again.</li>
+      <li>Pico appears as a notch at the top of your screen. Click it, or press
+          <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>.</li>
     </ol>
   </section>
 
@@ -93,12 +95,17 @@
       });
       if (!res.ok) return;
       const rel = await res.json();
-      const zip = (rel.assets || []).find(a => /win-x64.*\.zip$/i.test(a.name));
+      // Prefer the launcher bundle; fall back to any zip on the release.
+      const assets = rel.assets || [];
+      const zip = assets.find(a => /^Pico-latest\.zip$/i.test(a.name))
+               || assets.find(a => /\.zip$/i.test(a.name));
       if (!zip) return;
 
       document.getElementById('download').href = zip.browser_download_url;
+      const mb = zip.size / 1048576;
+      const size = mb < 10 ? `${Math.round(mb * 10) / 10} MB` : `${Math.round(mb)} MB`;
       document.getElementById('meta').textContent =
-        `${rel.tag_name} · ${Math.round(zip.size / 1048576)} MB · Windows 10 2004+ / 11`;
+        `${rel.tag_name} · ${size} · Windows · needs Node.js`;
     } catch {
       /* offline or rate-limited — the static /releases/latest link still works */
     }

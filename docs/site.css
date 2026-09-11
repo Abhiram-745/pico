@@ -196,6 +196,9 @@ kbd {
 }
 .steps li:last-child { margin-bottom: 0; }
 
+.steps a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--line-hi); }
+.steps a:hover { border-color: var(--fg-dim); }
+
 .steps li::before {
   content: counter(step);
   position: absolute;

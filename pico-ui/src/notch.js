@@ -21,6 +21,7 @@ import { bridge } from './bridge.js';
 import { Mascot } from './mascot.js';
 import { renderApproval, renderTakeover, renderError } from './cards.js';
 import { CursorLayer, AGENT_COLORS, AGENT_NAMES } from './cursors.js';
+import { permissions, LEVELS } from './permissions.js';
 
 const NAME_KEY = 'pico.pet.name.v1';
 const AGENTS_KEY = 'pico.agents.v1';
@@ -44,6 +45,7 @@ const ICONS = {
   chat: 'M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.5-4.6A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z',
   agents: 'M4 4l7.5 4.7-3.3.8-1.7 3z M13 10l7.5 4.7-3.3.8-1.7 3z',
   eye: 'M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+  shield: 'M12 3l7.5 3v5.4c0 4.3-3.1 7.9-7.5 9.1-4.4-1.2-7.5-4.8-7.5-9.1V6z M9 12l2.2 2.2L15.2 10',
   gear: 'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1l-.3-2.5h-4l-.3 2.5a7.6 7.6 0 0 0-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.6 7.6 0 0 0 1.7-1l2.3 1 2-3.4z',
 };
 
@@ -121,6 +123,11 @@ export function mountNotch(host = document.body) {
   bgBtn.title = 'Work in the background';
   bgBtn.append(icon(ICONS.eye));
 
+  const permBtn = el('button', 'notch__iconbtn');
+  permBtn.type = 'button';
+  permBtn.title = 'Permissions';
+  permBtn.append(icon(ICONS.shield));
+
   const gearBtn = el('button', 'notch__iconbtn');
   gearBtn.type = 'button';
   gearBtn.title = 'Rename';
@@ -130,7 +137,7 @@ export function mountNotch(host = document.body) {
   foot.append(
     el('span', 'kbd', 'Ctrl'), el('span', 'kbd', 'Shift'), el('span', 'kbd', 'P'),
     el('span', 'notch__foot-label', 'palette'),
-    footSpacer, chatBtn, agentsBtn, bgBtn, gearBtn,
+    footSpacer, chatBtn, agentsBtn, bgBtn, permBtn, gearBtn,
   );
 
   body.append(field, scroll, foot);
@@ -151,6 +158,7 @@ export function mountNotch(host = document.body) {
   let glanceTimer = null;
   const messages = [];
   const agentState = new Map();   // id -> { task, state }
+  const autoApproved = new Set(); // approval ids answered without asking
 
   cursorLayer.ensure(agentCount);
   cursorLayer.showAll(background);
@@ -200,7 +208,9 @@ export function mountNotch(host = document.body) {
   function renderTasks(state) {
     const frag = document.createDocumentFragment();
 
-    if (state.approval) frag.append(renderApproval(state.approval));
+    if (state.approval && !autoApproved.has(state.approval.id)) {
+      frag.append(renderApproval(state.approval));
+    }
     else if (state.takeover) frag.append(renderTakeover(state.takeover));
     else if (state.error) frag.append(renderError(state.error));
 
@@ -262,6 +272,38 @@ export function mountNotch(host = document.body) {
       'Each cursor runs its own task and makes its own model request, ' +
       'concurrently. They are drawn, not the system pointer — so your real ' +
       'mouse stays yours while they work.');
+    note.style.marginTop = '10px';
+    wrap.append(note);
+    return wrap;
+  }
+
+  function renderPermissions() {
+    const wrap = el('div', 'agents');
+    wrap.append(el('div', 'agents__title', 'Permissions'));
+
+    const list = el('div', 'agents__list');
+    for (const lv of Object.values(LEVELS)) {
+      const row = el('button', 'agent perm');
+      row.type = 'button';
+      row.dataset.selected = String(permissions.level === lv.id);
+      row.style.setProperty('--agent-color', lv.id === 'all' ? '#fb923c' : 'var(--accent)');
+
+      const tick = el('div', 'perm__tick');
+      tick.textContent = permissions.level === lv.id ? '✓' : '';
+
+      const main = el('div', 'agent__main');
+      main.append(el('div', 'agent__name', lv.label));
+      main.append(el('div', 'agent__task', lv.hint));
+      row.append(tick, main);
+      row.addEventListener('click', () => { permissions.set(lv.id); render(store.state); });
+      list.append(row);
+    }
+    wrap.append(list);
+
+    const note = el('p', 'setting__help',
+      'Credentials, CAPTCHAs and Windows security prompts always come to you — ' +
+      'Pico cannot type a credential, so there is nothing to auto-approve. ' +
+      '"Accept all" lasts for this session only and is never remembered.');
     note.style.marginTop = '10px';
     wrap.append(note);
     return wrap;
@@ -331,6 +373,8 @@ export function mountNotch(host = document.body) {
 
     chatBtn.setAttribute('aria-pressed', String(view === 'chat'));
     agentsBtn.setAttribute('aria-pressed', String(view === 'agents'));
+    permBtn.setAttribute('aria-pressed', String(permissions.level !== 'ask'));
+    permBtn.title = `Permissions — ${LEVELS[permissions.level].label}`;
     bgBtn.setAttribute('aria-pressed', String(background));
     bgBtn.title = background ? 'Working in the background' : 'Bring work to the front';
 
@@ -341,11 +385,12 @@ export function mountNotch(host = document.body) {
         view === 'agents' ? renderAgents()
           : view === 'chat' ? renderChat()
           : view === 'rename' ? renderRename()
+          : view === 'perms' ? renderPermissions()
           : renderTasks(state),
       );
       // Keep the task box available everywhere except while renaming,
       // where it would compete with the name field for Enter.
-      field.hidden = view === 'rename';
+      field.hidden = view === 'rename' || view === 'perms';
 
       // Let the notch size itself to its content rather than a fixed height.
       requestAnimationFrame(() => {
@@ -405,6 +450,7 @@ export function mountNotch(host = document.body) {
 
   chatBtn.addEventListener('click', () => open(view === 'chat' ? 'tasks' : 'chat'));
   agentsBtn.addEventListener('click', () => { view = view === 'agents' ? 'tasks' : 'agents'; open(view); });
+  permBtn.addEventListener('click', () => { view = view === 'perms' ? 'tasks' : 'perms'; open(view); });
   gearBtn.addEventListener('click', () => { view = view === 'rename' ? 'tasks' : 'rename'; open(view); });
   bgBtn.addEventListener('click', () => {
     background = !background;
@@ -426,12 +472,42 @@ export function mountNotch(host = document.body) {
   }
 
   // --- store ---------------------------------------------------------------
+  /* Auto-approval. The decision is taken here rather than in the host so the
+     user can see what was allowed and why — a silent auto-yes would be worse
+     than the prompt it replaces. Takeover is never auto-answered. */
+  function maybeAutoApprove(state) {
+    const a = state.approval;
+    if (!a || autoApproved.has(a.id)) return false;
+
+    const { auto, why } = permissions.decide(a);
+    if (!auto) return false;
+
+    autoApproved.add(a.id);
+    messages.push({ from: 'event', text: `Auto-approved: ${a.summary} — ${why}` });
+    bridge.send('approve', { id: a.id });
+    glance(2200);
+    return true;
+  }
+
   store.subscribe((state, meta) => {
+    if (meta.type === 'approval' && state.approval && maybeAutoApprove(state)) {
+      render(state);
+      return;   // never surface a card we just answered
+    }
+
     if (meta.type === 'phase') {
       // Anything that needs a human opens the notch properly; ordinary
       // progress only earns a glance.
-      if (state.phase === 'AwaitingApproval' || state.phase === 'AwaitingTakeover') open('tasks');
-      else if (state.phase !== 'Idle') glance();
+      if (state.phase === 'AwaitingApproval') {
+        if (maybeAutoApprove(state)) { render(state); return; }
+        // The host sends `approval` then `phase`. If the first one was already
+        // auto-approved, this second event must not re-open the card we just
+        // answered — otherwise it flashes on screen for a frame.
+        if (state.approval && autoApproved.has(state.approval.id)) { render(state); return; }
+        open('tasks');
+      } else if (state.phase === 'AwaitingTakeover') {
+        open('tasks');   // always a human; permissions never bypass this
+      } else if (state.phase !== 'Idle') glance();
     }
     if (meta.type === 'action') { mascot.pulse(); glance(1800); }
     if (meta.type === 'summary' && state.summary) {

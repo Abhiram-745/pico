@@ -497,3 +497,22 @@ button.agent:hover { background: color-mix(in oklab, #ffffff 8%, transparent); }
   .notch { transition: none; }
   .notch__body { transition: none; }
 }
+
+/* ==========================================================================
+   Permissions rows
+   ========================================================================== */
+.perm { gap: 12px; }
+.perm[data-selected="true"] { border-color: color-mix(in oklab, var(--agent-color) 55%, transparent); }
+
+.perm__tick {
+  flex: none;
+  width: 22px; height: 22px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #05060a;
+  background: color-mix(in oklab, #ffffff 9%, transparent);
+}
+.perm[data-selected="true"] .perm__tick { background: var(--agent-color); }

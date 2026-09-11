@@ -292,6 +292,12 @@ export class MockAgent {
     };
     const id = `apr_${Date.now()}`;
     this.audit('action_assessed', { action_type: 'Click', risk });
+
+    // Arm the resolver BEFORE emitting. The emit is synchronous all the way
+    // to the UI, so an auto-approval can come straight back on the same tick
+    // — and would be dropped if nothing were listening yet.
+    const decision = new Promise((res) => { this._approveResolve = res; });
+
     this.emit('approval', {
       id,
       summary: 'Click “Send” to deliver the drafted email',
@@ -299,7 +305,7 @@ export class MockAgent {
       risk,
     });
 
-    const approved = await new Promise((res) => { this._approveResolve = res; });
+    const approved = await decision;
     this._approveResolve = null;
     if (this.cancelled) return;
 
@@ -333,13 +339,17 @@ export class MockAgent {
     }
 
     const id = `tko_${Date.now()}`;
+
+    // Same ordering rule as approval: arm before emitting.
+    const done = new Promise((res) => { this._takeoverResolve = res; });
+
     this.emit('takeover', {
       id,
       reason: 'A password field is focused. Pico never types credentials.',
       appName: 'Microsoft Edge — account sign-in',
     });
 
-    await new Promise((res) => { this._takeoverResolve = res; });
+    await done;
     this._takeoverResolve = null;
     if (this.cancelled) return;
 

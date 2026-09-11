@@ -1,19 +1,20 @@
 name: Release
 
-# Publishing a release is what makes "Download latest" on the website point at
-# new bits, so it is driven by a tag rather than by every push to main.
+# Every push to main publishes a rolling "latest" release, so the download on
+# the website is always the current build. Tagging additionally cuts a numbered
+# release that stays put.
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to publish (e.g. v0.1.8)'
-        required: true
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -21,48 +22,86 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve version
+      - name: Work out what we are publishing
         id: v
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "tag=${{ github.ref_name }}"          >> "$GITHUB_OUTPUT"
+            echo "name=Pico ${{ github.ref_name }}"    >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"                    >> "$GITHUB_OUTPUT"
+            echo "rolling=false"                       >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest"                          >> "$GITHUB_OUTPUT"
+            echo "name=Pico (latest)"                  >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"                    >> "$GITHUB_OUTPUT"
+            echo "rolling=true"                        >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$(git rev-parse --short HEAD)"     >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)"             >> "$GITHUB_OUTPUT"
 
-      # The companion bundle is everything needed to run the phone bridge and
-      # the interface. The Windows binaries are uploaded separately, because
-      # they are ~350 MB and are not in git.
-      - name: Package companion bundle
+      # Everything needed to run Pico, minus the two large Windows binaries,
+      # which are attached separately because git cannot carry them.
+      - name: Package
         run: |
-          mkdir -p out/pico-companion
-          cp -r pico-ui phone bridge out/pico-companion/
-          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 out/pico-companion/
+          set -euo pipefail
+          STAGE=out/Pico
+          mkdir -p "$STAGE"
+          cp -r pico-ui phone bridge "$STAGE"/
+          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 .env.example "$STAGE"/
+          cp "Start Pico.cmd" "$STAGE"/
+          rm -rf "$STAGE"/pico-ui/mock/audit-sample.jsonl
+
+          printf '%s\n' \
+            "Pico" \
+            "build ${{ steps.v.outputs.sha }} — ${{ steps.v.outputs.date }}" \
+            "" \
+            "1. Install Node.js (https://nodejs.org) if you have not already." \
+            "2. Double-click \"Start Pico.cmd\"." \
+            "3. Paste your OpenAI key into the .env file it opens, save, run it again." \
+            > "$STAGE"/READ-ME-FIRST.txt
+
           cd out
-          zip -qr "pico-companion-${{ steps.v.outputs.version }}.zip" pico-companion
-          sha256sum *.zip > SHA256SUMS.txt
+          zip -qr "Pico-latest.zip" Pico
+          sha256sum Pico-latest.zip > SHA256SUMS.txt
           ls -la
 
-      - name: Publish release
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           TAG="${{ steps.v.outputs.tag }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" out/*.zip out/SHA256SUMS.txt --clobber
-          else
-            gh release create "$TAG" \
-              --title "Pico $TAG" \
-              --generate-notes \
-              out/*.zip out/SHA256SUMS.txt
+
+          # A rolling release has to be retagged to the new commit, or the
+          # assets and the source drift apart.
+          if [[ "${{ steps.v.outputs.rolling }}" == "true" ]]; then
+            git tag -f "$TAG"
+            git push -f origin "refs/tags/$TAG"
           fi
 
-      # The website reads the newest release from the GitHub API at page load,
-      # so there is nothing to rebuild — but Pages still needs a nudge if the
-      # site itself changed in this tag.
+          NOTES="Build \`${{ steps.v.outputs.sha }}\` — ${{ steps.v.outputs.date }}
+
+          **Start here:** download \`Pico-latest.zip\`, unzip, double-click **Start Pico.cmd**.
+          Needs [Node.js](https://nodejs.org) and an OpenAI API key.
+
+          The Windows binaries (\`Pico.exe\`, \`Pico.Guardian.exe\`) are attached to the
+          numbered releases; they carry the older interface."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "${{ steps.v.outputs.name }}" --notes "$NOTES" --latest
+            gh release upload "$TAG" out/Pico-latest.zip out/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" \
+              --title "${{ steps.v.outputs.name }}" \
+              --notes "$NOTES" \
+              --latest \
+              out/Pico-latest.zip out/SHA256SUMS.txt
+          fi
+
       - name: Summary
         run: |
-          echo "Published **${{ steps.v.outputs.tag }}**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "The Windows binaries are uploaded separately:" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo 'gh release upload ${{ steps.v.outputs.tag }} Pico-<version>-win-x64.zip' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Published **${{ steps.v.outputs.tag }}** (${{ steps.v.outputs.sha }})"
+            echo ""
+            echo "The website reads the newest release at page load, so the download is now current."
+          } >> "$GITHUB_STEP_SUMMARY"
