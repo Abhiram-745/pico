@@ -1,0 +1,453 @@
+/* ==========================================================================
+   Pico — the notch
+
+   Replaces the floating companion. Sits at the top of the screen, always
+   there, and is the control surface: tasks, approvals, takeovers, agents and
+   chat all happen here rather than in a separate window.
+
+   Modes, smallest to largest:
+     rest    a slim pill — the pet and a status dot
+     glance  widens on its own when something changes, then settles back
+     panel   task entry, decisions, the agent list
+     chat    conversation view
+
+   In the Windows host this is one always-on-top, click-through-except-here
+   window docked to the top centre of the primary display. It replaces
+   OverlayWindow; the palette window stays for keyboard-first use.
+   ========================================================================== */
+
+import { store, PHASE_COPY, isActive } from './store.js';
+import { bridge } from './bridge.js';
+import { Mascot } from './mascot.js';
+import { renderApproval, renderTakeover, renderError } from './cards.js';
+import { CursorLayer, AGENT_COLORS, AGENT_NAMES } from './cursors.js';
+
+const NAME_KEY = 'pico.pet.name.v1';
+const AGENTS_KEY = 'pico.agents.v1';
+const BG_KEY = 'pico.background.v1';
+
+const read = (k, fallback) => {
+  try { const v = localStorage.getItem(k); return v === null ? fallback : v; }
+  catch { return fallback; }
+};
+const write = (k, v) => { try { localStorage.setItem(k, String(v)); } catch { /* private mode */ } };
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+
+const ICONS = {
+  send: 'M5 12h13M12 5l7 7-7 7',
+  chat: 'M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.5-4.6A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z',
+  agents: 'M4 4l7.5 4.7-3.3.8-1.7 3z M13 10l7.5 4.7-3.3.8-1.7 3z',
+  eye: 'M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+  gear: 'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1l-.3-2.5h-4l-.3 2.5a7.6 7.6 0 0 0-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.6 7.6 0 0 0 1.7-1l2.3 1 2-3.4z',
+};
+
+const icon = (d) => {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('viewBox', '0 0 24 24');
+  s.setAttribute('fill', 'none');
+  s.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', d);
+  p.setAttribute('stroke', 'currentColor');
+  p.setAttribute('stroke-width', '1.7');
+  p.setAttribute('stroke-linecap', 'round');
+  p.setAttribute('stroke-linejoin', 'round');
+  s.append(p);
+  return s;
+};
+
+export function mountNotch(host = document.body) {
+  const root = el('div', 'notch-layer');
+  root.dataset.mode = 'rest';
+  root.dataset.phase = 'Idle';
+
+  const scrim = el('div', 'notch-layer__scrim');
+
+  const notch = el('div', 'notch');
+  notch.setAttribute('role', 'region');
+  notch.setAttribute('aria-label', 'Pico');
+
+  // --- bar -----------------------------------------------------------------
+  const bar = el('div', 'notch__bar');
+  const petMount = el('div', 'notch__pet');
+  const mascot = new Mascot({ size: 40 });
+  petMount.append(mascot.el);
+
+  const textWrap = el('div', 'notch__text');
+  const nameEl = el('div', 'notch__name');
+  const statusEl = el('div', 'notch__status');
+  textWrap.append(nameEl, statusEl);
+
+  const chips = el('div', 'notch__cursors');
+  const pulse = el('div', 'notch__pulse');
+  bar.append(petMount, textWrap, chips, pulse);
+
+  // --- body ----------------------------------------------------------------
+  const body = el('div', 'notch__body');
+
+  const field = el('div', 'notch__field');
+  const input = el('input', 'notch__input');
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute('aria-label', 'Task');
+  const send = el('button', 'notch__send');
+  send.type = 'button';
+  send.setAttribute('aria-label', 'Send');
+  send.append(icon(ICONS.send));
+  field.append(input, send);
+
+  const scroll = el('div', 'notch__scroll');
+
+  const foot = el('div', 'notch__foot');
+  const chatBtn = el('button', 'notch__iconbtn');
+  chatBtn.type = 'button';
+  chatBtn.title = 'Chat';
+  chatBtn.append(icon(ICONS.chat));
+
+  const agentsBtn = el('button', 'notch__iconbtn');
+  agentsBtn.type = 'button';
+  agentsBtn.title = 'Cursors';
+  agentsBtn.append(icon(ICONS.agents));
+
+  const bgBtn = el('button', 'notch__iconbtn');
+  bgBtn.type = 'button';
+  bgBtn.title = 'Work in the background';
+  bgBtn.append(icon(ICONS.eye));
+
+  const gearBtn = el('button', 'notch__iconbtn');
+  gearBtn.type = 'button';
+  gearBtn.title = 'Rename';
+  gearBtn.append(icon(ICONS.gear));
+
+  const footSpacer = el('div', 'notch__foot-spacer');
+  foot.append(
+    el('span', 'kbd', 'Ctrl'), el('span', 'kbd', 'Shift'), el('span', 'kbd', 'P'),
+    el('span', 'notch__foot-label', 'palette'),
+    footSpacer, chatBtn, agentsBtn, bgBtn, gearBtn,
+  );
+
+  body.append(field, scroll, foot);
+  notch.append(bar, body);
+  // Siblings, not nested: the scrim fades to opacity 0 in rest mode, and a
+  // nested notch would fade out with it.
+  root.append(scrim, notch);
+  host.append(root);
+
+  // --- cursors -------------------------------------------------------------
+  const cursorLayer = new CursorLayer(host);
+
+  let petName = read(NAME_KEY, 'Pico');
+  let agentCount = Math.max(1, Math.min(6, Number(read(AGENTS_KEY, '1')) || 1));
+  let background = read(BG_KEY, 'true') === 'true';
+  let view = 'tasks';        // tasks | agents | chat | rename
+  let mode = 'rest';         // rest | glance | panel | chat
+  let glanceTimer = null;
+  const messages = [];
+  const agentState = new Map();   // id -> { task, state }
+
+  cursorLayer.ensure(agentCount);
+  cursorLayer.showAll(background);
+
+  // --- mode ----------------------------------------------------------------
+  function setMode(next) {
+    mode = next;
+    root.dataset.mode = next;
+    if (next === 'panel' || next === 'chat') {
+      queueMicrotask(() => input.focus({ preventScroll: true }));
+    }
+  }
+
+  /** Widen briefly to show a change, then settle back. */
+  function glance(ms = 2600) {
+    if (mode === 'panel' || mode === 'chat') return;
+    setMode('glance');
+    clearTimeout(glanceTimer);
+    glanceTimer = setTimeout(() => { if (mode === 'glance') setMode('rest'); }, ms);
+  }
+
+  function open(which = 'tasks') {
+    view = which;
+    setMode(which === 'chat' ? 'chat' : 'panel');
+    render(store.state);
+  }
+
+  function close() {
+    clearTimeout(glanceTimer);
+    setMode('rest');
+    input.blur();
+  }
+
+  const toggle = () => (mode === 'rest' || mode === 'glance' ? open('tasks') : close());
+
+  // --- rendering -----------------------------------------------------------
+  function renderChips() {
+    const busy = [...agentState.entries()].filter(([, a]) => a.state && a.state !== 'idle');
+    chips.replaceChildren(...busy.slice(0, 4).map(([id]) => {
+      const c = cursorLayer.get(id);
+      const chip = el('span', 'notch__cursor-chip', c?.label ?? '');
+      chip.style.background = c?.color ?? 'var(--accent)';
+      return chip;
+    }));
+  }
+
+  function renderTasks(state) {
+    const frag = document.createDocumentFragment();
+
+    if (state.approval) frag.append(renderApproval(state.approval));
+    else if (state.takeover) frag.append(renderTakeover(state.takeover));
+    else if (state.error) frag.append(renderError(state.error));
+
+    if (!state.approval && !state.takeover && state.recents.length) {
+      const wrap = el('div', 'agents');
+      wrap.append(el('div', 'agents__title', 'Recent'));
+      const list = el('div', 'agents__list');
+      for (const t of state.recents.slice(0, 4)) {
+        const row = el('button', 'agent');
+        row.type = 'button';
+        row.style.setProperty('--agent-color', 'var(--text-lo)');
+        const main = el('div', 'agent__main');
+        main.append(el('div', 'agent__name', t));
+        row.append(main);
+        row.addEventListener('click', () => { input.value = t; input.focus(); updateSend(); });
+        list.append(row);
+      }
+      wrap.append(list);
+      frag.append(wrap);
+    }
+    return frag;
+  }
+
+  function renderAgents() {
+    const wrap = el('div', 'agents');
+
+    const head = el('div', 'agents__head');
+    head.append(el('span', 'agents__title', 'Cursors'));
+    const count = el('div', 'agents__count');
+    const minus = el('button', 'agents__step', '−');
+    const n = el('span', 'agents__n', String(agentCount));
+    const plus = el('button', 'agents__step', '+');
+    minus.type = plus.type = 'button';
+    minus.disabled = agentCount <= 1;
+    plus.disabled = agentCount >= 6;
+    minus.addEventListener('click', () => setAgentCount(agentCount - 1));
+    plus.addEventListener('click', () => setAgentCount(agentCount + 1));
+    count.append(minus, n, plus);
+    head.append(count);
+    wrap.append(head);
+
+    const list = el('div', 'agents__list');
+    for (const c of cursorLayer.all()) {
+      const st = agentState.get(c.id) || { state: 'idle', task: '' };
+      const row = el('div', 'agent');
+      row.style.setProperty('--agent-color', c.color);
+      row.dataset.busy = String(st.state !== 'idle');
+
+      const dot = el('div', 'agent__dot', c.label);
+      const main = el('div', 'agent__main');
+      main.append(el('div', 'agent__name', `Cursor ${c.label}`));
+      main.append(el('div', 'agent__task', st.task || 'Waiting for a task'));
+      row.append(dot, main, el('div', 'agent__state', st.state));
+      list.append(row);
+    }
+    wrap.append(list);
+
+    const note = el('p', 'setting__help',
+      'Each cursor runs its own task and makes its own model request, ' +
+      'concurrently. They are drawn, not the system pointer — so your real ' +
+      'mouse stays yours while they work.');
+    note.style.marginTop = '10px';
+    wrap.append(note);
+    return wrap;
+  }
+
+  function renderChat() {
+    const wrap = el('div', 'notch__msgs');
+    for (const m of messages) {
+      const node = el('div', `msg msg--${m.from}`);
+      if (m.typing) {
+        const t = el('span', 'msg__typing');
+        t.append(el('i'), el('i'), el('i'));
+        node.append(t);
+      } else {
+        node.textContent = m.text;
+      }
+      wrap.append(node);
+    }
+    return wrap;
+  }
+
+  function renderRename() {
+    const wrap = el('div');
+    const row = el('div', 'rename');
+    const field2 = el('input', 'rename__input');
+    field2.type = 'text';
+    field2.value = petName;
+    field2.maxLength = 24;
+    field2.setAttribute('aria-label', 'Name');
+    const save = el('button', 'btn btn--primary', 'Save');
+    save.type = 'button';
+
+    const commit = () => {
+      const v = field2.value.trim().slice(0, 24);
+      if (v) { petName = v; write(NAME_KEY, v); }
+      view = 'tasks';
+      render(store.state);
+    };
+    save.addEventListener('click', commit);
+    field2.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+
+    row.append(field2, save);
+    wrap.append(el('div', 'agents__title', 'What should I call it?'), row);
+    queueMicrotask(() => field2.select());
+    return wrap;
+  }
+
+  function updateSend() {
+    send.disabled = !input.value.trim() || !store.canSubmit;
+  }
+
+  function render(state) {
+    root.dataset.phase = state.phase;
+    mascot.setPhase(state.phase);
+
+    const copy = PHASE_COPY[state.phase] || PHASE_COPY.Idle;
+    nameEl.textContent = state.phase === 'Idle' ? petName : copy.title;
+
+    const detail = state.phase === 'Acting' && state.action?.detail ? state.action.detail
+      : state.phase === 'Completed' && state.summary ? state.summary
+      : copy.detail;
+    statusEl.textContent = detail || (state.phase === 'Idle' ? 'Ready' : '');
+
+    input.placeholder = `Tell ${petName} what to do…`;
+    input.disabled = !state.guardian.ready;
+    updateSend();
+
+    chatBtn.setAttribute('aria-pressed', String(view === 'chat'));
+    agentsBtn.setAttribute('aria-pressed', String(view === 'agents'));
+    bgBtn.setAttribute('aria-pressed', String(background));
+    bgBtn.title = background ? 'Working in the background' : 'Bring work to the front';
+
+    renderChips();
+
+    if (mode === 'panel' || mode === 'chat') {
+      scroll.replaceChildren(
+        view === 'agents' ? renderAgents()
+          : view === 'chat' ? renderChat()
+          : view === 'rename' ? renderRename()
+          : renderTasks(state),
+      );
+      // Keep the task box available everywhere except while renaming,
+      // where it would compete with the name field for Enter.
+      field.hidden = view === 'rename';
+
+      // Let the notch size itself to its content rather than a fixed height.
+      requestAnimationFrame(() => {
+        const wanted = Math.min(
+          window.innerHeight * 0.7,
+          bar.offsetHeight + (field.hidden ? 0 : field.offsetHeight + 12)
+            + scroll.scrollHeight + foot.offsetHeight + 16,
+        );
+        notch.style.setProperty('--panel-h', `${Math.max(180, wanted)}px`);
+        if (view === 'chat') scroll.scrollTop = scroll.scrollHeight;
+      });
+    }
+  }
+
+  // --- agents --------------------------------------------------------------
+  function setAgentCount(n) {
+    agentCount = Math.max(1, Math.min(6, n));
+    write(AGENTS_KEY, agentCount);
+    cursorLayer.ensure(agentCount);
+    cursorLayer.showAll(background);
+    for (const id of [...agentState.keys()]) {
+      if (!cursorLayer.get(id)) agentState.delete(id);
+    }
+    render(store.state);
+  }
+
+  /**
+   * Drive a cursor through a step. Exposed so the host (or the demo) can move
+   * agents around; each call animates at display rate rather than jumping.
+   */
+  async function driveCursor(id, { x, y, state, task, click = false }) {
+    const c = cursorLayer.get(id);
+    if (!c) return;
+    const prev = agentState.get(id) || {};
+    agentState.set(id, { task: task ?? prev.task ?? '', state: state ?? prev.state ?? 'idle' });
+    if (state) c.setState(state === 'idle' ? 'idle' : 'working');
+    renderChips();
+    if (typeof x === 'number' && typeof y === 'number') await c.moveTo(x, y);
+    if (click) c.click();
+    if (mode === 'panel' && view === 'agents') render(store.state);
+  }
+
+  // --- events --------------------------------------------------------------
+  bar.addEventListener('click', (e) => {
+    if (e.target.closest('.notch__iconbtn')) return;
+    toggle();
+  });
+
+  scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) close(); });
+
+  input.addEventListener('input', updateSend);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+    if (e.key === 'Escape' && !isActive(store.state.phase)) { e.preventDefault(); close(); }
+  });
+  send.addEventListener('click', submit);
+
+  chatBtn.addEventListener('click', () => open(view === 'chat' ? 'tasks' : 'chat'));
+  agentsBtn.addEventListener('click', () => { view = view === 'agents' ? 'tasks' : 'agents'; open(view); });
+  gearBtn.addEventListener('click', () => { view = view === 'rename' ? 'tasks' : 'rename'; open(view); });
+  bgBtn.addEventListener('click', () => {
+    background = !background;
+    write(BG_KEY, background);
+    cursorLayer.showAll(background);
+    render(store.state);
+  });
+
+  function submit() {
+    const text = input.value.trim();
+    if (!text || send.disabled) return;
+    messages.push({ from: 'you', text });
+    store.addRecent(text);
+    bridge.send('submitTask', { text });
+    input.value = '';
+    updateSend();
+    if (view !== 'chat') close();
+    else render(store.state);
+  }
+
+  // --- store ---------------------------------------------------------------
+  store.subscribe((state, meta) => {
+    if (meta.type === 'phase') {
+      // Anything that needs a human opens the notch properly; ordinary
+      // progress only earns a glance.
+      if (state.phase === 'AwaitingApproval' || state.phase === 'AwaitingTakeover') open('tasks');
+      else if (state.phase !== 'Idle') glance();
+    }
+    if (meta.type === 'action') { mascot.pulse(); glance(1800); }
+    if (meta.type === 'summary' && state.summary) {
+      messages.push({ from: 'pico', text: state.summary });
+      glance(3200);
+    }
+    render(state);
+  });
+
+  render(store.state);
+
+  return {
+    root, notch, mascot, cursorLayer,
+    open, close, toggle, glance, driveCursor, setAgentCount,
+    get name() { return petName; },
+    get agentCount() { return agentCount; },
+    get background() { return background; },
+  };
+}

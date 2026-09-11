@@ -1,0 +1,117 @@
+/* ==========================================================================
+   Pico — agent cursors
+   Drawn pointers, one per concurrent agent. Never the OS cursor.
+   ========================================================================== */
+
+.cursor-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  transition: opacity .25s var(--ease-out);
+  /* transform is set per frame in JS — keep it off the transition list */
+  will-change: transform;
+}
+.cursor[data-visible="true"] { opacity: 1; }
+
+/* --- the pointer glyph --------------------------------------------------- */
+.cursor__glyph {
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  width: 26px;
+  height: 26px;
+  overflow: visible;
+  transition: transform .16s var(--ease-spring);
+}
+.cursor[data-state="click"] .cursor__glyph { transform: scale(.82); }
+
+.cursor__shadow {
+  fill: none;
+  stroke: rgba(0, 0, 0, .55);
+  stroke-width: 4.5;
+  stroke-linejoin: round;
+}
+
+.cursor__body {
+  fill: var(--cursor-color);
+  stroke: #05060a;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+/* --- the name tag -------------------------------------------------------- */
+.cursor__tag {
+  position: absolute;
+  top: 19px;
+  left: 17px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--cursor-color);
+  color: #05060a;
+  font-family: var(--font, system-ui);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: .01em;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .45);
+}
+
+/* --- click ring ---------------------------------------------------------- */
+.cursor__ring {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border-radius: 50%;
+  border: 2px solid var(--cursor-color);
+  opacity: 0;
+  pointer-events: none;
+}
+.cursor__ring.is-clicking { animation: cursor-click .45s var(--ease-out) 1; }
+@keyframes cursor-click {
+  0%   { transform: scale(.3); opacity: .9; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+/* A soft trail so fast moves read as motion rather than a jump */
+.cursor::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0;
+  width: 18px; height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--cursor-color) 0%, transparent 70%);
+  opacity: .22;
+  filter: blur(5px);
+}
+
+/* --- working state: a slow halo so you can tell which agent is active ----- */
+.cursor[data-state="working"] .cursor__ring {
+  opacity: .55;
+  animation: cursor-working 1.6s var(--ease-in-out) infinite;
+}
+@keyframes cursor-working {
+  0%, 100% { transform: scale(.75); opacity: .25; }
+  50%      { transform: scale(1.05); opacity: .6; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor__ring.is-clicking,
+  .cursor[data-state="working"] .cursor__ring { animation: none; opacity: .5; }
+  .cursor__glyph { transition: none; }
+}

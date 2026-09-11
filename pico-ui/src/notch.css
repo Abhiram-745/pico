@@ -1,0 +1,499 @@
+/* ==========================================================================
+   Pico — the notch
+
+   Always present, centred at the top of the screen. Four sizes:
+
+     rest      a slim pill, just the pet and a status dot
+     glance    widens for a moment to show what changed, then settles back
+     panel     full control surface: task entry, approvals, takeovers
+     chat      tallest — conversation view
+
+   Everything is one element morphing between widths and heights, so the
+   transition is a single spring rather than a swap between components.
+   ========================================================================== */
+
+.notch-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+/* Absolutely positioned, so it sits behind the notch without joining the
+   layer's flex flow — the layer itself centres the notch. */
+.notch-layer__scrim {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklab, var(--ink-0) 55%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  opacity: 0;
+  transition: opacity .3s var(--ease-out);
+  pointer-events: none;
+}
+.notch-layer[data-mode="panel"] .notch-layer__scrim,
+.notch-layer[data-mode="chat"]  .notch-layer__scrim { opacity: 1; pointer-events: auto; }
+
+/* ==========================================================================
+   The notch itself
+   ========================================================================== */
+.notch {
+  pointer-events: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--text-hi);
+
+  /* The shape. A real notch has no top corners — it grows out of the bezel.
+     Pure black so it reads as a cutout rather than a panel, with an edge that
+     defines it against a dark wallpaper — otherwise it vanishes completely on
+     one, which is exactly what happened the first time. */
+  border-radius: 0 0 22px 22px;
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-top: 0;
+  box-shadow:
+    0 16px 44px -10px rgba(0, 0, 0, .9),
+    0 0 0 1px rgba(0, 0, 0, .55),
+    0 1px 22px -6px color-mix(in oklab, var(--accent) 35%, transparent),
+    inset 0 -1px 0 rgba(255, 255, 255, .1);
+
+  width: var(--notch-w, 188px);
+  height: var(--notch-h, 34px);
+
+  /* One spring for the whole morph. */
+  transition:
+    width  .46s var(--ease-spring),
+    height .46s var(--ease-spring),
+    border-radius .4s var(--ease-out);
+  will-change: width, height;
+}
+
+/* The accent hairline that rides the bottom edge, tinted by phase */
+.notch::after {
+  content: "";
+  position: absolute;
+  left: 22%;
+  right: 22%;
+  bottom: 0;
+  height: 1px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0;
+  transition: opacity .4s var(--ease-out);
+  pointer-events: none;
+}
+.notch-layer:not([data-phase="Idle"]) .notch::after { opacity: .9; }
+
+.notch-layer[data-mode="rest"]   .notch { --notch-w: 188px; --notch-h: 34px; }
+.notch-layer[data-mode="glance"] .notch { --notch-w: 330px; --notch-h: 60px; }
+.notch-layer[data-mode="panel"]  .notch { --notch-w: 560px; --notch-h: var(--panel-h, 300px); border-radius: 0 0 28px 28px; }
+.notch-layer[data-mode="chat"]   .notch { --notch-w: 600px; --notch-h: 74vh;  border-radius: 0 0 28px 28px; }
+
+/* ==========================================================================
+   Rest bar — always visible, the row everything else sits under
+   ========================================================================== */
+.notch__bar {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.notch__bar > * { -webkit-app-region: no-drag; }
+
+.notch__pet {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  position: relative;
+}
+.notch__pet .pet { --pet-size: 24px; }
+
+/* In the bigger modes the pet grows and the bar gets taller */
+.notch-layer[data-mode="glance"] .notch__bar,
+.notch-layer[data-mode="panel"]  .notch__bar,
+.notch-layer[data-mode="chat"]   .notch__bar { height: 60px; padding: 0 16px; gap: 12px; }
+
+.notch-layer[data-mode="glance"] .notch__pet,
+.notch-layer[data-mode="panel"]  .notch__pet,
+.notch-layer[data-mode="chat"]   .notch__pet { width: 40px; height: 40px; }
+
+.notch-layer[data-mode="glance"] .notch__pet .pet,
+.notch-layer[data-mode="panel"]  .notch__pet .pet,
+.notch-layer[data-mode="chat"]   .notch__pet .pet { --pet-size: 40px; }
+
+.notch__pet .pet,
+.notch__pet { transition: width .46s var(--ease-spring), height .46s var(--ease-spring); }
+
+.notch__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.notch__name {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--text-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notch-layer[data-mode="rest"] .notch__name { font-size: 11px; }
+
+.notch__status {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height .3s var(--ease-out), opacity .25s var(--ease-out);
+}
+.notch-layer:not([data-mode="rest"]) .notch__status { max-height: 18px; opacity: 1; }
+
+/* A live pulse sits on the right of the rest bar */
+.notch__pulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  transition: background .4s var(--ease-out), transform .3s var(--ease-spring);
+}
+.notch-layer[data-phase="Idle"] .notch__pulse { background: var(--ink-5); box-shadow: none; }
+.notch-layer[data-phase="Acting"] .notch__pulse,
+.notch-layer[data-phase="Observing"] .notch__pulse,
+.notch-layer[data-phase="Thinking"] .notch__pulse { animation: notch-pulse 1.4s var(--ease-in-out) infinite; }
+@keyframes notch-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.5); opacity: .55; }
+}
+
+.notch__cursors {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: -4px;
+  margin-right: 2px;
+}
+.notch-layer[data-mode="rest"] .notch__cursors { display: none; }
+
+.notch__cursor-chip {
+  width: 16px; height: 16px;
+  margin-left: -5px;
+  border-radius: 50%;
+  border: 1.5px solid #05060a;
+  display: grid;
+  place-items: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: #05060a;
+}
+
+/* ==========================================================================
+   Body — everything below the bar
+   ========================================================================== */
+.notch__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transition: opacity .22s var(--ease-out);
+  overflow: hidden;
+}
+.notch-layer[data-mode="panel"] .notch__body,
+.notch-layer[data-mode="chat"]  .notch__body { opacity: 1; transition-delay: .1s; }
+.notch-layer[data-mode="rest"] .notch__body,
+.notch-layer[data-mode="glance"] .notch__body { pointer-events: none; }
+
+/* --- task entry --- */
+/* `hidden` loses to an explicit display value, so state it. */
+.notch__field[hidden] { display: none; }
+
+.notch__field {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 14px 12px;
+  padding: 0 12px;
+  height: 46px;
+  border-radius: 13px;
+  background: color-mix(in oklab, #ffffff 5%, transparent);
+  border: 1px solid color-mix(in oklab, #ffffff 8%, transparent);
+  transition: border-color .18s, box-shadow .18s;
+}
+.notch__field:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.notch__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text-hi);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.notch__input::placeholder { color: var(--text-dim); }
+
+.notch__send {
+  flex: none;
+  width: 30px; height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--ink-0);
+  cursor: pointer;
+  transition: opacity .16s, transform .14s var(--ease-spring);
+}
+.notch__send:disabled { opacity: .3; cursor: not-allowed; }
+.notch__send:not(:disabled):active { transform: scale(.9); }
+.notch__send svg { width: 15px; height: 15px; }
+
+/* --- scrollable region --- */
+.notch__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 14px 14px;
+}
+.notch__scroll::-webkit-scrollbar { width: 8px; }
+.notch__scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--ink-5) 80%, transparent);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* --- footer --- */
+.notch__foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 1px solid color-mix(in oklab, #ffffff 7%, transparent);
+}
+.notch__foot .kbd { height: 18px; min-width: 18px; font-size: 9.5px; }
+.notch__foot-label { font-size: 10.5px; color: var(--text-dim); }
+.notch__foot-spacer { flex: 1; }
+
+.notch__iconbtn {
+  flex: none;
+  width: 26px; height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.notch__iconbtn:hover { background: color-mix(in oklab, #ffffff 8%, transparent); color: var(--text-hi); }
+.notch__iconbtn svg { width: 15px; height: 15px; }
+.notch__iconbtn[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-soft); }
+
+/* ==========================================================================
+   Chat
+   ========================================================================== */
+.notch__msgs { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+
+.msg {
+  max-width: 82%;
+  padding: 9px 13px;
+  border-radius: 15px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  animation: row-in .28s var(--ease-out) both;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.msg--you {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--ink-0);
+  border-bottom-right-radius: 5px;
+  font-weight: 500;
+}
+.msg--pico {
+  align-self: flex-start;
+  background: color-mix(in oklab, #ffffff 7%, transparent);
+  color: var(--text-hi);
+  border-bottom-left-radius: 5px;
+}
+.msg--event {
+  align-self: center;
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.msg__typing { display: inline-flex; gap: 3px; align-items: center; height: 14px; }
+.msg__typing i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--text-lo);
+  animation: typing 1.2s ease-in-out infinite;
+}
+.msg__typing i:nth-child(2) { animation-delay: .15s; }
+.msg__typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: .4; }
+  30%           { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ==========================================================================
+   Cursor picker
+   ========================================================================== */
+.agents { padding-top: 4px; }
+
+.agents__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+.agents__title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.agents__count {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.agents__step {
+  width: 22px; height: 22px;
+  border: 1px solid color-mix(in oklab, #ffffff 10%, transparent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-mid);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.agents__step:hover:not(:disabled) { background: color-mix(in oklab, #ffffff 8%, transparent); color: var(--text-hi); }
+.agents__step:disabled { opacity: .3; cursor: not-allowed; }
+.agents__n {
+  min-width: 18px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-hi);
+}
+
+.agents__list { display: flex; flex-direction: column; gap: 6px; }
+
+.agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: color-mix(in oklab, #ffffff 4%, transparent);
+  border: 1px solid transparent;
+  /* rows are <button> when they're clickable, which would otherwise centre
+     their text and inherit the UA font */
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .16s, background .16s;
+}
+button.agent:hover { background: color-mix(in oklab, #ffffff 8%, transparent); }
+.agent[data-busy="true"] { border-color: color-mix(in oklab, var(--agent-color) 45%, transparent); }
+
+.agent__dot {
+  flex: none;
+  width: 22px; height: 22px;
+  border-radius: 7px;
+  background: var(--agent-color);
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #05060a;
+}
+
+.agent__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.agent__name { font-size: 12.5px; font-weight: 550; color: var(--text-hi); }
+.agent__task {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent__state {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--agent-color);
+}
+
+/* ==========================================================================
+   Naming
+   ========================================================================== */
+.rename {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0 12px;
+}
+.rename__input {
+  flex: 1;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in oklab, #ffffff 10%, transparent);
+  background: color-mix(in oklab, #ffffff 4%, transparent);
+  color: var(--text-hi);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.rename__input:focus {
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ==========================================================================
+   Reduced motion — the notch still changes size, just instantly
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .notch { transition: none; }
+  .notch__body { transition: none; }
+}

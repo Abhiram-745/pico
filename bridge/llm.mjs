@@ -47,6 +47,45 @@ async function loadEnv() {
   return out;
 }
 
+/* Two tiers. Hard work goes to a big-context reasoning model; everything else
+   stays on free routing so a simple task costs nothing.
+
+   deepseek-v4-flash on BazaarLink: 1,048,576-token context, $0.20/M in,
+   $0.40/M out — cheaper than DeepSeek direct, which runs $0.22-$0.44/M in and
+   $0.66-$1.32/M out depending on peak hours. */
+export const TIERS = {
+  fast: 'auto:free',
+  hard: 'deepseek/deepseek-v4-flash',
+};
+
+/* Signals that a task needs the stronger model. Deliberately conservative:
+   misrouting down costs quality, misrouting up costs money. */
+const HARD_SIGNALS = [
+  /\band then\b|\bafter that\b|\bthen\b.*\bthen\b/i,        // chained steps
+  /\bfor each\b|\bevery\b|\ball of\b|\beach of\b/i,         // iteration
+  /\bcompare\b|\banalys[ei]|\banalyz[ei]|\bsummaris|\bsummariz|\bresearch\b/i,
+  /\bacross\b|\bbetween\b.*\band\b/i,                     // several surfaces
+  // bare "report" is too broad — "rename the report file" is trivial.
+  /\bspreadsheet\b|\bexcel\b|\bcsv\b|\binvoices\b|\b(?:fill|build|write|generate)(?:s|ing)? (?:in |out )?(?:a |the )?report\b/i,
+  /\bif\b.*\bthen\b|\botherwise\b|\bunless\b/i,              // conditionals
+];
+
+/**
+ * Route a task to a tier.
+ * @returns {'fast'|'hard'}
+ */
+export function classify(task) {
+  const t = String(task || '').trim();
+  if (!t) return 'fast';
+
+  // Long or many-claused instructions are the clearest signal.
+  if (t.length > 180) return 'hard';
+  const clauses = t.split(/[,;.]|\band\b/i).filter((c) => c.trim().length > 8);
+  if (clauses.length >= 4) return 'hard';
+
+  return HARD_SIGNALS.some((re) => re.test(t)) ? 'hard' : 'fast';
+}
+
 export class LLM {
   constructor({ apiKey, baseUrl, model }) {
     this.apiKey = apiKey;
@@ -86,8 +125,9 @@ export class LLM {
    * One chat completion. Returns the assistant text.
    * Throws an Error whose message is safe to show a user.
    */
-  async chat(messages, { maxTokens = 1200, temperature = 0.3, signal, _retried = false } = {}) {
+  async chat(messages, { maxTokens = 1200, temperature = 0.3, signal, model, _retried = false, _downgraded = false } = {}) {
     await this._throttle();
+    const useModel = model || this.model;
 
     let res;
     try {
@@ -98,7 +138,7 @@ export class LLM {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: this.model,
+          model: useModel,
           messages,
           max_tokens: maxTokens,
           temperature,
@@ -117,7 +157,17 @@ export class LLM {
       const msg = body?.error?.message || `HTTP ${res.status}`;
       // Map the errors this key will realistically hit to plain language.
       if (res.status === 401) throw new Error('The API key was rejected. Check BAZAARLINK_API_KEY in .env.');
-      if (res.status === 402) throw new Error('This BazaarLink key is out of credits. Free routing needs a ":free" model.');
+      if (res.status === 402) {
+        // Paid tier unreachable. Rather than failing the task, drop to free
+        // routing once and say so — a degraded answer beats no answer.
+        if (!_downgraded && useModel !== TIERS.fast) {
+          this.onDowngrade?.(useModel);
+          return this.chat(messages, {
+            maxTokens, temperature, signal, model: TIERS.fast, _downgraded: true,
+          });
+        }
+        throw new Error('This BazaarLink key is out of credits. Top up to use the stronger model.');
+      }
       if (res.status === 429) throw new Error('Rate limited by BazaarLink (free tier is 20 requests a minute). Try again shortly.');
       throw new Error(this.redact(msg));
     }
@@ -147,7 +197,8 @@ export class LLM {
    * Turn a task into a short ordered plan.
    * Returns string[] — always, even if the model rambles.
    */
-  async plan(task) {
+  async plan(task, { tier } = {}) {
+    const chosen = tier || classify(task);
     const text = await this.chat([
       {
         role: 'system',
@@ -158,7 +209,7 @@ export class LLM {
           'No preamble, no commentary, no markdown.',
       },
       { role: 'user', content: task },
-    ], { maxTokens: 1400 });
+    ], { maxTokens: 1400, model: TIERS[chosen] });
 
     const steps = text
       .split('\n')
@@ -177,7 +228,7 @@ export class LLM {
         content: 'Reply with one short factual past-tense sentence describing what was done. No preamble.',
       },
       { role: 'user', content: `Task: ${task}\nSteps taken:\n${steps.join('\n')}` },
-    ], { maxTokens: 900 });
+    ], { maxTokens: 900, model: TIERS.fast });
   }
 
   /** Cheap liveness probe used at bridge start-up. */

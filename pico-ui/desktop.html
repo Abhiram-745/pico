@@ -7,105 +7,149 @@
 <link rel="icon" href="../phone/icons/icon-192.png">
 <link rel="stylesheet" href="src/theme.css">
 <link rel="stylesheet" href="src/motion.css">
-<link rel="stylesheet" href="src/companion.css">
 <link rel="stylesheet" href="src/palette.css">
+<link rel="stylesheet" href="src/notch.css">
+<link rel="stylesheet" href="src/cursors.css">
 <style>
-  /* The laptop's own view while the bridge is running. Same surfaces the
-     WebView2 host shows, minus the development harness. */
-  html, body { height: 100%; }
+  /* A stand-in desktop so the notch and the cursors can be judged in place.
+     In the Windows host this page is transparent and click-through except
+     where the notch paints. */
+  html, body { height: 100%; overflow: hidden; }
   body {
-    display: grid;
-    place-items: center;
     background: var(--ink-0);
     background-image:
-      radial-gradient(1000px 620px at 25% 12%, color-mix(in oklab, var(--accent) 14%, transparent), transparent 65%),
-      radial-gradient(820px 560px at 82% 88%, #2a1a47 0%, transparent 62%);
+      radial-gradient(900px 420px at 50% -6%, #2b3a63 0%, transparent 68%),
+      radial-gradient(1100px 680px at 22% 24%, color-mix(in oklab, var(--accent) 15%, transparent), transparent 62%),
+      radial-gradient(860px 580px at 84% 88%, #3a2358 0%, transparent 60%);
     background-attachment: fixed;
-    transition: background-image .8s var(--ease-out);
+    transition: background-image .9s var(--ease-out);
   }
+
+  .wall { position: fixed; inset: 0; z-index: 0; }
+  .win {
+    position: absolute;
+    border-radius: 11px;
+    background: rgba(11, 16, 30, .8);
+    border: 1px solid rgba(255, 255, 255, .07);
+    box-shadow: 0 34px 80px -24px rgba(0, 0, 0, .85);
+    overflow: hidden;
+  }
+  .win__bar { height: 30px; background: rgba(255,255,255,.04); border-bottom: 1px solid rgba(255,255,255,.06); display:flex; align-items:center; gap:6px; padding:0 11px; }
+  .win__bar i { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.15); }
+  .win__bar span { margin-left: 6px; font-size: 11px; color: var(--text-dim); }
+  .win__body { padding: 14px; display: grid; gap: 8px; }
+  .win__row { height: 9px; border-radius: 3px; background: rgba(255,255,255,.055); }
 
   .hint {
-    position: fixed;
-    left: 50%;
-    bottom: 26px;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 9px 14px;
-    border-radius: 999px;
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 7px; z-index: 70;
+    padding: 8px 14px; border-radius: 999px;
+    background: var(--glass-bg); backdrop-filter: var(--glass-blur);
     border: 1px solid var(--glass-border);
-    font-size: 12px;
-    color: var(--text-dim);
-    white-space: nowrap;
+    font-size: 11.5px; color: var(--text-dim); white-space: nowrap;
   }
+  .hint b { color: var(--text-mid); font-weight: 550; }
+  .hint button {
+    border: 0; background: color-mix(in oklab, #fff 8%, transparent); color: var(--text-mid);
+    font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 7px; cursor: pointer;
+  }
+  .hint button:hover { color: var(--text-hi); background: color-mix(in oklab, #fff 14%, transparent); }
 
-  .conn {
-    position: fixed;
-    top: 18px;
-    right: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--text-lo);
-  }
-  .conn__led {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--text-dim);
-    transition: background .3s, box-shadow .3s;
-  }
-  [data-conn="connected"]    .conn__led { background: #4ade80; box-shadow: 0 0 10px rgba(74,222,128,.6); }
-  [data-conn="connecting"]   .conn__led,
-  [data-conn="reconnecting"] .conn__led { background: #fbbf24; }
-  [data-conn="offline"]      .conn__led { background: #f87171; }
+  .conn { position: fixed; top: 10px; right: 16px; z-index: 70; display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-dim); }
+  .conn i { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-5); }
+  [data-conn="connected"] .conn i { background: #4ade80; box-shadow: 0 0 8px rgba(74,222,128,.6); }
+  [data-conn="connecting"] .conn i, [data-conn="reconnecting"] .conn i { background: #fbbf24; }
 </style>
 </head>
 <body>
 
-<div class="conn"><span class="conn__led"></span><span id="conn-text">Connecting</span></div>
+<div class="wall">
+  <div class="win" style="left:5%;top:16%;width:44%;height:50%">
+    <div class="win__bar"><i></i><i></i><i></i><span>Chrome</span></div>
+    <div class="win__body">
+      <div class="win__row" style="width:70%"></div><div class="win__row" style="width:90%"></div>
+      <div class="win__row" style="width:55%"></div><div class="win__row" style="width:80%"></div>
+      <div class="win__row" style="width:40%"></div>
+    </div>
+  </div>
+  <div class="win" style="left:40%;top:42%;width:42%;height:44%">
+    <div class="win__bar"><i></i><i></i><i></i><span>Notepad</span></div>
+    <div class="win__body">
+      <div class="win__row" style="width:60%"></div><div class="win__row" style="width:85%"></div>
+      <div class="win__row" style="width:45%"></div>
+    </div>
+  </div>
+</div>
 
-<div id="companion-slot"></div>
+<div class="conn"><i></i><span id="conn-text">Connecting</span></div>
 
 <div class="hint">
-  <span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">P</span>
-  <span>to open the palette</span>
+  <span><b>Click the notch</b> to open it</span>
+  <button id="demo">Run 3 cursors</button>
 </div>
 
 <script type="module">
   import { store } from './src/store.js';
   import { connect } from './src/bridge.js';
-  import { mountCompanion } from './src/companion.js';
+  import { mountNotch } from './src/notch.js';
   import { mountPalette } from './src/palette.js';
   import { installHotkeys } from './src/hotkeys.js';
 
   const setConn = (s) => {
     document.body.dataset.conn = s;
     document.getElementById('conn-text').textContent =
-      ({ connected: 'Bridge connected', connecting: 'Connecting', reconnecting: 'Reconnecting', offline: 'Offline' })[s] || s;
+      ({ connected: 'Bridge connected', connecting: 'Connecting', reconnecting: 'Reconnecting', offline: 'Local' })[s] || s;
   };
 
   const { mode, transport } = connect({ onStatus: setConn });
 
-  mountCompanion(document.getElementById('companion-slot'));
+  const notch = mountNotch(document.body);
   const palette = mountPalette(document.body);
   installHotkeys({ palette });
 
   if (mode === 'mock') {
-    // Opened without the bridge: drive it locally so the page still works.
     setConn('offline');
     const { MockAgent } = await import('./mock/agent.js');
     const agent = new MockAgent(transport);
     agent.start();
-    window.pico = { store, agent, palette };
+    window.pico = { store, agent, notch, palette };
   } else {
-    window.pico = { store, palette };
+    window.pico = { store, notch, palette };
   }
 
   store.subscribe((s) => { document.body.dataset.phase = s.phase; });
+
+  /* Demo: three cursors working at once, each on its own target. This is what
+     concurrency looks like — none of them owns the system pointer, so they
+     genuinely overlap in time rather than taking turns. */
+  const TARGETS = [
+    [[0.14, 0.34], [0.32, 0.46], [0.22, 0.56], [0.41, 0.38]],
+    [[0.62, 0.58], [0.74, 0.68], [0.55, 0.74], [0.70, 0.52]],
+    [[0.46, 0.24], [0.30, 0.30], [0.52, 0.42], [0.38, 0.62]],
+  ];
+  const WORK = ['Reading the page', 'Clicking the result', 'Typing the query', 'Checking the total'];
+
+  document.getElementById('demo').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    notch.setAgentCount(3);
+    notch.open('agents');
+
+    await Promise.all(notch.cursorLayer.all().map(async (c, i) => {
+      const path = TARGETS[i % TARGETS.length];
+      for (let s = 0; s < path.length; s++) {
+        const [fx, fy] = path[s];
+        await notch.driveCursor(c.id, {
+          x: fx * innerWidth, y: fy * innerHeight,
+          state: 'working', task: WORK[s % WORK.length], click: true,
+        });
+        await new Promise(r => setTimeout(r, 220 + Math.random() * 320));
+      }
+      await notch.driveCursor(c.id, { state: 'idle', task: 'Done' });
+    }));
+
+    btn.disabled = false;
+  });
 </script>
 </body>
 </html>
