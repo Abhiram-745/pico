@@ -51,6 +51,15 @@ jobs:
           cp "Start Pico.cmd" "$STAGE"/
           rm -rf "$STAGE"/pico-ui/mock/audit-sample.jsonl
 
+          # The updater compares this against the SHA in the release body.
+          cat > "$STAGE"/build.json <<JSON
+          {
+            "sha": "${{ steps.v.outputs.sha }}",
+            "date": "${{ steps.v.outputs.date }}",
+            "tag": "${{ steps.v.outputs.tag }}"
+          }
+JSON
+
           printf '%s\n' \
             "Pico" \
             "build ${{ steps.v.outputs.sha }} — ${{ steps.v.outputs.date }}" \
