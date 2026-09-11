@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pico</title>
 <link rel="icon" href="../phone/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="src/theme.css">
 <link rel="stylesheet" href="src/motion.css">
 <link rel="stylesheet" href="src/palette.css">
@@ -17,10 +20,13 @@
   html, body { height: 100%; overflow: hidden; }
   body {
     background: var(--ink-0);
+    /* A plausible desktop wallpaper, not a mesh of glowing orbs. The
+       purple-and-cyan radial stack is the most recognisable AI-design
+       fingerprint there is, and it was ours. One hue, one light source. */
     background-image:
-      radial-gradient(900px 420px at 50% -6%, #2b3a63 0%, transparent 68%),
-      radial-gradient(1100px 680px at 22% 24%, color-mix(in oklab, var(--accent) 15%, transparent), transparent 62%),
-      radial-gradient(860px 580px at 84% 88%, #3a2358 0%, transparent 60%);
+      linear-gradient(168deg, #17243c 0%, #0d1526 46%, #080c16 100%),
+      var(--noise);
+    background-blend-mode: normal, overlay;
     background-attachment: fixed;
     transition: background-image .9s var(--ease-out);
   }

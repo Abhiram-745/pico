@@ -51,6 +51,43 @@ const icon = (d) => {
   return s;
 };
 
+/** A composed state rather than a bare line of grey text. */
+function emptyState({ title, sub, action }) {
+  const w = el('div', 'state');
+  const pet = el('div', 'state__pet');
+  pet.append(new Mascot({ size: 72 }).el);
+  w.append(pet, el('div', 'state__title', title));
+  if (sub) w.append(el('div', 'state__sub', sub));
+  if (action) {
+    const b = el('button', 'btn state__action', action.label);
+    b.type = 'button';
+    b.addEventListener('click', action.run);
+    w.append(b);
+  }
+  return w;
+}
+
+function skeleton(rows = 4) {
+  const w = el('div', 'panel');
+  const list = el('div', 'skeleton-rows');
+  for (let i = 0; i < rows; i++) {
+    const r = el('div', 'skeleton');
+    r.style.width = `${[92, 74, 84, 61, 79][i % 5]}%`;
+    list.append(r);
+  }
+  w.append(list);
+  return w;
+}
+
+function notice(title, body) {
+  const w = el('div', 'notice');
+  const m = el('div');
+  m.append(el('div', 'notice__title', title));
+  m.append(el('div', null, body));
+  w.append(m);
+  return w;
+}
+
 const SECTIONS = [
   { id: 'chat',     label: 'Chat',     icon: ICONS.chat,     title: 'Chat',     sub: 'Tell Pico what to do' },
   { id: 'activity', label: 'Activity', icon: ICONS.activity, title: 'Activity', sub: 'Every step, as it happens' },
@@ -114,7 +151,12 @@ export function mountApp(host = document.body) {
     else if (state.error) list.append(renderError(state.error));
 
     if (!messages.length && !state.approval && !state.takeover) {
-      list.append(el('div', 'empty', `Ask ${petName} to do something on your computer.`));
+      list.append(emptyState({
+        title: `Ask ${petName} to do something`,
+        sub: state.guardian.ready
+          ? 'Describe it the way you would to a person. Pico reads the screen and works, and stops to ask before anything it cannot undo.'
+          : 'The safety guardian is not running, so tasks cannot start yet.',
+      }));
     }
     for (const m of messages) {
       list.append(el('div', `bubble bubble--${m.from}`, m.text));
@@ -126,8 +168,9 @@ export function mountApp(host = document.body) {
     input.type = 'text';
     input.placeholder = `Tell ${petName} what to do…`;
     input.disabled = !state.guardian.ready;
-    const send = el('button', 'notch__send');
+    const send = el('button', 'composer2__send');
     send.type = 'button';
+    send.setAttribute('aria-label', 'Send task');
     send.append(icon(ICONS.send));
     send.disabled = true;
 
@@ -187,7 +230,7 @@ export function mountApp(host = document.body) {
     const list = el('div', 'panel');
     for (let i = 0; i < count; i++) {
       const row = el('div', 'row');
-      const dot = el('div', 'agent__dot', AGENT_NAMES[i]);
+      const dot = el('div', 'swatch', AGENT_NAMES[i]);
       dot.style.background = AGENT_COLORS[i];
       const m = el('div', 'row__main');
       m.append(el('div', 'row__title', `Cursor ${AGENT_NAMES[i]}`));
@@ -269,10 +312,11 @@ export function mountApp(host = document.body) {
   let updateInfo = null;
   let updateBusy = false;
   let updateMsg = '';
+  let updateError = null;
   let updatePct = 0;
 
   async function checkUpdates(auto = false) {
-    updateBusy = true; updateMsg = 'Checking…'; render(store.state);
+    updateBusy = true; updateError = null; updateMsg = 'Checking…'; render(store.state);
     try {
       const res = await fetch('/update/check');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -280,7 +324,10 @@ export function mountApp(host = document.body) {
       updateMsg = updateInfo.available ? '' : 'You are on the latest build.';
     } catch (err) {
       updateInfo = null;
-      updateMsg = auto ? '' : `Could not check: ${err.message}`;
+      // A quiet background check that fails should not shout; an explicit one
+      // should say exactly what went wrong.
+      updateError = auto ? null : err.message;
+      updateMsg = '';
     } finally {
       updateBusy = false; render(store.state);
     }
@@ -311,7 +358,8 @@ export function mountApp(host = document.body) {
       updateMsg = 'Installed. Restart Pico to use the new build.';
       updateInfo = null;
     } catch (err) {
-      updateMsg = `Update failed: ${err.message}`;
+      updateError = err.message;
+      updateMsg = '';
     } finally {
       updateBusy = false; render(store.state);
     }
@@ -319,6 +367,22 @@ export function mountApp(host = document.body) {
 
   function renderUpdates() {
     const wrap = el('div', 'measure');
+
+    // First check of the session: show the shape of the answer, not a spinner.
+    if (updateBusy && !updateInfo && updatePct === 0) {
+      wrap.append(skeleton(2));
+      return wrap;
+    }
+
+    if (updateError) {
+      wrap.append(notice('Could not check for updates', updateError));
+      const retry = el('button', 'btn', 'Try again');
+      retry.type = 'button';
+      retry.style.marginTop = '12px';
+      retry.addEventListener('click', () => checkUpdates());
+      wrap.append(retry);
+      return wrap;
+    }
 
     const card = el('div', 'update');
     card.dataset.state = updateInfo?.available ? 'available' : 'current';
@@ -414,7 +478,13 @@ export function mountApp(host = document.body) {
     }
 
     bodyEl.replaceChildren(
-      section === 'activity' ? renderTimeline(state)
+      section === 'activity' ? (state.timeline.length
+        ? renderTimeline(state)
+        : emptyState({
+            title: 'Nothing has run yet',
+            sub: 'Every step Pico takes shows up here as it happens — what it looked at, what it clicked, and what it decided to ask you about.',
+            action: { label: 'Start a task', run: () => go('chat') },
+          }))
         : section === 'cursors' ? renderCursors()
         : section === 'updates' ? renderUpdates()
         : section === 'settings' ? renderSettings()

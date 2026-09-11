@@ -36,8 +36,10 @@
   --glass-border-hi: color-mix(in oklab, #ffffff 18%, transparent);
   --glass-inner: inset 0 1px 0 color-mix(in oklab, #ffffff 12%, transparent);
 
-  --shadow-lift: 0 24px 60px -12px rgba(0, 0, 0, .7), 0 8px 20px -6px rgba(0, 0, 0, .5);
-  --shadow-pet:  0 18px 40px -12px rgba(0, 0, 0, .75);
+  --shadow-lift:
+    0 24px 60px -14px rgba(3, 6, 16, .72),
+    0 8px 20px -8px rgba(5, 10, 26, .55);
+  --shadow-pet: 0 18px 40px -14px rgba(3, 6, 16, .78);
 
   /* --- Radii & rhythm ---------------------------------------------------- */
   --r-sm: 8px;
@@ -49,8 +51,8 @@
   --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
 
   /* --- Type -------------------------------------------------------------- */
-  --font: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --font: "Geist", ui-sans-serif, system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
   /* --- Default accent (overridden per phase) ----------------------------- */
   --accent: #8b97a8;
@@ -185,6 +187,13 @@ body {
 }
 
 button { font-family: inherit; }
+
+/* One focus treatment for everything interactive. */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
 
 .btn {
   display: inline-flex;

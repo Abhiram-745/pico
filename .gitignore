@@ -28,3 +28,6 @@ Thumbs.db
 
 # Stamped per build by CI; the local one is dev-only.
 build.json
+
+# Installed agent skills (tooling, not product code)
+.agents/
