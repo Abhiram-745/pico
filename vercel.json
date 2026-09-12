@@ -4,7 +4,6 @@
   "buildCommand": "node scripts/build-site.mjs",
   "installCommand": null,
   "outputDirectory": "dist",
-  "_comment": "cleanUrls is off on purpose: docs/ is also served by GitHub Pages, where /phone would 404. Both hosts behave identically this way.",
   "cleanUrls": false,
   "trailingSlash": false,
   "headers": [
