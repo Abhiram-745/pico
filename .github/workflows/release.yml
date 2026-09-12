@@ -26,6 +26,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install NSIS
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
       # A broken build must not reach the download button.
       - name: Check
         run: node scripts/check.mjs
@@ -76,7 +79,14 @@ jobs:
 
           cd out
           zip -qr "Pico-latest.zip" Pico
-          sha256sum Pico-latest.zip > SHA256SUMS.txt
+          cd ..
+
+          # The real download: a double-click Windows installer with a wizard,
+          # not a script someone has to know how to run.
+          makensis -DSTAGEDIR="$PWD/$STAGE" -DOUTFILE="$PWD/out/Pico-Setup.exe" scripts/installer.nsi
+
+          cd out
+          sha256sum Pico-latest.zip Pico-Setup.exe > SHA256SUMS.txt
           ls -la
 
       - name: Publish
@@ -95,21 +105,25 @@ jobs:
 
           NOTES="Build \`${{ steps.v.outputs.sha }}\` — ${{ steps.v.outputs.date }}
 
-          **Start here:** download \`Pico-latest.zip\`, unzip, double-click **Start Pico.cmd**.
-          Needs [Node.js](https://nodejs.org) and an OpenAI API key.
+          **Start here:** download \`Pico-Setup.exe\` and run it. It's a normal installer —
+          pick a folder, it installs, adds shortcuts, offers to launch Pico. Needs
+          [Node.js](https://nodejs.org) and an OpenAI API key.
+
+          \`Pico-latest.zip\` is the same app as a portable folder, for anyone who'd
+          rather not install anything.
 
           The Windows binaries (\`Pico.exe\`, \`Pico.Guardian.exe\`) are attached to the
           numbered releases; they carry the older interface."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "${{ steps.v.outputs.name }}" --notes "$NOTES" --latest
-            gh release upload "$TAG" out/Pico-latest.zip out/SHA256SUMS.txt --clobber
+            gh release upload "$TAG" out/Pico-latest.zip out/Pico-Setup.exe out/SHA256SUMS.txt --clobber
           else
             gh release create "$TAG" \
               --title "${{ steps.v.outputs.name }}" \
               --notes "$NOTES" \
               --latest \
-              out/Pico-latest.zip out/SHA256SUMS.txt
+              out/Pico-latest.zip out/Pico-Setup.exe out/SHA256SUMS.txt
           fi
 
       - name: Summary

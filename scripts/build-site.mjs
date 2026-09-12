@@ -79,7 +79,6 @@ const required = [
   'index.html',
   'phone.html',
   'site.css',
-  'install.ps1',
   'pico-ui/app.html',
   'pico-ui/src/app.js',
   'pico-ui/src/theme.css',

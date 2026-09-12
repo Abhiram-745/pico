@@ -23,11 +23,12 @@ The current build runs on Node.js and starts from `Start Pico.cmd`. The older co
 
 ## Use it
 
-1. Easiest: paste `irm https://raw.githubusercontent.com/Abhiram-745/pico/main/docs/install.ps1 | iex` into PowerShell. It downloads the current build, installs it to your user profile, adds shortcuts, and starts it.
-2. Or download and unzip the [latest release](https://github.com/Abhiram-745/pico/releases/latest) yourself, then double-click `Start Pico.cmd`. On first run it asks for your OpenAI key — it goes to Windows Credential Manager, not a JSON file. Run `install.ps1` from the extracted folder afterward for a normal installed experience with Start-menu and Desktop shortcuts.
-3. Press **`Ctrl+Shift+P`**, type a narrowly scoped task, press Enter.
-4. Review the orange approval cards before external, destructive, installation, account, or financial actions.
-5. Complete credentials, CAPTCHAs, UAC, and secure-desktop steps yourself when Pico asks.
+1. Download [`Pico-Setup.exe`](https://github.com/Abhiram-745/pico/releases/latest/download/Pico-Setup.exe) and run it. It's a normal Windows installer — pick a folder, it installs, adds Start-menu and Desktop shortcuts, and offers to launch Pico. On first run it asks for your OpenAI key — it goes to Windows Credential Manager, not a JSON file.
+2. Press **`Ctrl+Shift+P`**, type a narrowly scoped task, press Enter.
+3. Review the orange approval cards before external, destructive, installation, account, or financial actions.
+4. Complete credentials, CAPTCHAs, UAC, and secure-desktop steps yourself when Pico asks.
+
+Prefer a portable copy with nothing installed? Download and unzip [`Pico-latest.zip`](https://github.com/Abhiram-745/pico/releases/latest) instead, then double-click `Start Pico.cmd` — no installer, no shortcuts, run it from wherever you unzipped it.
 
 This personal build is not code-signed, so Windows SmartScreen may show an unknown-publisher warning. Verify the package hash before running it; do not weaken SmartScreen globally.
 
