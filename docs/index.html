@@ -34,7 +34,7 @@
   </p>
 
   <div class="actions">
-    <a class="btn" id="download" href="install.ps1" download="install-pico.ps1">
+    <a class="btn" id="download" href="https://github.com/Abhiram-745/pico/releases/latest/download/Pico-Setup.exe">
       Download for Windows
     </a>
     <span class="meta" id="meta">v0.1.7 · Windows 10 2004+ / 11</span>
@@ -49,11 +49,10 @@
     <h2>Setup</h2>
     <ol class="steps">
       <li>Install <a href="https://nodejs.org">Node.js</a> if you don't have it.</li>
-      <li>Run the installer. It downloads, installs and starts Pico — nothing to unzip.</li>
+      <li>Run <code>Pico-Setup.exe</code>. It's a normal installer: pick a folder, it installs, and offers to launch Pico.</li>
       <li>Paste your OpenAI key when Pico asks. That's the whole setup.</li>
     </ol>
-    <p class="hint">Prefer one line? Paste this into PowerShell:</p>
-    <pre class="cmd"><code>irm https://raw.githubusercontent.com/Abhiram-745/pico/main/docs/install.ps1 | iex</code></pre>
+    <p class="hint">Prefer a portable copy with nothing installed? Grab <code>Pico-latest.zip</code> from <a href="https://github.com/Abhiram-745/pico/releases/latest">Releases</a> instead.</p>
   </section>
 
   <section>
@@ -108,18 +107,17 @@
       });
       if (!res.ok) return;
       const rel = await res.json();
-      // Prefer the launcher bundle; fall back to any zip on the release.
       const assets = rel.assets || [];
-      const zip = assets.find(a => /^Pico-latest\.zip$/i.test(a.name))
-               || assets.find(a => /\.zip$/i.test(a.name));
-      if (!zip) return;
+      const exe = assets.find(a => /^Pico-Setup\.exe$/i.test(a.name))
+               || assets.find(a => /\.exe$/i.test(a.name));
+      if (!exe) return;
 
-      const mb = zip.size / 1048576;
+      const mb = exe.size / 1048576;
       const size = mb < 10 ? `${Math.round(mb * 10) / 10} MB` : `${Math.round(mb)} MB`;
       document.getElementById('meta').textContent =
         `build ${(/Build\s+`?([0-9a-f]{7,})`?/i.exec(rel.body || '') || [])[1] ?? rel.tag_name} · ${size}`;
     } catch {
-      /* offline or rate-limited — the static /releases/latest link still works */
+      /* offline or rate-limited — the download button's static URL still works */
     }
   })();
 </script>

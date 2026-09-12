@@ -4,14 +4,13 @@ param(
 )
 
 <#
-  Run this from inside an already-downloaded, already-unzipped Pico folder.
-  It copies Pico to your per-user Programs folder and adds Start-menu and
-  Desktop shortcuts to the launcher. No admin rights needed.
+  Run this from inside an already-downloaded, already-unzipped Pico folder
+  (the portable Pico-latest.zip). It copies Pico to your per-user Programs
+  folder and adds Start-menu and Desktop shortcuts to the launcher. No admin
+  rights needed.
 
-  Prefer not to unzip anything by hand? Use the one-line installer instead,
-  which downloads the current build itself:
-
-    irm https://raw.githubusercontent.com/Abhiram-745/pico/main/docs/install.ps1 | iex
+  Prefer a normal installer with a wizard instead of this script? Download
+  Pico-Setup.exe from the same release and run it.
 #>
 
 $ErrorActionPreference = "Stop"
