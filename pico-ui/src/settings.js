@@ -93,6 +93,30 @@ export function renderSettings(state) {
     pauseWrap,
   ));
 
+  // --- auto-approve everything ---------------------------------------------
+  const autoApproveWrap = el('div', 'setting__control');
+  const autoApproveToggle = el('button', 'switch switch--danger');
+  autoApproveToggle.type = 'button';
+  autoApproveToggle.setAttribute('role', 'switch');
+  autoApproveToggle.setAttribute('aria-checked', String(Boolean(s.autoApproveAll)));
+  autoApproveToggle.append(el('span', 'switch__thumb'));
+  autoApproveToggle.addEventListener('click', () => {
+    const next = autoApproveToggle.getAttribute('aria-checked') !== 'true';
+    if (next && !window.confirm(
+      'Pico will no longer stop to ask before sending, deleting, buying, installing, or ' +
+      'anything else it would normally pause for. Every action still gets logged, but ' +
+      'nothing waits for you to approve it first.\n\nTurn this on?',
+    )) return;
+    autoApproveToggle.setAttribute('aria-checked', String(next));
+  });
+  autoApproveWrap.append(autoApproveToggle, el('span', 'setting__inline-label', 'Skip all approvals'));
+
+  root.append(field(
+    'Approvals',
+    'Off by default. On, Pico acts on every step without asking first — only for a machine and account you fully trust. Still logged, never asked.',
+    autoApproveWrap,
+  ));
+
   // --- max turns ----------------------------------------------------------
   const turnsWrap = el('div', 'setting__control');
   const turns = el('input', 'input input--num');
@@ -138,6 +162,7 @@ export function renderSettings(state) {
     const patch = {
       model: model.value.trim() || s.model,
       pauseOnPhysicalInput: pauseToggle.getAttribute('aria-checked') === 'true',
+      autoApproveAll: autoApproveToggle.getAttribute('aria-checked') === 'true',
       maximumComputerTurns: Math.max(1, Number(turns.value) || s.maximumComputerTurns),
     };
     bridge.send('saveSettings', patch);

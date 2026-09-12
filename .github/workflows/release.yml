@@ -58,7 +58,7 @@ jobs:
           STAGE=out/Pico
           mkdir -p "$STAGE"
           cp -r pico-ui phone bridge "$STAGE"/
-          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 .env.example "$STAGE"/
+          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 .env.example package.json "$STAGE"/
           cp "Start Pico.cmd" "$STAGE"/
           rm -rf "$STAGE"/pico-ui/mock/audit-sample.jsonl
 

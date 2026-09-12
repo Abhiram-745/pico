@@ -388,6 +388,7 @@
   background: var(--ink-0);
 }
 .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch--danger[aria-checked="true"] { background: #f87171; }
 
 .settings__note {
   margin-top: 16px;

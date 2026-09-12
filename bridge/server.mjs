@@ -28,7 +28,8 @@ import { networkInterfaces } from 'node:os';
 
 import { upgrade } from './ws.mjs';
 import { encode, toTerminal, toSVG } from './qr.mjs';
-import { MockAgent } from '../pico-ui/mock/agent.js';
+import { HostAgent } from './agent.mjs';
+import { loadComputer } from './computer.mjs';
 import { LLM, PROVIDERS } from './llm.mjs';
 import { check as checkUpdate, install as installUpdate, localBuild } from './updater.mjs';
 
@@ -116,7 +117,7 @@ class Bridge {
       onCommand: (handler) => { this._hostHandler = handler; },
     };
 
-    this.agent = new MockAgent(this.transport);
+    this.agent = new HostAgent(this.transport);
     this.agent.start();
     this.llm = null;
   }
@@ -133,12 +134,21 @@ class Bridge {
     };
     this.agent.planner = (task) => llm.plan(task);
     this.agent.summariser = (task, steps) => llm.summarise(task, steps);
+    // Only OpenAI serves the Responses API computer-use tool; BazaarLink does
+    // not (see bridge/README.md), so a computer-use model with that provider
+    // just falls back to the scripted demo rather than driving the desktop.
+    this.agent.attachResponses(llm);
     this.agent.settings = {
       ...this.agent.settings,
       model: llm.tiers.fast,
       hasApiKey: true,
     };
     this.emitSettings();
+  }
+
+  /** Real mouse/keyboard/screen control, when the native module loaded. */
+  attachComputer(computer) {
+    this.agent.attachComputer(computer);
   }
 
   emitSettings() {
@@ -542,6 +552,15 @@ server.on('upgrade', (req, socket, head) => {
 
 const host = lanAddress();
 const pairingUrl = () => `http://${host}:${PORT}/#p=${bridge.pairCode}`;
+
+// Real desktop control is optional too: on a platform where the native
+// module cannot load, or during local development, the bridge still runs
+// the scripted scenarios instead of crashing.
+const computer = await loadComputer();
+if (computer) {
+  bridge.attachComputer(computer);
+  console.log('[bridge] desktop control ready');
+}
 
 // Model provider is optional: without a key the bridge still runs the
 // scripted scenarios, so the UI is always demonstrable.

@@ -26,6 +26,21 @@ if errorlevel 1 (
 
 rem No .env step here: the app asks for a key on first run.
 
+if not exist "node_modules" (
+  echo.
+  echo   First run: installing the desktop-control module. This needs the
+  echo   internet once and takes a minute; it is skipped on every run after.
+  echo.
+  call npm install --omit=dev --no-audit --no-fund
+  if errorlevel 1 (
+    echo.
+    echo   That install failed, so Pico will run in preview mode ^(no real
+    echo   mouse/keyboard control^) until it succeeds. Run this file again to retry.
+    echo.
+    pause
+  )
+)
+
 set "URL=http://localhost:4177/pico-ui/app.html"
 
 rem Prefer an app window - no tabs, no address bar - so it reads as an app.
