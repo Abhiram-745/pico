@@ -3,9 +3,9 @@
 
   One file. Downloads the current build, installs it to your user profile,
   makes Start-menu and Desktop shortcuts, and launches it. No zip to extract
-  and no files to edit — the app asks for your key on first run.
+  and no files to edit - the app asks for your key on first run.
 
-    irm https://blurt-ai.me/pico/install.ps1 | iex
+    irm https://raw.githubusercontent.com/Abhiram-745/pico/main/docs/install.ps1 | iex
 
   Installs per-user, so it never needs administrator rights.
 #>
@@ -21,7 +21,7 @@ function Say($text, $colour = 'Gray') { Write-Host "  $text" -ForegroundColor $c
 
 Write-Host ''
 Write-Host "  $AppName" -ForegroundColor White
-Write-Host '  ────────' -ForegroundColor DarkGray
+Write-Host '  --------' -ForegroundColor DarkGray
 Write-Host ''
 
 # --- Node ------------------------------------------------------------------
