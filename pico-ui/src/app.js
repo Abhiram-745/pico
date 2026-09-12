@@ -99,7 +99,11 @@ const SECTIONS = [
   { id: 'settings', label: 'Settings', icon: ICONS.gear,     title: 'Settings', sub: 'Model, permissions, name' },
 ];
 
-export function mountApp(host = document.body) {
+/**
+ * @param {object}  opts
+ * @param {boolean} opts.demo  no bridge behind it — the hosted preview
+ */
+export function mountApp(host = document.body, { demo = false } = {}) {
   let section = 'chat';
   let petName = read(NAME_KEY, 'Pico');
   const messages = [];
@@ -153,6 +157,19 @@ export function mountApp(host = document.body) {
   head.append(title, sub);
   const bodyEl = el('div', 'main__body');
   main.append(head, bodyEl);
+
+  // Say plainly that nothing here touches the visitor's machine, rather than
+  // letting them wonder why a desktop agent is running in a browser tab.
+  if (demo) {
+    const ribbon = el('div', 'demo');
+    ribbon.append(el('span', 'demo__dot'));
+    ribbon.append(el('span', null,
+      'Preview — the real interface, driven by a stand-in agent. Nothing on your computer is touched.'));
+    const cta = el('a', 'demo__cta', 'Get Pico');
+    cta.href = '/';
+    ribbon.append(cta);
+    main.prepend(ribbon);
+  }
 
   root.append(side, main);
   host.append(root);
@@ -414,6 +431,17 @@ export function mountApp(host = document.body) {
   function renderUpdates() {
     const wrap = el('div', 'measure');
 
+    // Nothing to update in a browser tab, and no bridge to ask.
+    if (demo) {
+      wrap.append(emptyState({
+        title: 'Updates live in the installed app',
+        sub: 'Pico checks for a new build on its own and installs it in place. '
+           + 'There is nothing to update in a preview running in your browser.',
+        action: { label: 'Get Pico', run: () => { window.location.href = '/'; } },
+      }));
+      return wrap;
+    }
+
     if (updateDone) {
       const card = el('div', 'update');
       card.dataset.state = 'available';
@@ -532,13 +560,14 @@ export function mountApp(host = document.body) {
   // --- routing -------------------------------------------------------------
   function go(id) {
     section = id;
-    if (id === 'updates' && !updateInfo && !updateBusy) checkUpdates(true);
+    if (!demo && id === 'updates' && !updateInfo && !updateBusy) checkUpdates(true);
     render(store.state);
   }
 
   function renderBuildChip() {
     const dev = updateInfo?.current?.sha === 'dev' || updateInfo?.current?.sha === 'local-dev';
-    const state = updateError ? 'error'
+    const state = demo ? 'preview'
+      : updateError ? 'error'
       : updateBusy ? 'checking'
       : updateInfo?.available ? 'available'
       : updateInfo ? 'current'
@@ -555,6 +584,7 @@ export function mountApp(host = document.body) {
       current: dev ? 'Development build' : 'Up to date',
       checking: 'Checking…',
       error: 'Check failed',
+      preview: 'Preview',
       unknown: 'Build',
     }[state];
     buildSha.textContent = updateInfo?.current?.sha ?? '';
@@ -617,18 +647,22 @@ export function mountApp(host = document.body) {
      this uses four. */
   const UPDATE_POLL_MS = 15 * 60 * 1000;
 
-  setTimeout(() => checkUpdates(true), 1500);
-  setInterval(() => {
-    if (!updateBusy) checkUpdates(true);
-  }, UPDATE_POLL_MS);
+  // The hosted preview has no bridge, so /update/check is not there to answer.
+  // Polling it would just be a 404 every fifteen minutes.
+  if (!demo) {
+    setTimeout(() => checkUpdates(true), 1500);
+    setInterval(() => {
+      if (!updateBusy) checkUpdates(true);
+    }, UPDATE_POLL_MS);
 
-  let lastFocusCheck = Date.now();
-  window.addEventListener('focus', () => {
-    // Don't re-check on every alt-tab; once a minute at most.
-    if (updateBusy || Date.now() - lastFocusCheck < 60_000) return;
-    lastFocusCheck = Date.now();
-    checkUpdates(true);
-  });
+    let lastFocusCheck = Date.now();
+    window.addEventListener('focus', () => {
+      // Don't re-check on every alt-tab; once a minute at most.
+      if (updateBusy || Date.now() - lastFocusCheck < 60_000) return;
+      lastFocusCheck = Date.now();
+      checkUpdates(true);
+    });
+  }
 
   return {
     root, mascot, go,

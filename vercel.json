@@ -1,10 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "buildCommand": null,
+  "buildCommand": "node scripts/build-site.mjs",
   "installCommand": null,
-  "outputDirectory": "docs",
-  "_comment": "cleanUrls is off on purpose: docs/ is served by GitHub Pages too, and /phone would 404 there. Both hosts behave identically this way.",
+  "outputDirectory": "dist",
+  "_comment": "cleanUrls is off on purpose: docs/ is also served by GitHub Pages, where /phone would 404. Both hosts behave identically this way.",
   "cleanUrls": false,
   "trailingSlash": false,
   "headers": [
@@ -24,14 +24,29 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "X-Frame-Options", "value": "DENY" },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
         {
           "key": "Strict-Transport-Security",
           "value": "max-age=31536000; includeSubDomains"
         }
       ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/demo",
+      "destination": "/pico-ui/app.html"
     }
   ]
 }

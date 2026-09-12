@@ -328,3 +328,7 @@ footer a:hover { color: var(--fg); }
   color: var(--fg);
   white-space: pre;
 }
+
+.links { display: flex; flex-wrap: wrap; gap: 1.25rem 1.75rem; margin-top: 1.25rem; }
+.links .link { margin-top: 0; }
+.links .link[hidden] { display: none; }

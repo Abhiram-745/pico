@@ -37,9 +37,13 @@
     mountSetup(document.body, { onDone: () => window.location.reload() });
   }
 
-  app = mountApp(document.body);
-  const palette = mountPalette(document.body);
-  installHotkeys({ palette });
+  // No bridge behind it means this is the hosted preview, not an install.
+  app = mountApp(document.body, { demo: mode === 'mock' });
+  // The palette is a second always-available window on the desktop. In the
+  // hosted preview it would just overlay the app and show the same approval
+  // card twice, so the app is the whole surface there.
+  const palette = mode === 'mock' ? null : mountPalette(document.body);
+  if (palette) installHotkeys({ palette });
 
   if (mode === 'mock') {
     app.setConn('offline');

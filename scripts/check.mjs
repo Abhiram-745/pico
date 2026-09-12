@@ -24,7 +24,7 @@ const fail = (msg) => failures.push(msg);
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (['node_modules', '.git', '.agents', 'out'].includes(name)) continue;
+    if (['node_modules', '.git', '.agents', 'out', 'dist'].includes(name)) continue;
     const full = join(dir, name);
     if (statSync(full).isDirectory()) walk(full, out);
     else out.push(full);

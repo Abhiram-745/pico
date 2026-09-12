@@ -40,7 +40,10 @@
     <span class="meta" id="meta">v0.1.7 · Windows 10 2004+ / 11</span>
   </div>
 
-  <a class="link" href="phone.html">Use it from your phone <span aria-hidden="true">→</span></a>
+  <div class="links">
+    <a class="link" id="demo-link" href="pico-ui/app.html" hidden>Try the interface <span aria-hidden="true">→</span></a>
+    <a class="link" href="phone.html">Use it from your phone <span aria-hidden="true">→</span></a>
+  </div>
 
   <section>
     <h2>Setup</h2>
@@ -87,6 +90,16 @@
 </main>
 
 <script>
+  // The interface preview only exists on the built site; GitHub Pages serves
+  // docs/ alone. Reveal the link only where the target is actually there,
+  // rather than shipping one that 404s on one of the two hosts.
+  (async () => {
+    try {
+      const res = await fetch('pico-ui/app.html', { method: 'HEAD' });
+      if (res.ok) document.getElementById('demo-link').hidden = false;
+    } catch { /* leave it hidden */ }
+  })();
+
   // Resolve the newest release so the button never needs editing on a new version.
   (async () => {
     try {
