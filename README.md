@@ -17,18 +17,17 @@ This repository is an early personal-use build. It is deliberately conservative 
 | [`bridge/`](bridge/) | The LAN server that connects the two. Zero dependencies |
 | [`docs/`](docs/) | The website |
 
-The Windows application itself (`Pico.exe`, `Pico.Guardian.exe`) ships as a [release asset](https://github.com/Abhiram-745/pico/releases/latest) — the binaries are ~350 MB together, which is far past what git should carry.
+The current build runs on Node.js and starts from `Start Pico.cmd`. The older compiled interface (`Pico.exe`, `Pico.Guardian.exe`, ~350 MB together, far past what git should carry) still ships attached to numbered/tagged [releases](https://github.com/Abhiram-745/pico/releases/latest) for anyone who prefers it.
 
 ---
 
 ## Use it
 
-1. Download and unzip the [latest release](https://github.com/Abhiram-745/pico/releases/latest), then run `Pico.exe`. On first launch, open Settings and store your API key — it goes to Windows Credential Manager, not a JSON file.
-2. Press **`Ctrl+Shift+P`**, type a narrowly scoped task, press Enter.
-3. Review the orange approval cards before external, destructive, installation, account, or financial actions.
-4. Complete credentials, CAPTCHAs, UAC, and secure-desktop steps yourself when Pico asks.
-
-For a normal installed experience, run `install.ps1` from the extracted folder. It copies Pico to your per-user Programs folder and creates Start-menu and Desktop shortcuts. The portable `Pico.exe` launch remains available without installing anything.
+1. Easiest: paste `irm https://raw.githubusercontent.com/Abhiram-745/pico/main/docs/install.ps1 | iex` into PowerShell. It downloads the current build, installs it to your user profile, adds shortcuts, and starts it.
+2. Or download and unzip the [latest release](https://github.com/Abhiram-745/pico/releases/latest) yourself, then double-click `Start Pico.cmd`. On first run it asks for your OpenAI key — it goes to Windows Credential Manager, not a JSON file. Run `install.ps1` from the extracted folder afterward for a normal installed experience with Start-menu and Desktop shortcuts.
+3. Press **`Ctrl+Shift+P`**, type a narrowly scoped task, press Enter.
+4. Review the orange approval cards before external, destructive, installation, account, or financial actions.
+5. Complete credentials, CAPTCHAs, UAC, and secure-desktop steps yourself when Pico asks.
 
 This personal build is not code-signed, so Windows SmartScreen may show an unknown-publisher warning. Verify the package hash before running it; do not weaken SmartScreen globally.
 
