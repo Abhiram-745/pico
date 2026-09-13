@@ -2,7 +2,7 @@
 //  Pico island host
 //
 //  Keeps the island window where a notch belongs: above every other window,
-//  out of the taskbar and Alt-Tab, and cut to a real rounded shape.
+//  out of the taskbar and Alt-Tab, with no frame around it.
 //
 //  It does nothing else. It never reads the screen, never sends input, and
 //  only ever touches the window handle the bridge hands it. Compiled on first
@@ -13,15 +13,15 @@
 //
 //    pin <hwnd>
 //        always on top, hidden from the taskbar and Alt-Tab
-//    place <hwnd> <x> <y> <w> <h> <left> <top> <right> <bottom> <radius>
-//        move and size the window in a single call, then clip it to the
-//        content rectangle inset by left/top/right/bottom, with the bottom
-//        corners rounded by radius. The top corners are pushed above the
-//        content so the island stays square against the screen edge.
+//    trim <hwnd>
+//        drop the resize border and let DWM round the corners, so the page
+//        is all you see
+//    place <hwnd> <x> <y> <w> <h>
+//        move and size the window in a single call
 //
-//  Moving and sizing in one SetWindowPos is what makes the morph smooth: two
-//  separate calls per frame paint an intermediate, off-centre frame between
-//  them, which is the jitter a browser-driven resize otherwise has.
+//  Rounding is left to DWM (DWMWA_WINDOW_CORNER_PREFERENCE) rather than a
+//  window region: SetWindowRgn reports success on a browser window and then
+//  clips nothing, because the frame is drawn by the compositor.
 // ===========================================================================
 
 using System;
@@ -33,15 +33,6 @@ static class IslandHost
     [DllImport("user32.dll", SetLastError = true)]
     static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
 
-    [DllImport("user32.dll")]
-    static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
-
-    [DllImport("gdi32.dll")]
-    static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse);
-
-    [DllImport("gdi32.dll")]
-    static extern bool DeleteObject(IntPtr obj);
-
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
 
@@ -50,6 +41,23 @@ static class IslandHost
 
     [DllImport("user32.dll")]
     static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int value, int size);
+
+    // Windows 11 draws the frame through DWM, which is why SetWindowRgn has
+    // no effect on a browser window: the legacy region clips nothing that the
+    // compositor draws. These two attributes are the supported way to say
+    // "no border" and "round the corners".
+    const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    const int DWMWA_BORDER_COLOR = 34;
+    const int DWMWCP_ROUND = 2;
+    const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
+
+    const int GWL_STYLE = -16;
+    const long WS_THICKFRAME = 0x00040000;
+    const long WS_MINIMIZEBOX = 0x00020000;
+    const long WS_MAXIMIZEBOX = 0x00010000;
 
     const int GWL_EXSTYLE = -20;
     const long WS_EX_TOOLWINDOW = 0x00000080;
@@ -82,15 +90,41 @@ static class IslandHost
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
     }
 
-    static void Place(IntPtr h, int x, int y, int w, int hgt, int left, int top, int right, int bottom, int radius)
+    /// Trim the window's edges.
+    ///
+    /// Only the resize border goes. The caption stays, because a browser in
+    /// app mode draws its own title bar inside the client area — removing
+    /// WS_CAPTION does not delete that, it just exposes it. The caption is
+    /// dealt with by parking it above the top of the screen instead.
+    ///
+    /// What this removes is the ~7px invisible resize margin, which Windows
+    /// fills with the window's frame colour and which showed as a grey band
+    /// down the right and bottom edges of the island. Together with a border
+    /// colour of NONE that leaves only the page.
+    static void Trim(IntPtr h)
+    {
+        long style = GetWindowLongPtr(h, GWL_STYLE).ToInt64();
+        style &= ~(WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        SetWindowLongPtr(h, GWL_STYLE, new IntPtr(style));
+
+        int none = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(h, DWMWA_BORDER_COLOR, ref none, sizeof(int));
+        int round = DWMWCP_ROUND;
+        DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+
+        SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+
+    static void Place(IntPtr h, int x, int y, int w, int hgt)
     {
         // Re-asserting topmost every frame is deliberate: another app going
         // topmost after us would otherwise quietly cover the island.
+        //
+        // Position and size in one call, which is what keeps the morph
+        // smooth — moving and then resizing paints an intermediate,
+        // off-centre frame between the two.
         SetWindowPos(h, HWND_TOPMOST, x, y, w, hgt, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-
-        int d = Math.Max(0, radius * 2);
-        IntPtr rgn = CreateRoundRectRgn(left, top - d, w - right + 1, hgt - bottom + 1, d, d);
-        if (SetWindowRgn(h, rgn, true) == 0) DeleteObject(rgn);   // on success the system owns it
     }
 
     static void Main()
@@ -110,9 +144,11 @@ static class IslandHost
                     case "pin":
                         Pin(Handle(p[1]));
                         break;
+                    case "trim":
+                        Trim(Handle(p[1]));
+                        break;
                     case "place":
-                        Place(Handle(p[1]), Int(p[2]), Int(p[3]), Int(p[4]), Int(p[5]),
-                              Int(p[6]), Int(p[7]), Int(p[8]), Int(p[9]), Int(p[10]));
+                        Place(Handle(p[1]), Int(p[2]), Int(p[3]), Int(p[4]), Int(p[5]));
                         break;
                     case "":
                         continue;

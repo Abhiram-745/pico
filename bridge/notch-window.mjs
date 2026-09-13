@@ -21,12 +21,13 @@
    STAYING ON TOP
    A window that sits behind a maximized browser is not a notch. island-host
    (a tiny compiled helper, see island-host.mjs) pins it above other windows,
-   hides it from the taskbar and Alt-Tab, moves and sizes it in one call per
-   frame, and clips it to a rounded shape. Without the helper it still opens
-   and morphs, but can be covered by other windows.
+   hides it from the taskbar and Alt-Tab, drops its resize border, and moves
+   and sizes it in one call per frame. Without the helper it still opens and
+   morphs, but can be covered by other windows and keeps its frame.
    ========================================================================== */
 
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -83,13 +84,13 @@ export class NotchWindow {
     this.hwnd = null;
     this.profile = join(tmpdir(), 'pico-notch-profile');
     this.frame = { ...DEFAULT_FRAME };
+    // Only the window this bridge opened may report its frame or ask to be
+    // resized. Without this, any other tab left open on notch.html reports
+    // its own geometry and the real island is placed to match a page that is
+    // not it — which is exactly what happened.
+    this.token = randomBytes(9).toString('base64url');
     this.size = { ...COMPACT };       // content size currently on screen
     this.run = 0;
-  }
-
-  /** Bottom corner radius for a given height — a pill when small, softer when tall. */
-  static radiusFor(height) {
-    return Math.round(Math.max(12, Math.min(26, height * 0.42)));
   }
 
   get isOpen() { return Boolean(this.proc && this.proc.exitCode === null); }
@@ -109,7 +110,11 @@ export class NotchWindow {
 
   /** The page's own measurement of the browser chrome around it. */
   learnFrame({ iw, ih, ow, oh }) {
-    if (![iw, ih, ow, oh].every(Number.isFinite) || ow < iw || oh < ih) return;
+    // A page that cannot report its own geometry sends zeroes, and believing
+    // them would compute a frame of nothing — which puts the browser's title
+    // bar back on screen. Only positive, self-consistent numbers count.
+    if (![iw, ih, ow, oh].every((v) => Number.isFinite(v) && v > 0)) return;
+    if (ow < iw || oh < ih) return;
     const side = Math.max(0, Math.min(16, Math.round((ow - iw) / 2)));
     const top = Math.max(0, Math.min(80, Math.round(oh - ih - side)));
     this.frame = { side, top, bottom: side };
@@ -123,6 +128,7 @@ export class NotchWindow {
     if (existing) {
       this.hwnd = existing;
       this.host?.pin(existing);
+      this.host?.trim(existing);
       this.apply(this.rectFor(this.size));
       return { ok: true, already: true };
     }
@@ -132,7 +138,7 @@ export class NotchWindow {
 
     const r = this.rectFor(COMPACT);
     this.proc = spawn(browser, [
-      `--app=${this.url}`,
+      `--app=${this.url}?k=${this.token}`,
       `--user-data-dir=${this.profile}`,
       '--no-first-run',
       '--no-default-browser-check',
@@ -148,6 +154,7 @@ export class NotchWindow {
     const found = await this.waitForWindow(8000);
     if (found) {
       this.host?.pin(found);
+      this.host?.trim(found);
       this.apply(this.rectFor(this.size));
     }
     return { ok: true, placed: Boolean(found) };
@@ -180,12 +187,7 @@ export class NotchWindow {
     if (!h) return false;
     this.hwnd = h;
 
-    if (this.host?.ready) {
-      const f = this.frame;
-      return this.host.place(h, rect,
-        { left: f.side, top: f.top, right: f.side, bottom: f.bottom },
-        NotchWindow.radiusFor(this.size.height));
-    }
+    if (this.host?.ready) return this.host.place(h, rect);
 
     if (!nut) return false;
     try {

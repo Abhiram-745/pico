@@ -425,9 +425,64 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
       : `Say hi, or tell ${petName} what to do on your computer.`;
   }
 
-  // --- the one update ------------------------------------------------------
+  // --- measuring -----------------------------------------------------------
+  /* The window is only as big as the page last said it wanted to be, so a
+     measurement that misses means text sits behind the frame with nothing to
+     show it is there — the page cannot scroll, it is the island. Hence three
+     belts: measure after every update, measure again whenever the natural
+     height changes for any reason, and check afterwards that the window
+     actually got as big as was asked. */
   let lastMeasured = '';
+  let healTimer = null;
+  let healAttempts = 0;
 
+  const MAX_HEALS = 3;
+
+  function postMeasure(force = false) {
+    const size = {
+      view,
+      width: WIDTHS[view],
+      height: Math.ceil(root.getBoundingClientRect().height),
+    };
+    const key = `${size.width}x${size.height}`;
+    if (!force && key === lastMeasured) return;
+    if (!force) healAttempts = 0;      // a genuinely new size starts fresh
+    lastMeasured = key;
+    onMeasure?.(size);
+
+    // Did the frame actually get there? A morph cancelled by a newer one, or
+    // a font that swapped in late, can leave it short — so check, and ask
+    // again if so.
+    //
+    // Strictly bounded, because this is a page asking to be resized and then
+    // measuring the result: somewhere that cannot report its own geometry
+    // (innerWidth reads 0 in an embedded view) every check looks "too small"
+    // and it would retry forever. Only trust real numbers, and only retry a
+    // few times.
+    clearTimeout(healTimer);
+    if (healAttempts >= MAX_HEALS) return;
+    healTimer = setTimeout(() => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (!(w > 0 && h > 0)) return;
+      if (h < size.height - 2 || w < size.width - 2) {
+        healAttempts += 1;
+        postMeasure(true);
+      }
+    }, 560);
+  }
+
+  // A streamed reply rewraps as it arrives, a decision appears, the web font
+  // replaces the fallback — all of them change the height without any state
+  // change to notice, so watch the box itself.
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => postMeasure()).observe(root);
+  }
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(() => postMeasure(true)).catch(() => {});
+  }
+
+  // --- the one update ------------------------------------------------------
   function update() {
     const s = store.state;
     const next = decide(s);
@@ -449,17 +504,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
       syncComposer(s);
     }
 
-    requestAnimationFrame(() => {
-      const size = {
-        view,
-        width: WIDTHS[view],
-        height: Math.ceil(root.getBoundingClientRect().height),
-      };
-      const key = `${size.width}x${size.height}`;
-      if (key === lastMeasured) return;
-      lastMeasured = key;
-      onMeasure?.(size);
-    });
+    requestAnimationFrame(() => postMeasure());
   }
 
   // --- the store -----------------------------------------------------------

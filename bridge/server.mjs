@@ -546,6 +546,13 @@ const server = createServer(async (req, res) => {
     const isLocal = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
     if (!isLocal) { res.writeHead(403).end('Local only.'); return; }
 
+    // Only the island this bridge opened. Any other page on notch.html —
+    // a leftover tab, the hosted preview — must not move the real window.
+    if (bridge.notch && url.searchParams.get('k') !== bridge.notch.token) {
+      res.writeHead(204, { 'Cache-Control': 'no-store' }).end();
+      return;
+    }
+
     const n = (k) => Number(url.searchParams.get(k));
     if (bridge.notch) {
       bridge.notch.learnFrame({ iw: n('iw'), ih: n('ih'), ow: n('ow'), oh: n('oh') });

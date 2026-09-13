@@ -18,7 +18,8 @@
 
 import { spawn, execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync, statSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,18 +34,23 @@ function compiler() {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
+/**
+ * Named after the source it was built from, so a new version never has to
+ * overwrite a copy that an already-running Pico still has open — which fails
+ * on Windows, and used to take the helper down with it.
+ */
 function cachedExe() {
   const base = process.env.LOCALAPPDATA || process.env.TEMP || '.';
   const dir = join(base, 'Pico');
   mkdirSync(dir, { recursive: true });
-  return join(dir, 'island-host.exe');
+  const stamp = createHash('sha1').update(readFileSync(SOURCE)).digest('hex').slice(0, 10);
+  return join(dir, `island-host-${stamp}.exe`);
 }
 
-/** Build if missing or older than its source. Resolves to the exe path. */
+/** Build if this exact source has not been built before. Resolves to the path. */
 async function build() {
   const exe = cachedExe();
-  const fresh = existsSync(exe) && statSync(exe).mtimeMs >= statSync(SOURCE).mtimeMs;
-  if (fresh) return exe;
+  if (existsSync(exe)) return exe;
 
   const csc = compiler();
   if (!csc) throw new Error('the Windows C# compiler was not found');
@@ -97,15 +103,13 @@ export class IslandHost {
 
   pin(hwnd) { return this.send(`pin ${hwnd}`); }
 
-  /** One call: position, size and shape. Every number rounded — the host parses ints. */
-  place(hwnd, rect, inset, radius) {
+  /** Remove the resize border and round the corners. Once, after opening. */
+  trim(hwnd) { return this.send(`trim ${hwnd}`); }
+
+  /** Position and size in one call. Every number rounded — the host parses ints. */
+  place(hwnd, rect) {
     const n = (v) => Math.round(v);
-    return this.send([
-      'place', hwnd,
-      n(rect.x), n(rect.y), n(rect.width), n(rect.height),
-      n(inset.left), n(inset.top), n(inset.right), n(inset.bottom),
-      n(radius),
-    ].join(' '));
+    return this.send(['place', hwnd, n(rect.x), n(rect.y), n(rect.width), n(rect.height)].join(' '));
   }
 
   stop() {

@@ -33,6 +33,9 @@
   const island = mountIsland(document.body, {
     onMeasure: ({ width, height, view }) => {
       const q = new URLSearchParams({
+        // Proves this page is the island the bridge opened, so a stray tab
+        // on this URL cannot resize the real one.
+        k: new URLSearchParams(location.search).get('k') ?? '',
         w: String(width),
         h: String(height),
         view,

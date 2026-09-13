@@ -44,6 +44,23 @@ body {
 .island[data-view="live"]    { --w: 408px; }
 .island[data-view="open"]    { --w: 584px; }
 
+/* The phase colour, riding the bottom edge. Off when idle, so the island is
+   inert black until something is actually happening. */
+.island::after {
+  content: "";
+  position: absolute;
+  left: 26%;
+  right: 26%;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0;
+  transition: opacity .35s var(--out);
+  pointer-events: none;
+}
+.island:not([data-phase="Idle"])::after { opacity: .9; }
+
 /* The frame is springing to a new size; bring the content in with it. */
 .island.is-morphing .island__text,
 .island.is-morphing .island__trail,
@@ -60,16 +77,19 @@ body {
 /* ==========================================================================
    Bar — the row that is always there
    ========================================================================== */
+/* min-height, never height: a two-line reply has to be able to push the bar
+   taller. With a fixed height the text was simply clipped behind the frame,
+   and because the island is the window there is no scrollbar to hint at it. */
 .island__bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
+  min-height: 36px;
   padding: 0 12px 0 10px;
   cursor: pointer;
 }
-.island[data-view="live"] .island__bar { height: 48px; padding: 0 10px 0 12px; }
-.island[data-view="open"] .island__bar { height: 54px; padding: 0 12px 0 14px; }
+.island[data-view="live"] .island__bar { min-height: 48px; padding: 7px 10px 7px 12px; }
+.island[data-view="open"] .island__bar { min-height: 54px; padding: 8px 12px 8px 14px; }
 
 .island__lead {
   flex: none;
@@ -113,6 +133,17 @@ body {
   text-overflow: ellipsis;
 }
 .island[data-view="open"] .island__title { font-size: 14px; }
+
+/* In the live view the headline is usually a reply or a summary, and one
+   ellipsised line hides most of it. Let it run to two and grow the frame to
+   suit — the window is measured from the content, so it follows. */
+.island[data-view="live"] .island__title {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.35;
+}
 
 .island__trail {
   flex: none;
