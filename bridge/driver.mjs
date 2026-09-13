@@ -635,6 +635,25 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
     // land somewhere — typing and key presses have nowhere to miss.
     if (AIMED.has(action.type) && Number.isFinite(action.x)) {
       action._at = await aim(llm, shot, action);
+
+      /* The same point, in the units the accessibility layer speaks, so an
+         ordinary left click can be tried without the pointer.
+
+         Only on a first attempt. If a step has already failed to change
+         anything, the quiet route is the prime suspect — something was
+         pressed that was not what was meant, or nothing was — so the retry
+         uses the pointer, which is slower and never in doubt. */
+      if (action.type === 'click' && repeats === 0 && shot.scale) {
+        action._quiet = {
+          // Physical pixels for the accessibility layer, and the same point
+          // in the units Pico's drawn cursor uses, so it can be seen going
+          // there. The two spaces differ by the display scaling.
+          x: Math.round(action._at.x * shot.scale),
+          y: Math.round(action._at.y * shot.scale),
+          vx: action._at.x,
+          vy: action._at.y,
+        };
+      }
       if (!(await gate())) return;
     }
 
@@ -892,7 +911,14 @@ async function execute(computer, action, shot) {
   const at = () => action._at ?? shot.toScreen(action.x ?? 0, action.y ?? 0);
 
   switch (action.type) {
-    case 'click': { const p = at(); return computer.click(p.x, p.y, 'left'); }
+    case 'click': {
+      const p = at();
+      // Try to press it without the pointer going anywhere first. It is the
+      // same press either way; this one just does not take the user's cursor
+      // with it. Anything it cannot reach falls through to the real thing.
+      if (action._quiet && await computer.quiet?.(action._quiet)) return undefined;
+      return computer.click(p.x, p.y, 'left');
+    }
     case 'double_click': { const p = at(); return computer.doubleClick(p.x, p.y); }
     case 'right_click': { const p = at(); return computer.click(p.x, p.y, 'right'); }
     case 'move': { const p = at(); return computer.move(p.x, p.y); }

@@ -402,17 +402,20 @@ async function saveKey(key) {
 /* Pico's cursor. Shown only while Pico is actually working — the rest of the
    time there is nothing on screen and nothing running to draw it.
 
-   WHILE PICO WORKS, YOUR POINTER IS NOT ON SCREEN
-   Windows has one pointer and driving an application means moving it, so
-   without this a run looks like your own mouse being wrenched across the
-   desk. Instead the system pointer goes invisible for the duration and
-   Pico's cursor is the only one you see move; where yours was sitting is
-   remembered first and given back the moment the run ends, so nothing of
-   yours has moved by the time you look again.
+   WHOSE POINTER MOVES
+   Ordinarily neither. A click now goes through the accessibility layer,
+   which presses the control itself — Pico's cursor walks over and presses
+   it, and the real pointer is not involved at all. A run made only of those
+   leaves the user's mouse exactly where it is, visible and usable, with
+   Pico's cursor working alongside it.
 
-   Touching the mouse mid-run takes it straight back — the helper notices the
-   pointer moving when nothing is driving it and returns the system cursor
-   without being asked. */
+   Some things have no such route: a drag, a right-click, an application that
+   exposes nothing. Windows has one pointer, so those borrow it — and only
+   then does the system cursor go invisible, at the moment it is first moved
+   rather than at the start of the run. It is put back where it was, and
+   touching the mouse mid-run takes it straight back: the helper notices the
+   pointer moving when nothing is driving it and returns it without being
+   asked. */
 const CURSOR_ART = join(ROOT, 'pico-ui', 'assets', 'pico.png');
 const WORKING = new Set([
   'Starting', 'Observing', 'Thinking', 'Acting', 'Paused',
@@ -421,6 +424,8 @@ const WORKING = new Set([
 let islandHost = null;
 let cursorShown = false;
 let cursorOffTimer = null;
+let pointerTaken = false;      // the system pointer has been hidden this run
+let ghost = null;              // where Pico's own cursor is, when nothing real moves
 
 function showCursorFor(phase) {
   if (!islandHost?.ready) return;
@@ -428,13 +433,18 @@ function showCursorFor(phase) {
 
   if (working && !cursorShown) {
     clearTimeout(cursorOffTimer);
-    // Remember where the pointer is before anything moves it, and take it
-    // off screen before Pico's cursor appears — otherwise both are visible
-    // for a frame and it reads as two pointers rather than a handover.
+    // Remember where the pointer is before anything moves it. The user's
+    // pointer is NOT hidden here: most of what Pico does now happens through
+    // the accessibility layer, where nothing of theirs is touched at all, and
+    // hiding a pointer nothing is going to move would be taking something for
+    // no reason. It goes only at the moment something really moves it — see
+    // onPointer below.
     islandHost.cursorSave();
-    islandHost.cursorHide();
     islandHost.cursorOn(CURSOR_ART);
     cursorShown = true;
+    pointerTaken = false;
+    ghost = computer?.pointer ? { ...computer.pointer } : null;
+    if (ghost) islandHost.cursorAt(ghost.x, ghost.y);
     if (process.env.PICO_DEBUG) console.log('[cursor] shown');
   }
   if (working) {
@@ -445,7 +455,11 @@ function showCursorFor(phase) {
     // crosses the screen in the meantime is Pico's cursor, and the user's is
     // where they left it whenever they look. (Once they touch the mouse
     // themselves the helper stops obeying this: it is their pointer again.)
-    if (phase === 'Thinking') islandHost.cursorRestore();
+    //
+    // Only if it was ever taken. Putting a pointer "back" that never left
+    // means dragging it away from wherever the user has since moved it, which
+    // is the precise opposite of the point.
+    if (phase === 'Thinking' && pointerTaken) islandHost.cursorRestore();
     return;
   }
   if (!cursorShown) return;
@@ -456,11 +470,13 @@ function showCursorFor(phase) {
   cursorOffTimer = setTimeout(() => {
     // Order matters the other way round on the way out: the pointer goes
     // back to where the user left it while it is still invisible, so they
-    // never see it travel there.
-    islandHost?.cursorRestore();
+    // never see it travel there. Untouched pointers are left alone.
+    if (pointerTaken) islandHost?.cursorRestore();
     islandHost?.cursorOff();
     islandHost?.cursorShow();
     cursorShown = false;
+    pointerTaken = false;
+    ghost = null;
     if (process.env.PICO_DEBUG) console.log('[cursor] hidden');
   }, 1400);
 }
@@ -795,6 +811,17 @@ const computer = await loadComputer({
   onPointer: ({ x, y, done }) => {
     const now = Date.now();
 
+    // Something is really moving the pointer, so now it goes off screen —
+    // and not a moment before. A run made entirely of presses through the
+    // accessibility layer never reaches this line, and the user's cursor
+    // stays visible and theirs throughout while Pico's works alongside it.
+    if (cursorShown && !pointerTaken) {
+      pointerTaken = true;
+      islandHost?.cursorHide();
+      if (process.env.PICO_DEBUG) console.log('[cursor] taking the pointer');
+    }
+    ghost = { x, y };
+
     // Two rates, because these two consumers want different things. The
     // cursor drawn on screen is the one the user is watching, so it gets
     // every frame it can use (~60 a second) — a cursor updated at 30Hz
@@ -813,7 +840,50 @@ const computer = await loadComputer({
    moment it has finished looking at the screen, so across a whole run the
    pointer is only away from where they left it for the fraction of a second
    an action takes — and it is invisible for that. */
-if (computer) computer.park = () => { islandHost?.cursorRestore(); };
+if (computer) computer.park = () => { if (pointerTaken) islandHost?.cursorRestore(); };
+
+/* Press a control without the pointer.
+   Answers false when it cannot, and the driver then uses the pointer — see
+   quietClick in island-host.mjs.
+
+   Pico's own cursor still walks over and presses it, because a thing that
+   happens with no visible cause is worse than one you can watch. That walk
+   moves nothing but the drawing: the user's pointer stays exactly where it
+   is, and for a run made only of these it is never even hidden. */
+if (computer) {
+  computer.quiet = async ({ x, y, vx, vy }) => {
+    if (!islandHost?.ready) return false;
+    await walkGhost(vx, vy);
+    islandHost.cursorState('clicking');
+    const pressed = await islandHost.quietClick(x, y);
+    islandHost.cursorState('moving');
+    return pressed;
+  };
+}
+
+/**
+ * Walk Pico's drawn cursor to a point. Nothing real moves.
+ *
+ * Sampled by the clock rather than by step count, and short: this is the
+ * gesture that says "it is doing that, there", not a journey to sit through.
+ */
+async function walkGhost(x, y) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  const from = ghost ?? { x, y };
+  const dist = Math.hypot(x - from.x, y - from.y);
+  ghost = { x, y };
+  if (dist < 4) { islandHost?.cursorAt(x, y); return; }
+
+  const ms = Math.max(120, Math.min(340, 90 + (dist * 0.22)));
+  const t0 = Date.now();
+  for (;;) {
+    const t = Math.min(1, (Date.now() - t0) / ms);
+    const e = (t ** 3) * (10 - (15 * t) + (6 * t * t));   // minimum jerk, as a hand moves
+    islandHost?.cursorAt(from.x + ((x - from.x) * e), from.y + ((y - from.y) * e));
+    if (t >= 1) return;
+    await new Promise((r) => setTimeout(r, 16));
+  }
+}
 if (computer) await bridge.attachComputer(computer);
 
 /* ---------------------------------------------------------------------------

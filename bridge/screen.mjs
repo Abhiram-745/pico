@@ -219,7 +219,24 @@ export class Screen {
       width: shotW,
       height: shotH,
       mode: this.mode,
+      scale: desktop.scale,
       toScreen,
+
+      /**
+       * The same point in physical screen pixels.
+       *
+       * Two coordinate systems exist on a scaled display and things that look
+       * alike want different ones. The mouse, in a process that is not DPI
+       * aware, works in virtualised units; UI Automation reports and accepts
+       * real pixels — checked rather than assumed, on a machine where a
+       * taskbar button comes back at y=1380 on a display the same process
+       * believes is 1152 tall. Getting this backwards silently aims a quarter
+       * of a screen away, so neither conversion is left implicit.
+       */
+      toPhysical: (x, y) => ({
+        x: Math.round(Math.max(0, Math.min(desktop.width - 1, ((Number(x) + 0.5) * desktop.width) / shotW))),
+        y: Math.round(Math.max(0, Math.min(desktop.height - 1, ((Number(y) + 0.5) * desktop.height) / shotH))),
+      }),
 
       /**
        * A close-up of one part of the same frame, at full resolution.

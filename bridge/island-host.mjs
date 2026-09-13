@@ -55,12 +55,21 @@ async function build() {
   const csc = compiler();
   if (!csc) throw new Error('the Windows C# compiler was not found');
 
+  // UI Automation is how a control is pressed without the pointer going to
+  // it. It ships with .NET Framework, in the WPF folder rather than on the
+  // compiler's default search path, so it is referenced by full path.
+  const wpf = join(process.env.SystemRoot || 'C:\\Windows',
+    'Microsoft.NET', 'Framework64', 'v4.0.30319', 'WPF');
+
   await new Promise((resolve, reject) => {
     // A console target, not winexe: the protocol is stdin/stdout, and a
     // winexe has no console to read from. The window is hidden at spawn.
     execFile(csc, [
       '/nologo', '/optimize+', '/target:exe',
       '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll',
+      `/r:${join(wpf, 'UIAutomationClient.dll')}`,
+      `/r:${join(wpf, 'UIAutomationTypes.dll')}`,
+      `/r:${join(wpf, 'WindowsBase.dll')}`,
       `/out:${exe}`, SOURCE,
     ],
       { windowsHide: true, timeout: 60_000 },
@@ -73,6 +82,10 @@ export class IslandHost {
   constructor() {
     this.proc = null;
     this.ready = false;
+    // The helper answers every command with exactly one line, in order, so a
+    // queue of one entry per command sent is enough to match answers to
+    // questions. Most commands do not care and queue a null.
+    this.waiting = [];
   }
 
   static async start() {
@@ -98,13 +111,43 @@ export class IslandHost {
       createInterface({ input: this.proc.stdout }).on('line', (line) => {
         if (line === 'ready') { this.ready = true; clearTimeout(timer); resolve(); return; }
         if (line.startsWith('err')) console.warn(`[bridge] island host: ${line.slice(4)}`);
+        const settle = this.waiting.shift();
+        if (settle) settle(line);
       });
     });
   }
 
   send(line) {
     if (!this.ready || !this.proc) return false;
-    try { this.proc.stdin.write(`${line}\n`); return true; } catch { return false; }
+    try {
+      this.proc.stdin.write(`${line}\n`);
+      this.waiting.push(null);        // an answer will come; nobody is listening
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * Send, and wait for the one line that comes back.
+   *
+   * Bounded, because this is another process: if it stops answering, the
+   * caller gets an empty answer rather than a promise that never settles.
+   * The queue entry is left in place on a timeout — a late reply still
+   * belongs to this command rather than to the next one.
+   */
+  request(line, ms = 3000) {
+    if (!this.ready || !this.proc) return Promise.resolve('');
+    return new Promise((resolve) => {
+      let settled = false;
+      const once = (answer) => { if (!settled) { settled = true; resolve(answer); } };
+      try {
+        this.proc.stdin.write(`${line}\n`);
+        this.waiting.push(once);
+      } catch {
+        once('');
+        return;
+      }
+      setTimeout(() => once(''), ms).unref?.();
+    });
   }
 
   pin(hwnd) { return this.send(`pin ${hwnd}`); }
@@ -128,15 +171,34 @@ export class IslandHost {
 
   /* Whose pointer is on screen.
 
-     There is only one pointer on Windows, so Pico working means Pico moving
-     yours. Hiding the system cursor for the duration is what makes that read
+     Only needed when something has to borrow the real one — a drag, a
+     right-click, an application with no accessibility tree. Ordinary clicks
+     go through `quietClick` and touch nothing of the user's at all.
+
+     When it is borrowed: hiding the system cursor is what makes the run read
      as Pico's own cursor doing the moving rather than as your mouse being
-     yanked around; `cursorSave` / `cursorRestore` then put the pointer back
+     yanked around, and `cursorSave` / `cursorRestore` put the pointer back
      where you left it, so when Pico finishes nothing has moved. */
   cursorHide() { return this.send('cursor hide'); }
   cursorShow() { return this.send('cursor show'); }
   cursorSave() { return this.send('cursor save'); }
   cursorRestore() { return this.send('cursor restore'); }
+
+  /**
+   * Press what is at a point without the pointer going there.
+   *
+   * Through UI Automation, the accessibility layer — the same route a screen
+   * reader takes. Coordinates are physical screen pixels, which is what UI
+   * Automation reports and accepts. Resolves true only when something was
+   * actually pressed; false means the bridge should use the pointer instead,
+   * and there are plenty of honest reasons for that (games, custom-drawn
+   * interfaces, anything with no accessibility tree).
+   */
+  async quietClick(x, y) {
+    const answer = await this.request(`quiet click ${Math.round(x)} ${Math.round(y)}`);
+    if (process.env.PICO_DEBUG) console.log(`[quiet] ${Math.round(x)},${Math.round(y)} -> ${answer || '(no answer)'}`);
+    return answer.startsWith('ok done');
+  }
 
   /**
    * Shut down without leaving the pointer invisible.

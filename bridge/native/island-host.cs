@@ -26,6 +26,8 @@
 //    cursor show                   give the system pointer back
 //    cursor save                   remember where the user left the pointer
 //    cursor restore                put it back there
+//    quiet click <x> <y>           press what is at that point without the
+//                                  pointer going there. Physical pixels.
 //
 //  Rounding is left to DWM (DWMWA_WINDOW_CORNER_PREFERENCE) rather than a
 //  window region: SetWindowRgn reports success on a browser window and then
@@ -40,6 +42,7 @@ using System.Drawing.Imaging;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Windows.Automation;
 using System.Windows.Forms;
 
 static class Native
@@ -163,13 +166,18 @@ static class Native
 /// straight through to whatever Pico is actually working on.
 ///
 /// WHOSE POINTER MOVES
-/// Windows has exactly one pointer, and driving an application means moving
-/// it — there is no second mouse to lend to a program. So while Pico works
-/// the system pointer is made invisible and this is the only cursor on
-/// screen: what moves is Pico's, not yours. Yours goes back, to the place
-/// you left it, the moment Pico stops.
+/// Usually nobody's. Most of what Pico does now goes through the
+/// accessibility layer (see Quiet, below), which presses a control without a
+/// click happening anywhere — so this cursor walks over, presses it, and the
+/// user's pointer never moves or even flickers.
 ///
-/// Two things make sure you are never left staring at an invisible pointer:
+/// Some things have no such route: a drag, a right-click, an application that
+/// exposes no accessibility tree. Windows has exactly one pointer, so those
+/// borrow it. For as long as one is borrowed the system pointer is invisible
+/// and this is the only cursor on screen, and it goes back to where it was
+/// the moment Pico stops.
+///
+/// Two things make sure nobody is ever left staring at an invisible pointer:
 /// touching the mouse yourself hands it straight back, and it is restored on
 /// every exit path this program has — including the one where it is killed
 /// and stdin simply ends.
@@ -550,6 +558,178 @@ static class PicoCursor
     }
 }
 
+/// <summary>
+/// Pressing things without the pointer.
+///
+/// Windows has one pointer, so driving an application normally means moving
+/// the user's own cursor across their screen — which is the thing they most
+/// want it not to do. There is one way round it, and it is not a trick: UI
+/// Automation, the accessibility layer that every well-behaved Windows
+/// application exposes so that screen readers can operate it. A button
+/// pressed through it is pressed exactly as if clicked, and no click happens.
+///
+/// So Pico's cursor can be the only cursor that moves, and the user's stays
+/// where they left it — not put back afterwards, never taken in the first
+/// place.
+///
+/// It does not always work. Games, custom-drawn interfaces and anything that
+/// exposes no accessibility tree have nothing to press, and a right-click or
+/// a double-click has no equivalent here at all. Those say so plainly and the
+/// bridge falls back to the pointer, which is why this is an attempt rather
+/// than a replacement.
+///
+/// COORDINATES
+/// Everything here is in physical screen pixels, because that is what UI
+/// Automation reports and accepts — verified rather than assumed: on this
+/// machine a taskbar button comes back at y=1380 on a display the process
+/// otherwise believes is 1152 tall. The bridge converts before sending.
+/// </summary>
+static class Quiet
+{
+    /// Nothing that is clicked is this big. A button, a menu item, a link, a
+    /// tab, a list row — all comfortably under it; a pane, a document body or
+    /// a whole window is over it, and "invoke" on one of those means something
+    /// other than the click that was intended. Physical pixels, deliberately
+    /// generous, because the cost of refusing is only that the pointer does it
+    /// instead.
+    const double MAX_W = 900, MAX_H = 700;
+
+    public static string Act(int x, int y)
+    {
+        string answer = "no timed-out";
+
+        // On its own thread, with a deadline: a UI Automation call reaches
+        // into another process, and an application that has stopped answering
+        // must not take Pico down with it.
+        var t = new Thread(() =>
+        {
+            try { answer = Press(x, y); }
+            catch (Exception e) { answer = "no " + e.GetType().Name; }
+        });
+        t.IsBackground = true;
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        // Short, because this sits in front of every click. An application
+        // that cannot answer in a second is one the pointer should handle.
+        return t.Join(1200) ? answer : "no timed-out";
+    }
+
+    static double Area(System.Windows.Rect r) { return r.Width * r.Height; }
+
+    static bool Actionable(AutomationElement el, out object pattern, out string how)
+    {
+        pattern = null;
+        how = null;
+        if (el == null) return false;
+        try
+        {
+            if (!el.Current.IsEnabled || el.Current.IsOffscreen) return false;
+            if (el.TryGetCurrentPattern(InvokePattern.Pattern, out pattern)) { how = "invoke"; return true; }
+            if (el.TryGetCurrentPattern(TogglePattern.Pattern, out pattern)) { how = "toggle"; return true; }
+            if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) { how = "select"; return true; }
+            if (el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pattern)) { how = "expand"; return true; }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// The smallest thing under this point that can actually be operated.
+    ///
+    /// FromPoint gives whatever the application's hit-testing hands back, and
+    /// that is often a container — ask the taskbar what is at a button and it
+    /// offers the taskbar. So descend from there, keeping only descendants
+    /// that contain the point, and take the smallest one that has something
+    /// to press.
+    /// </summary>
+    static bool SmallEnough(System.Windows.Rect r)
+    {
+        return !r.IsEmpty && r.Width > 0 && r.Height > 0 && r.Width <= MAX_W && r.Height <= MAX_H;
+    }
+
+    static AutomationElement Resolve(AutomationElement from, System.Windows.Point p)
+    {
+        object pat;
+        string how;
+
+        // The common case, and the fast one: what hit-testing returned is
+        // already the control itself. Chromium, WinForms and WPF nearly always
+        // answer this precisely, and walking their trees for confirmation would
+        // cost more than the click.
+        try
+        {
+            if (SmallEnough(from.Current.BoundingRectangle) && Actionable(from, out pat, out how))
+            {
+                return from;
+            }
+        }
+        catch { }
+
+        AutomationElement best = null;
+        double bestArea = double.MaxValue;
+
+        var queue = new System.Collections.Generic.Queue<AutomationElement>();
+        queue.Enqueue(from);
+        int seen = 0;
+
+        while (queue.Count > 0 && seen < 150)
+        {
+            var el = queue.Dequeue();
+            seen++;
+            System.Windows.Rect r;
+            try { r = el.Current.BoundingRectangle; } catch { continue; }
+            if (r.IsEmpty || !r.Contains(p)) continue;
+
+            if (SmallEnough(r) && Area(r) < bestArea && Actionable(el, out pat, out how))
+            {
+                best = el;
+                bestArea = Area(r);
+            }
+
+            try
+            {
+                foreach (AutomationElement c in el.FindAll(TreeScope.Children, Condition.TrueCondition))
+                {
+                    queue.Enqueue(c);
+                }
+            }
+            catch { }
+        }
+        return best;
+    }
+
+    static string Press(int x, int y)
+    {
+        var p = new System.Windows.Point(x, y);
+        var at = AutomationElement.FromPoint(p);
+        if (at == null) return "no nothing-there";
+
+        var el = Resolve(at, p);
+        if (el == null) return "no not-operable";
+
+        if (!SmallEnough(el.Current.BoundingRectangle)) return "no too-big";
+
+        object pattern;
+        string how;
+        if (!Actionable(el, out pattern, out how)) return "no not-operable";
+
+        if (how == "invoke") ((InvokePattern)pattern).Invoke();
+        else if (how == "toggle") ((TogglePattern)pattern).Toggle();
+        else if (how == "select") ((SelectionItemPattern)pattern).Select();
+        else if (how == "expand")
+        {
+            var ec = (ExpandCollapsePattern)pattern;
+            if (ec.Current.ExpandCollapseState == ExpandCollapseState.Expanded) ec.Collapse();
+            else ec.Expand();
+        }
+        else return "no not-operable";
+
+        string name = el.Current.Name;
+        if (string.IsNullOrEmpty(name)) name = el.Current.ControlType.ProgrammaticName;
+        return "done " + how + " " + name.Replace((char)10, ' ').Replace((char)13, ' ');
+    }
+}
+
 static class IslandHost
 {
     static int Int(string s) { return int.Parse(s, CultureInfo.InvariantCulture); }
@@ -632,6 +812,10 @@ static class IslandHost
                         break;
                     case "place":
                         Place(Handle(p[1]), Int(p[2]), Int(p[3]), Int(p[4]), Int(p[5]));
+                        break;
+                    case "quiet":
+                        if (p[1] == "click") reply = "ok " + Quiet.Act(Int(p[2]), Int(p[3]));
+                        else reply = "err unknown quiet command";
                         break;
                     case "cursor":
                         switch (p[1])
