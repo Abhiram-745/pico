@@ -37,13 +37,27 @@ export const PROVIDERS = {
     // `see` drives the desktop and has to read a screenshot accurately, which
     // nano does not do well enough to click with — it answers plausibly and
     // misses the control.
-    tiers: { fast: 'gpt-5.4-nano', hard: 'gpt-5.4-mini', see: 'gpt-5.4-mini' },
+    // fast  chat, classification, and keyboard-only steps
+    // see    locating something on screen well enough to click it
+    // plan   deciding what the task actually requires, once per task
+    // hard   writing
+    tiers: {
+      fast: 'gpt-5.4-nano',
+      hard: 'gpt-5.4-mini',
+      see: 'gpt-5.4-mini',
+      plan: 'gpt-5.4',
+    },
   },
   bazaarlink: {
     label: 'BazaarLink',
     baseUrl: 'https://api.bazaarlink.ai/v1',
     envKey: 'BAZAARLINK_API_KEY',
-    tiers: { fast: 'auto:free', hard: 'deepseek/deepseek-v4-flash', see: 'deepseek/deepseek-v4-flash' },
+    tiers: {
+      fast: 'auto:free',
+      hard: 'deepseek/deepseek-v4-flash',
+      see: 'deepseek/deepseek-v4-flash',
+      plan: 'deepseek/deepseek-v4-flash',
+    },
   },
 };
 
@@ -126,6 +140,7 @@ export class LLM {
           fast: env.PICO_MODEL_FAST || p.tiers.fast,
           hard: env.PICO_MODEL_HARD || p.tiers.hard,
           see: env.PICO_MODEL_SEE || p.tiers.see,
+          plan: env.PICO_MODEL_PLAN || p.tiers.plan,
         },
       });
     }

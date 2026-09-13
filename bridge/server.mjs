@@ -145,10 +145,9 @@ class Bridge {
     this.agent.attachLLM(llm);
     this.agent.settings = {
       ...this.agent.settings,
-      // The desktop loop reads a screenshot every turn, so it runs on the
-      // model that can actually see — not the fast text tier, which is what
-      // silently made real control impossible before.
-      model: llm.tiers.see,
+      // One task uses several: the strongest model plans it, then the
+      // cheapest model that can actually do each step carries it out.
+      model: `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
       hasApiKey: true,
     };
     this.emitSettings();

@@ -1,25 +1,40 @@
 /* ==========================================================================
-   Pico — the loop that actually does the work.
+   Pico — the loop that does the work.
 
-   Look, decide, act, look again. That is the whole shape of it.
+   Decide once, then carry it out. That is the whole shape of it.
 
-   WHY THIS EXISTS
-   The previous loop was written against OpenAI's `computer_use_preview`
-   tool, and could never run: it was gated on the model name containing
-   "computer-use", while the model was always the fast text tier — and the
-   account has no computer-use model at all. Every task silently fell through
-   to a scripted demo that pretended to work.
+   WHY IT IS SHAPED THIS WAY
+   The first version asked one model, every single turn, "what next?" with the
+   whole task in front of it. That answers a question nobody asked: given a
+   task and a screen, there is always something else that could plausibly be
+   done next. So "click the play button" became click play, then the next
+   thing, then the next — accurate each time, and far past what was wanted.
 
-   This runs on an ordinary vision model with ordinary function calling,
-   which every current key can reach. The screenshot goes in, one tool call
-   comes back, it is judged, executed, and the next screenshot goes in. The
-   model never sees coordinates it did not ask for and never gets to run two
-   actions unexamined.
+   Now the task is planned once, into the fewest steps that complete it and a
+   plain statement of what "done" looks like. After that the loop only ever
+   carries out the current step. When the steps run out, the run is over.
+   Overrunning is not discouraged by the prompt; it is structurally impossible.
+
+   WHICH MODEL DOES WHAT
+   Planning is the part that needs judgement, so it gets the strongest model,
+   once. Execution is narrow — "do this one step" — so it gets the cheapest
+   model that can actually do it, and that split is measured rather than
+   assumed:
+
+     keyboard steps   nano. Typing and key chords need no aim, and it is the
+                      fastest and cheapest thing available.
+     pointer steps    mini. Nano was measured putting the Start button 300px
+                      from where it is, which misses every time; mini lands
+                      on it. Aiming needs a little reasoning budget, so
+                      pointer steps get one and keyboard steps do not.
+
+   Each execution turn is built fresh from the plan and the current screen
+   rather than accumulating a conversation. A short prompt cannot drift, and
+   it keeps one image per call instead of a growing pile of them.
 
    WHAT IT SENDS
-   A downscaled JPEG of the desktop, each turn. That is a full-screen image
-   of whatever you have open, and it goes to the model provider. The settings
-   panel says so in as many words; it is not buried here.
+   A downscaled JPEG of the desktop, each turn, to the model provider. The
+   settings panel says so in as many words; it is not buried here.
    ========================================================================== */
 
 import { assess, describe, ACTION_PHASE, ALLOW } from './policy.mjs';
@@ -52,23 +67,92 @@ const isPicoWindow = (title = '') => /(?:^|— )Pico(?: Notch)?$/.test(String(ti
 /** How many identical actions in a row before the run is called stuck. */
 const STUCK_AFTER = 4;
 
-/* One tool, not nine. A single call with an action field keeps the schema
-   small enough to resend every turn without it dominating the prompt, and
-   the model picks the action far more reliably than it picks between nine
-   near-identical function names. */
-const TOOLS = [
+/** Turns allowed per planned step before the run is abandoned. */
+const TURNS_PER_STEP = 4;
+
+/* --------------------------------------------------------------------------
+   Planning
+   -------------------------------------------------------------------------- */
+const PLAN_TOOL = [{
+  type: 'function',
+  function: {
+    name: 'plan',
+    description: 'State the smallest complete plan for the task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          description: 'The fewest steps that complete exactly what was asked. '
+            + 'Usually one. Never add steps that were not asked for.',
+          items: {
+            type: 'object',
+            properties: {
+              do: {
+                type: 'string',
+                description: 'Exactly ONE action, six words or fewer: a single '
+                  + 'click, a single key combination, or a single piece of text '
+                  + 'typed. Never combine two — "press Win, type Notepad, Enter" '
+                  + 'is three steps, not one.',
+              },
+              kind: {
+                type: 'string',
+                enum: ['pointer', 'keyboard'],
+                description: 'pointer = has to aim at something on screen. '
+                  + 'keyboard = typing or a key combination, no aiming.',
+              },
+            },
+            required: ['do', 'kind'],
+          },
+        },
+        done_when: {
+          type: 'string',
+          description: 'What will be visible on screen once the task is complete.',
+        },
+        already_done: {
+          type: 'boolean',
+          description: 'True if the screen already shows the task as complete.',
+        },
+      },
+      required: ['steps', 'done_when', 'already_done'],
+    },
+  },
+}];
+
+const PLAN_SYSTEM = (shot, windowTitle) => [
+  'You plan work for someone operating a Windows 11 desktop.',
+  `The screenshot is ${shot.width} by ${shot.height} pixels.`,
+  windowTitle ? `In front right now: ${windowTitle}.` : '',
+  '',
+  'Plan the smallest set of steps that does exactly what was asked, and',
+  'nothing beyond it. If one click does it, the plan is one step.',
+  '',
+  'Each step is one single action. Opening an app from the Start menu is',
+  'three steps: press Win, then type its name, then press Enter.',
+  '',
+  'Do not add steps that were not asked for. Do not tidy up, continue a',
+  'sequence, verify by opening something else, or do the obvious next thing.',
+  'Finishing early is correct; doing more than was asked is not.',
+  '',
+  'If the screen already shows what was asked, say so with already_done.',
+].filter(Boolean).join('\n');
+
+/* --------------------------------------------------------------------------
+   Executing
+   -------------------------------------------------------------------------- */
+const ACT_TOOLS = [
   {
     type: 'function',
     function: {
       name: 'act',
-      description: 'Perform exactly one action on the Windows desktop.',
+      description: 'Perform one action towards the current step.',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
             enum: ['click', 'double_click', 'right_click', 'type', 'key',
-                   'scroll', 'move', 'wait', 'screenshot'],
+                   'scroll', 'move', 'wait'],
           },
           x: { type: 'integer', description: 'Horizontal position in the screenshot.' },
           y: { type: 'integer', description: 'Vertical position in the screenshot.' },
@@ -79,11 +163,7 @@ const TOOLS = [
             description: 'Chord to press together, e.g. ["ctrl","t"] or ["enter"].',
           },
           dy: { type: 'integer', description: 'Scroll amount; negative is up.' },
-          why: {
-            type: 'string',
-            description: 'Six words or fewer, for the person watching. '
-              + 'Name the control, e.g. "click the Send button".',
-          },
+          why: { type: 'string', description: 'Six words or fewer, for the person watching.' },
         },
         required: ['action', 'why'],
       },
@@ -92,16 +172,9 @@ const TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'finish',
-      description: 'The task is done, or cannot be taken further.',
-      parameters: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string', description: 'One short past-tense sentence.' },
-          succeeded: { type: 'boolean' },
-        },
-        required: ['summary', 'succeeded'],
-      },
+      name: 'step_done',
+      description: 'The current step is already complete on screen. Move to the next one.',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {
@@ -113,63 +186,39 @@ const TOOLS = [
         + 'codes, CAPTCHAs and Windows security prompts — never attempt these.',
       parameters: {
         type: 'object',
-        properties: {
-          reason: { type: 'string', description: 'What they need to do, in one sentence.' },
-        },
+        properties: { reason: { type: 'string' } },
         required: ['reason'],
       },
     },
   },
 ];
 
-const systemPrompt = (shot, windowTitle) => [
-  'You operate a Windows 11 desktop for someone watching you work.',
+const ACT_SYSTEM = (shot, windowTitle) => [
+  'You operate a Windows 11 desktop, one action at a time.',
   '',
   `The screenshot is ${shot.width} by ${shot.height} pixels. Give every`,
   'coordinate in that space, measured from the top-left corner. Look at where',
   'the control actually is in the image rather than guessing from memory.',
   windowTitle ? `In front right now: ${windowTitle}.` : '',
   '',
-  'Call exactly one tool per turn. After each action you get a fresh',
-  'screenshot, so take one step and look again rather than planning ahead.',
+  'Carry out THE CURRENT STEP and nothing else. The rest of the plan is not',
+  'yours to do and later steps are not yours to start. If the current step is',
+  'already done on screen, call step_done.',
   '',
   'Prefer the keyboard where it is more reliable than aiming: the Windows key',
   'opens Start, ctrl+l focuses a browser address bar, ctrl+t opens a tab.',
-  'Wait when something is still loading.',
   '',
   'The black bar at the top centre of the screen is Pico itself. It is not',
   'part of any task — never click or type into it.',
   '',
   'Never type a password, PIN, card number, one-time code, or answer a',
   'CAPTCHA. Call handover instead.',
-  '',
-  'Call finish as soon as the task is done — including when it turned out to',
-  'be already done. Repeating an action that changed nothing is never the',
-  'right next step: if the screen did not move, either try a different',
-  'approach or finish.',
 ].filter(Boolean).join('\n');
 
-/** Keep the conversation from growing without bound over a long run. */
-const MAX_IMAGES = 3;
-
-function trimHistory(messages) {
-  // Old screenshots are the expensive part and the least useful: only the
-  // most recent few say anything about the screen as it is now.
-  let images = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (!Array.isArray(m.content)) continue;
-    const hasImage = m.content.some((c) => c.type === 'image_url');
-    if (!hasImage) continue;
-    images += 1;
-    if (images > MAX_IMAGES) {
-      m.content = m.content
-        .filter((c) => c.type !== 'image_url')
-        .concat([{ type: 'text', text: '[earlier screenshot omitted]' }]);
-    }
-  }
-  return messages;
-}
+const imagePart = (shot) => ({
+  type: 'image_url',
+  image_url: { url: `data:${shot.mime};base64,${shot.b64}`, detail: 'high' },
+});
 
 /**
  * Run one task against the real desktop.
@@ -181,7 +230,6 @@ function trimHistory(messages) {
  * @param {string} opts.task
  * @param {object} opts.computer   from computer.mjs
  * @param {object} opts.llm        from llm.mjs
- * @param {string} opts.model
  * @param {number} opts.maxTurns
  * @param {object} opts.hooks
  *   gate()            -> Promise<boolean>
@@ -193,7 +241,7 @@ function trimHistory(messages) {
  *   onSummary(text)
  *   onError({ title, message })
  */
-export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks = {} }) {
+export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }) {
   const {
     gate = async () => true,
     onPhase = () => {},
@@ -211,65 +259,123 @@ export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks
     onError({ title: 'Pico stopped', message, recoverable: true });
   };
 
+  const look = async () => computer.capture();
+
   onPhase('Starting');
-  onAudit('run_started', { metadata: { model } });
+  onAudit('run_started', { metadata: { model: llm.tiers.plan } });
 
   let shot;
   try {
     onPhase('Observing');
-    shot = await computer.capture();
+    shot = await look();
   } catch (err) {
     return fail('screen_unavailable', `Pico could not see the screen: ${err.message}`);
   }
   if (!(await gate())) return;
 
-  const messages = [
-    { role: 'system', content: systemPrompt(shot, computer.focusedWindow()) },
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: `Task: ${task}` },
-        { type: 'image_url', image_url: { url: `data:${shot.mime};base64,${shot.b64}`, detail: 'high' } },
+  /* --- decide, once ------------------------------------------------------ */
+  onPhase('Thinking');
+  let plan;
+  try {
+    const choice = await llm.toolCall(
+      [
+        { role: 'system', content: PLAN_SYSTEM(shot, computer.focusedWindow()) },
+        { role: 'user', content: [{ type: 'text', text: `Task: ${task}` }, imagePart(shot)] },
       ],
-    },
-  ];
+      { model: llm.tiers.plan, tools: PLAN_TOOL, effort: 'low', maxTokens: 1200 },
+    );
+    plan = choice.call?.args;
+  } catch (err) {
+    return fail('model_error', err.message);
+  }
+  if (!(await gate())) return;
 
-  let executed = 0;
-  const done = [];                 // what has actually been carried out
+  const steps = Array.isArray(plan?.steps) ? plan.steps.filter((s) => s?.do).slice(0, 6) : [];
+  if (!steps.length || plan.already_done) {
+    onPhase('Completed');
+    onAudit('run_completed', { metadata: { completed_actions: 0, already_done: true } });
+    onSummary(plan?.already_done
+      ? 'That was already the case, so I left it alone.'
+      : 'There was nothing to do for that.');
+    return;
+  }
+
+  onAudit('plan_made', {
+    metadata: { steps: steps.length, done_when: plan.done_when },
+  });
+  if (process.env.PICO_DEBUG) {
+    console.log(`[plan] ${steps.map((s, i) => `${i + 1}.${s.kind}:${s.do}`).join(' | ')}`);
+  }
+
+  /* --- carry it out ------------------------------------------------------ */
+  const budget = Math.min(maxTurns, (steps.length * TURNS_PER_STEP) + 2);
+  const done = [];
+  let stepIndex = 0;
   let lastSignature = null;
+  let lastAction = null;
   let repeats = 0;
   let lastGrey = shot.grey;
 
-  for (let turn = 0; turn < maxTurns; turn++) {
+  for (let turn = 0; turn < budget && stepIndex < steps.length; turn++) {
     if (!(await gate())) return;
+
+    const step = steps[stepIndex];
+    const windowTitle = computer.focusedWindow();
+
+    // Keyboard steps need no aim, so they go to the cheapest model. Pointer
+    // steps have to find something in the image, which nano cannot do — and
+    // aiming needs a little reasoning budget to be reliable. Anything that
+    // has already stalled is escalated regardless.
+    const stuck = repeats >= 2;
+    const pointer = step.kind === 'pointer';
+    const model = stuck ? llm.tiers.plan : (pointer ? llm.tiers.see : llm.tiers.fast);
+    const effort = (stuck || pointer) ? 'low' : 'none';
 
     onPhase('Thinking');
     let choice;
     try {
-      choice = await llm.toolCall(trimHistory(messages), { model, tools: TOOLS });
+      choice = await llm.toolCall(
+        [
+          { role: 'system', content: ACT_SYSTEM(shot, windowTitle) },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: [
+                  `Task: ${task}`,
+                  `Plan: ${steps.map((s, i) => `${i + 1}. ${s.do}`).join(' ')}`,
+                  done.length ? `Already done: ${done.join('; ')}` : null,
+                  `CURRENT STEP (${stepIndex + 1} of ${steps.length}): ${step.do}`,
+                  'Do only that step.',
+                  // Without this it re-sends the identical action and the run
+                  // dies on the stuck check having learned nothing.
+                  repeats > 0
+                    ? `Your last attempt (${describe(lastAction)}) changed nothing on `
+                      + 'screen. Do it a different way, or call step_done if it is '
+                      + 'already the case.'
+                    : null,
+                ].filter(Boolean).join('\n'),
+              },
+              imagePart(shot),
+            ],
+          },
+        ],
+        { model, tools: ACT_TOOLS, effort, maxTokens: pointer || stuck ? 1200 : 700 },
+      );
     } catch (err) {
       return fail('model_error', err.message);
     }
     if (!(await gate())) return;
 
-    // No tool call means the model answered in prose. Treat whatever it said
-    // as the closing summary rather than looping on an empty turn.
-    if (!choice.call) {
-      onPhase('Completed');
-      onAudit('run_completed', { metadata: { completed_actions: executed } });
-      if (choice.text) onSummary(choice.text);
-      return;
-    }
+    const name = choice.call?.name;
+    const args = choice.call?.args ?? {};
 
-    const { name, args } = choice.call;
-
-    if (name === 'finish') {
-      onPhase(args.succeeded === false ? 'Stopped' : 'Completed');
-      onAudit(args.succeeded === false ? 'run_stopped' : 'run_completed', {
-        metadata: { completed_actions: executed },
-      });
-      if (args.summary) onSummary(args.summary);
-      return;
+    if (!choice.call || name === 'step_done') {
+      stepIndex += 1;
+      repeats = 0;
+      lastSignature = null;
+      continue;
     }
 
     if (name === 'handover') {
@@ -278,23 +384,15 @@ export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks
       await onHandover({
         id: `tko_${Date.now()}`,
         reason: args.reason || 'This step needs you.',
-        appName: computer.focusedWindow(),
+        appName: windowTitle,
       });
       if (!(await gate())) return;
-
       onPhase('Observing');
-      try {
-        shot = await computer.capture();
-      } catch (err) {
+      try { shot = await look(); } catch (err) {
         return fail('screen_unavailable', `Pico could not see the screen: ${err.message}`);
       }
-      messages.push({
-        role: 'user',
-        content: [
-          { type: 'text', text: 'The person has finished that step. Here is the screen now.' },
-          { type: 'image_url', image_url: { url: `data:${shot.mime};base64,${shot.b64}`, detail: 'high' } },
-        ],
-      });
+      done.push(`you did it yourself: ${step.do}`);
+      stepIndex += 1;
       continue;
     }
 
@@ -306,6 +404,7 @@ export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks
     const sig = signature(action);
     repeats = sig === lastSignature ? repeats + 1 : 0;
     lastSignature = sig;
+    lastAction = action;
     if (repeats >= STUCK_AFTER) {
       onPhase('Stopped');
       onAudit('run_stopped', { metadata: { failure_class: 'stuck' } });
@@ -316,21 +415,17 @@ export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks
       return;
     }
 
-    const windowTitle = computer.focusedWindow();
     const risk = assess(action, windowTitle);
     const detail = describe(action);
     const phaseType = ACTION_PHASE[action.type] || 'Move';
-
     onAudit('action_assessed', { action_type: phaseType, risk });
 
     if (risk.decision === 'Handover') {
       onPhase('AwaitingTakeover');
       await onHandover({ id: `tko_${Date.now()}`, reason: risk.reason, appName: windowTitle });
       if (!(await gate())) return;
-      messages.push({
-        role: 'assistant',
-        content: `I handed that step to the person: ${risk.reason}`,
-      });
+      done.push(`you did it yourself: ${step.do}`);
+      stepIndex += 1;
       continue;
     }
 
@@ -352,35 +447,23 @@ export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks
     }
 
     // A job typed into the island leaves keyboard focus in the island, so the
-    // first keystrokes of the run would be typed into Pico itself. Refuse
-    // and say why; the model then clicks the window it meant. The Windows key
-    // is exempt: it opens Start wherever focus is.
+    // first keystrokes of the run would be typed into Pico itself. Skip and
+    // let the next turn click into the right window first. The Windows key is
+    // exempt: it opens Start wherever focus is.
     const keyboardAction = action.type === 'type'
       || (action.type === 'key' && !(action.keys || []).some((k) => /^(?:win|meta|super|cmd)$/i.test(k)));
     if (keyboardAction && isPicoWindow(windowTitle)) {
-      const rawCall = choice.call.raw;
-      messages.push(
-        { role: 'assistant', content: null, tool_calls: [rawCall] },
-        {
-          role: 'tool',
-          tool_call_id: rawCall.id,
-          content: 'Not done: keyboard focus is on Pico\'s own window. Click the '
-            + 'window or field the text should go into first, then type.',
-        },
-      );
+      onAudit('action_skipped', { metadata: { reason: 'focus is on Pico itself' } });
       continue;
     }
 
     onPhase('Acting');
     onAction({ type: phaseType, detail });
-
     try {
       await execute(computer, action, shot);
     } catch (err) {
       return fail('action_failed', `That action did not go through: ${err.message}`);
     }
-    executed += 1;
-    done.push(detail);
     onAudit('action_executed', { action_type: phaseType, risk });
     if (!(await gate())) return;
 
@@ -390,45 +473,121 @@ export async function runTask({ task, computer, llm, model, maxTurns = 40, hooks
     await computer.wait(action.type === 'key' || action.type === 'type' ? 240 : 150);
 
     onPhase('Observing');
-    try {
-      shot = await computer.capture();
-    } catch (err) {
+    try { shot = await look(); } catch (err) {
       return fail('screen_unavailable', `Pico could not see the screen: ${err.message}`);
     }
 
-    // Whether anything actually happened. Comparing the two screenshots is
-    // the only honest answer, and it is the single most useful thing to tell
-    // a model that is about to repeat itself.
-    const unchanged = sameScreen(lastGrey, shot.grey);
+    // Something happened, so treat the step as carried out and move on. A
+    // step that genuinely needs a second action gets it: the next turn sees
+    // the next step, and if that is already satisfied it says so.
+    const moved = !sameScreen(lastGrey, shot.grey);
+    if (process.env.PICO_DEBUG) {
+      console.log(`[turn ${turn}] step ${stepIndex + 1}/${steps.length} "${step.do}" `
+        + `via ${model} -> ${sig} | screen ${moved ? 'changed' : 'UNCHANGED'} | repeats=${repeats}`);
+    }
+    if (moved) {
+      done.push(detail);
+      stepIndex += 1;
+      repeats = 0;
+      lastSignature = null;
+    }
     lastGrey = shot.grey;
-
-    // The provider requires the assistant turn that made the call and a tool
-    // result answering it, in that order, before the next user turn.
-    const rawCall = choice.call.raw;
-    messages.push(
-      { role: 'assistant', content: null, tool_calls: [rawCall] },
-      { role: 'tool', tool_call_id: rawCall.id, content: unchanged ? 'done (screen unchanged)' : 'done' },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: [
-              `Task: ${task}`,
-              `Done so far: ${done.map((d, i) => `${i + 1}. ${d}`).join('; ')}`,
-              unchanged
-                ? 'The screen is pixel-for-pixel identical to before that action, '
-                  + 'so it had no effect. Do something different, or finish.'
-                : 'Here is the screen now.',
-            ].join('\n'),
-          },
-          { type: 'image_url', image_url: { url: `data:${shot.mime};base64,${shot.b64}`, detail: 'high' } },
-        ],
-      },
-    );
   }
 
-  fail('turn_limit', `Pico stopped after ${maxTurns} actions, the configured limit.`);
+  /* --- and stop ---------------------------------------------------------- */
+  const verdict = await verify(llm, { task, doneWhen: plan.done_when, shot, done });
+  onPhase(verdict.succeeded ? 'Completed' : 'Stopped');
+  onAudit(verdict.succeeded ? 'run_completed' : 'run_stopped', {
+    metadata: { completed_actions: done.length, planned: steps.length },
+  });
+  onSummary(verdict.summary);
+}
+
+const REPORT_TOOL = [{
+  type: 'function',
+  function: {
+    name: 'report',
+    description: 'Say whether the task actually got done, judging by the screen.',
+    parameters: {
+      type: 'object',
+      properties: {
+        succeeded: { type: 'boolean', description: 'Is what was asked for actually true on screen now?' },
+        summary: {
+          type: 'string',
+          description: 'One short past-tense sentence for the person. If it did '
+            + 'not work, say plainly what happened instead.',
+        },
+      },
+      required: ['succeeded', 'summary'],
+    },
+  },
+}];
+
+/**
+ * Look at the final screen and say honestly whether it worked.
+ *
+ * Worth a whole extra call because the alternative was reciting the plan back
+ * as though it had happened: a run that opened nothing still reported
+ * "Notepad was opened and hello there was typed", which is the one kind of
+ * wrong an agent must never be.
+ */
+async function verify(llm, { task, doneWhen, shot, done }) {
+  const plain = done.length
+    ? `Done: ${done.join('; ')}.`
+    : 'Nothing was carried out.';
+  try {
+    const choice = await llm.toolCall(
+      [
+        {
+          role: 'system',
+          content: 'You check whether a desktop task actually got done. Judge only '
+            + 'by the screenshot. Do not be generous: if what was asked for is not '
+            + 'visibly true, it did not work.',
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                `Task: ${task}`,
+                doneWhen ? `Complete when: ${doneWhen}` : null,
+                `Actions carried out: ${done.length ? done.join('; ') : 'none'}`,
+                'Here is the screen now.',
+              ].filter(Boolean).join('\n'),
+            },
+            imagePart(shot),
+          ],
+        },
+      ],
+      { model: llm.tiers.see, tools: REPORT_TOOL, effort: 'low', maxTokens: 900 },
+    );
+    const r = choice.call?.args;
+    if (r && typeof r.summary === 'string' && r.summary.trim()) {
+      return { succeeded: Boolean(r.succeeded), summary: r.summary.trim() };
+    }
+  } catch {
+    /* fall through to the plain account below */
+  }
+  return { succeeded: done.length > 0, summary: plain };
+}
+
+/**
+ * One plain past-tense sentence. The plan's steps are imperatives ("click the
+ * Start button"), and stitching those together reads like an instruction
+ * rather than a report — so the cheapest model turns them into a sentence.
+ * If it is slow or unavailable the plain list still says what happened.
+ */
+async function summarise(llm, task, done) {
+  if (!done.length) return 'Nothing needed doing.';
+  const plain = done.join(', then ');
+  try {
+    const line = await llm.summarise(task, done);
+    if (line) return line;
+  } catch {
+    /* a missing sentence must not fail a run that succeeded */
+  }
+  return `Done: ${plain}.`;
 }
 
 /** Coordinates arrive in the screenshot's space; the mouse works in another. */
@@ -447,7 +606,6 @@ async function execute(computer, action, shot) {
     case 'type': return computer.type(action.text ?? '');
     case 'key': return computer.keypress(action.keys ?? []);
     case 'wait': return computer.wait(900);
-    case 'screenshot': return undefined;   // the observation step takes one
     default: return undefined;
   }
 }

@@ -406,13 +406,15 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     const model = el('div', 'panel');
     model.append(el('div', 'panel__title', 'Model'));
     model.append(el('p', 'panel__sub',
-      'Simple tasks use a fast nano model; writing and comparison use a mini one. ' +
-      'Pico picks per task.'));
+      'A task is planned once by the strongest model, then each step is carried '
+      + 'out by the cheapest one that can actually do it: a small model for '
+      + 'typing and shortcuts, a larger one where something has to be found on '
+      + 'screen and clicked.'));
 
     const mrow = el('div', 'row');
     const mmain = el('div', 'row__main');
     mmain.append(el('div', 'row__title', store.state.settings.model || 'not configured'));
-    mmain.append(el('div', 'row__sub', 'Chosen automatically'));
+    mmain.append(el('div', 'row__sub', 'Plan + click / keyboard, chosen per step'));
     mrow.append(mmain);
     model.append(mrow);
 

@@ -209,8 +209,7 @@ export class HostAgent extends MockAgent {
       task,
       computer: this.computer,
       llm: this.llm,
-      model: this.settings.model,
-      maxTurns: Math.max(1, Number(this.settings.maximumComputerTurns) || 40),
+      maxTurns: Math.max(1, Number(this.settings.maximumComputerTurns) || 24),
       hooks: {
         gate: () => this.gate(),
         onPhase: (phase) => this.setPhase(phase),
