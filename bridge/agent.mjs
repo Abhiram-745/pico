@@ -63,6 +63,10 @@ export class HostAgent extends MockAgent {
       this.petName = String(msg.payload?.name || 'Pico').slice(0, 24);
       return;
     }
+    if (msg?.command === 'answerQuestion') {
+      this._answerResolve?.(msg.payload?.text ?? '');
+      return;
+    }
     return super.handle(msg);
   }
 
@@ -213,6 +217,7 @@ export class HostAgent extends MockAgent {
       hooks: {
         gate: () => this.gate(),
         onPhase: (phase) => this.setPhase(phase),
+        onStep: (step) => this.emit('step', step),
         onAction: (a) => this.emit('action', a),
         onAudit: (event, extra) => this.audit(event, extra),
         onSummary: (text) => {
@@ -237,6 +242,26 @@ export class HostAgent extends MockAgent {
           const approved = await decision;
           this._approveResolve = null;
           return approved && !this.cancelled;
+        },
+
+        // One question, asked in the island, answered in the same box you
+        // typed the task into. Armed before emitting, like approvals.
+        onQuestion: async (q) => {
+          const answered = new Promise((res) => { this._answerResolve = res; });
+          this.emit('question', q);
+          const answer = await answered;
+          this._answerResolve = null;
+          this.emit('question', null);
+
+          // The exchange goes into the thread once it is an exchange. While
+          // the question is still open it lives on its own card, and putting
+          // it in the thread as well showed it twice, one above the other.
+          const said = this.cancelled ? '' : String(answer || '').trim();
+          this.emit('message', { id: q.id, from: 'pico', text: q.text, done: true });
+          if (said) {
+            this.emit('message', { id: `${q.id}_a`, from: 'you', text: said, done: true });
+          }
+          return said;
         },
 
         onHandover: async (card) => {

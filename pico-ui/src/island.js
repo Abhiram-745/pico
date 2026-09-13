@@ -29,8 +29,13 @@ import { permissions, LEVELS } from './permissions.js';
 
 const NAME_KEY = 'pico.pet.name.v1';
 
-/** Content width for each size. Height is whatever the content needs. */
-export const WIDTHS = { compact: 236, live: 408, open: 584 };
+/**
+ * Content width for each size. Height is whatever the content needs.
+ *
+ * peek is what hovering gets you: clearly bigger than resting, so the island
+ * visibly reacts to the pointer before you have committed to anything.
+ */
+export const WIDTHS = { compact: 232, peek: 392, live: 440, open: 600 };
 
 const SHORT = {
   Idle: 'Ready',
@@ -65,6 +70,7 @@ const ICON = {
   chevron: 'm18 15-6-6-6 6',
   shield: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z M9 12l2 2 4-4',
   alert: 'm21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01',
+  ask: 'M12 17h.01 M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3 M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z',
   hand: 'M18 11V6a2 2 0 0 0-4 0 M14 10V4a2 2 0 0 0-4 0v2 M10 10.5V6a2 2 0 0 0-4 0v8 M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15',
 };
 
@@ -195,12 +201,14 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   }
 
   function decide(s) {
+    if (s.question) return 'open';
     if (s.approval && !autoApproved.has(s.approval.id)) return 'open';
     if (s.takeover) return 'open';
     if (pinned) return 'open';
-    if (isActive(s.phase) || flash || hover) return 'live';
+    if (isActive(s.phase) || flash) return 'live';
     const last = s.messages[s.messages.length - 1];
     if (last && last.from === 'pico' && !last.done) return 'live';   // reply still streaming
+    if (hover) return 'peek';
     return 'compact';
   }
 
@@ -218,8 +226,10 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
 
   function submit(value) {
     const t = String(value ?? input.value).trim();
-    if (!t || !store.canSubmit) return;
+    if (!t) return;
     const id = `you_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+    if (!store.canSubmit) return;
     store.addMessage({ id, from: 'you', text: t, done: true });
     store.addRecent(t);
     bridge.send('submitTask', { text: t, mode: store.state.mode, id });
@@ -227,8 +237,10 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     syncSend();
   }
 
+  const canSend = () => store.canSubmit;
+
   function syncSend() {
-    sendBtn.disabled = !input.value.trim() || !store.canSubmit;
+    sendBtn.disabled = !input.value.trim() || !canSend();
   }
 
   bar.addEventListener('click', (e) => {
@@ -264,14 +276,77 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     else collapse();
   });
 
-  root.addEventListener('mouseenter', () => {
+  /* --- hovering ------------------------------------------------------------
+     Reacting to the pointer is the island's one unprompted gesture, so it has
+     to happen every single time the pointer arrives — and stop the moment it
+     leaves.
+
+     The page is a poor judge of this, which took a while to accept. A browser
+     announces a pointer leaving whenever the window resizes under it, and the
+     island resizes precisely because it was hovered: expand, leave, collapse,
+     enter, expand — the island flickering between two sizes under a pointer
+     that had not moved. Its own hit-testing is no better. Put the pointer
+     somewhere rather than moving it there and :hover can still say the island
+     is not underneath it, so the safety net had a hole in the same place.
+
+     None of that is in doubt outside the browser. There is a window, at a
+     rectangle the bridge chose, and a pointer, at a position Windows will
+     state plainly. So the bridge watches both and says which it is, and from
+     its first word the page stops guessing entirely — `told` is that switch.
+
+     What follows is only for when there is no bridge to ask: the island open
+     in an ordinary tab, or the mock. Then the page falls back on its own
+     events, with :hover to check the ones it does not believe. */
+  const page = document.documentElement;
+
+  let told = false;          // the bridge has spoken; the page defers to it
+  let hoverPoll = null;
+
+  const under = () => {
+    try { return page.matches(':hover'); } catch { return hover; }
+  };
+
+  function setHover(on) {
+    if (on === hover) return;
+    hover = on;
+    update();
+  }
+
+  function enter() {
+    if (told) return;
     clearTimeout(hoverTimer);
-    hoverTimer = setTimeout(() => { hover = true; update(); }, 110);
-  });
-  root.addEventListener('mouseleave', () => {
+    setHover(true);
+    // While it believes it is hovered, keep asking. This is the safety net
+    // for the opposite mistake: a leave that is never announced at all, which
+    // would leave the island expanded over an empty desk.
+    if (!hoverPoll) hoverPoll = setInterval(verify, 200);
+  }
+
+  function verify() {
+    if (told || under()) return;
+    clearInterval(hoverPoll);
+    hoverPoll = null;
+    setHover(false);
+  }
+
+  function leave(e) {
+    if (told) return;
     clearTimeout(hoverTimer);
-    if (hover) { hover = false; update(); }
-  });
+    // A leave whose coordinates are outside the window is not in doubt: the
+    // pointer really has gone, and waiting to confirm it only makes the
+    // island slow to tuck away.
+    const gone = e && (e.clientX < 0 || e.clientY < 0
+      || e.clientX > window.innerWidth || e.clientY > window.innerHeight);
+    hoverTimer = setTimeout(verify, gone ? 0 : 140);
+  }
+
+  page.addEventListener('pointerenter', enter);
+  page.addEventListener('pointerover', enter);
+  page.addEventListener('pointermove', enter);
+  page.addEventListener('pointerleave', leave);
+  // relatedTarget is null only when the pointer has moved somewhere this page
+  // cannot see — which is to say, off the island altogether.
+  document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) leave(e); });
 
   // Clicking anywhere else on the desktop tucks it away, as the real one does
   // — unless it is holding a decision that still needs an answer.
@@ -323,31 +398,84 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   }
 
   // --- decisions -----------------------------------------------------------
+  /* Anything Pico cannot get on with until the person says something.
+     A question before it starts, an approval mid-run, a handover.
+
+     A question used to be answered in the same box a task is typed into,
+     which meant the one moment Pico is actually waiting on you looked exactly
+     like the moment it is waiting for you to think of something to do. Now it
+     has a card of its own, with its own field, under a dot that will not stop
+     blinking until it is dealt with. */
   let decisionKey = null;
 
+  const ATTENTION = {
+    question: 'Needs your answer',
+    approval: 'Needs your approval',
+    takeover: 'Needs you to take over',
+  };
+
   function syncDecision(s) {
+    const q = s.question;
     const a = s.approval && !autoApproved.has(s.approval.id) ? s.approval : null;
     const t = s.takeover;
-    const key = a ? `a:${a.id}` : t ? `t:${t.id}` : null;
+    const key = q ? `q:${q.id}` : a ? `a:${a.id}` : t ? `t:${t.id}` : null;
     if (key === decisionKey) return;
     decisionKey = key;
     decision.replaceChildren();
     decision.hidden = !key;
     if (!key) return;
 
-    const kind = a ? 'approval' : 'takeover';
+    const kind = q ? 'question' : a ? 'approval' : 'takeover';
     decision.dataset.kind = kind;
 
+    const flag = el('div', 'island__attention');
+    flag.append(el('i', 'island__attention-dot'), el('span', null, ATTENTION[kind]));
+
     const badge = el('div', 'island__decision-icon');
-    badge.append(icon(a ? 'alert' : 'hand'));
+    badge.append(icon(q ? 'ask' : a ? 'alert' : 'hand'));
 
     const body = el('div', 'island__decision-body');
-    body.append(el('div', 'island__decision-title', a ? a.summary : 'Your turn'));
-    body.append(el('div', 'island__decision-reason',
-      a ? (a.risk?.reason || 'This step needs your approval.') : t.reason));
+    body.append(el('div', 'island__decision-title',
+      q ? q.text : a ? a.summary : 'Your turn'));
+    if (!q) {
+      body.append(el('div', 'island__decision-reason',
+        a ? (a.risk?.reason || 'This step needs your approval.') : t.reason));
+    }
 
     const actions = el('div', 'island__decision-actions');
-    if (a) {
+
+    if (q) {
+      // Its own field. Answering is not the same act as starting a job, and
+      // giving them the same box made a waiting Pico invisible.
+      const row = el('div', 'island__answer');
+      const field = el('input', 'island__answer-input');
+      field.type = 'text';
+      field.autocomplete = 'off';
+      field.spellcheck = false;
+      field.placeholder = 'Type your answer…';
+      field.setAttribute('aria-label', q.text);
+      const go = iconButton('send', 'Answer', 'island__send');
+      go.disabled = true;
+
+      const answer = () => {
+        const value = field.value.trim();
+        if (!value) return;
+        // The bridge writes both halves into the thread once it has the
+        // answer; adding one here as well would show it twice.
+        bridge.send('answerQuestion', { id: q.id, text: value });
+        store.setQuestion(null);
+      };
+
+      field.addEventListener('input', () => { go.disabled = !field.value.trim(); });
+      field.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); answer(); }
+      });
+      go.addEventListener('click', answer);
+
+      row.append(field, go);
+      actions.append(row);
+      requestAnimationFrame(() => field.focus({ preventScroll: true }));
+    } else if (a) {
       const deny = el('button', 'island__pill', 'Stop');
       const allow = el('button', 'island__pill island__pill--primary', 'Allow once');
       deny.type = allow.type = 'button';
@@ -361,7 +489,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
       actions.append(done);
     }
 
-    decision.append(badge, body, actions);
+    decision.append(flag, badge, body, actions);
   }
 
   // --- the bar -------------------------------------------------------------
@@ -375,10 +503,25 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     let line = SHORT[s.phase] || 'Ready';
     let mark = running ? 'bars' : 'dot';
 
-    if (view === 'live') {
+    /* What Pico is doing, said while it is doing it.
+       The bar used to show the last action it finished, which is the one
+       thing that is definitely no longer happening: it sat on "clicked the
+       address bar" through the three seconds of working out what to do next,
+       so the island was always one beat behind and often plain wrong. The
+       plan step is what it is on now; the action is what it is doing within
+       that step, and only while it is actually doing it. */
+    const step = s.step;
+    const doing = s.phase === 'Acting' && s.action?.detail ? s.action.detail : null;
+    const busy = doing || step?.text || copy.title;
+    const progress = step && step.total > 1 ? `Step ${step.index + 1} of ${step.total}` : null;
+
+    if (view === 'peek') {
+      head = petName;
+      line = s.guardian.canAct === false ? 'Chat only' : 'Click to type · Esc to hide';
+    } else if (view === 'live') {
       if (running) {
-        head = s.action?.detail || copy.title;
-        line = SHORT[s.phase];
+        head = busy;
+        line = progress ? `${progress} · ${SHORT[s.phase]}` : SHORT[s.phase];
       } else if (streaming) {
         head = last.text || 'Writing…';
         line = petName;
@@ -392,7 +535,9 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
         line = 'Click to type';
       }
     } else if (view === 'open') {
-      line = running ? (s.action?.detail || copy.title) : s.guardian.canAct === false ? 'Chat only' : 'Ready';
+      line = running
+        ? (progress ? `${progress} · ${busy}` : busy)
+        : s.guardian.canAct === false ? 'Chat only' : 'Ready';
     }
 
     if (title.textContent !== head) title.textContent = head;
@@ -417,9 +562,12 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
       : s.mode === 'agent' ? `Tell ${petName} what to do…`
       : `Ask ${petName} anything, or give it a job…`;
     input.disabled = !s.guardian.ready;
+    // While Pico is waiting on an answer there is exactly one box to type in,
+    // and it is the one on the card. Two would be a puzzle.
+    composer.hidden = Boolean(s.question);
     syncSend();
 
-    empty.hidden = s.messages.length > 0 || Boolean(s.approval || s.takeover);
+    empty.hidden = s.messages.length > 0 || Boolean(s.approval || s.takeover || s.question);
     emptyLine.textContent = s.guardian.canAct === false && s.guardian.reason
       ? s.guardian.reason
       : `Say hi, or tell ${petName} what to do on your computer.`;
@@ -435,15 +583,80 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   let lastMeasured = '';
   let healTimer = null;
   let healAttempts = 0;
+  let want = { width: WIDTHS.compact, height: 36 };
 
   const MAX_HEALS = 3;
+
+  /* --- and if the window will not come ------------------------------------
+     Everything above assumes the frame eventually arrives at the size the
+     page asked for. When it does not — no window helper on this machine, a
+     bridge that has been restarted, a resize refused for any reason at all —
+     the island lays itself out at a width the window does not have, and the
+     content is simply cut off against the frame. There is no scrollbar to
+     hint at it and no way for the user to drag it bigger: the window is the
+     island. What they get is half a sentence with its first word sliced off.
+
+     So the page ends up responsible for its own legibility. If the frame has
+     not caught up after a moment, the island folds into the room it actually
+     has — text at full size, ellipsised where it must be, the conversation
+     scrolling — and unfolds again the instant the frame arrives.
+
+     What it must never do is scale itself down. A miniature island floating
+     in the middle of a black rectangle is not a smaller island, it is a small
+     window, and a window is the one thing this is not. */
+  let capped = false;
+  let fitTimer = null;
+
+  function fits() {
+    const iw = window.innerWidth;
+    const ih = window.innerHeight;
+    if (!(iw > 0 && ih > 0)) return true;      // nothing to measure against
+    return iw >= want.width - 2 && ih >= want.height - 2;
+  }
+
+  function setCapped(on) {
+    if (on === capped) return;
+    capped = on;
+    root.classList.toggle('is-capped', on);
+  }
+
+  function checkFit() {
+    if (fits()) {
+      clearTimeout(fitTimer);
+      fitTimer = null;
+      setCapped(false);
+      return;
+    }
+    // Folded already: stay folded until there is room again.
+    if (capped) return;
+    // Otherwise give the frame time to arrive. A morph takes about a third of
+    // a second, and during it being briefly larger than the window is the
+    // reveal, not a fault.
+    if (!fitTimer) fitTimer = setTimeout(() => { fitTimer = null; if (!fits()) setCapped(true); }, 500);
+  }
+
+  window.addEventListener('resize', checkFit);
+
+  /* How tall the island wants to be, which is not the same as how tall it
+     currently is: folded, it is exactly as tall as the window, and asking for
+     that would be asking to stay folded forever. Unfold, measure, fold back —
+     all inside one frame, so nothing is painted in between. */
+  function naturalHeight() {
+    if (!capped) return Math.ceil(root.offsetHeight);
+    root.classList.remove('is-capped');
+    const h = Math.ceil(root.offsetHeight);
+    root.classList.add('is-capped');
+    return h;
+  }
 
   function postMeasure(force = false) {
     const size = {
       view,
       width: WIDTHS[view],
-      height: Math.ceil(root.getBoundingClientRect().height),
+      height: naturalHeight(),
     };
+    want = { width: size.width, height: size.height };
+    checkFit();
     const key = `${size.width}x${size.height}`;
     if (!force && key === lastMeasured) return;
     if (!force) healAttempts = 0;      // a genuinely new size starts fresh
@@ -521,7 +734,20 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   store.subscribe((s, meta) => {
     if (meta.type === 'cursor') return;               // thirty a second, nothing to redraw
 
+    // The bridge, watching the real pointer against the real window. It
+    // speaks only when the answer changes, so this is a few messages per
+    // visit to the island — and it is right every time, which is more than
+    // the page's own enter and leave events manage.
+    if (meta.type === 'notchHover') {
+      told = true;
+      clearTimeout(hoverTimer);
+      if (hoverPoll) { clearInterval(hoverPoll); hoverPoll = null; }
+      setHover(s.notchHover);
+      return;
+    }
+
     if (meta.type === 'approval') maybeAutoApprove(s);
+    if (meta.type === 'question' && s.question) pinned = true;
     if (meta.type === 'action') mascot.pulse();
 
     // Sent as a job: get out of the way of the screen Pico is about to use.

@@ -28,6 +28,7 @@ export const HOST_EVENTS = [
   'message',     // { id, text, done } — a chat reply, streamed
   'cursor',      // { x, y, done } — where the pointer actually is, live
   'notch',       // { open } — whether the notch window is up
+  'question',    // { id, text } | null — Pico needs one detail before starting
 ];
 
 /** Commands the UI sends up to the host. */
@@ -41,6 +42,7 @@ export const UI_COMMANDS = [
   'takeoverDone', // { id }
   'saveSettings', // { model?, pauseOnPhysicalInput?, maximumComputerTurns?, apiKey? }
   'setName',      // { name } — so replies answer to what you called it
+  'answerQuestion', // { id, text } — the answer to the question it asked
   'tuckAway',     // {}
   'openPalette',  // {}
   'closePalette', // {}
@@ -69,6 +71,10 @@ class Bridge {
     switch (type) {
       case 'phase':
         store.setPhase(payload.phase, payload);
+        break;
+
+      case 'step':
+        store.setStep(payload);
         break;
 
       case 'action':
@@ -125,6 +131,16 @@ class Bridge {
 
       case 'notch':
         store.set({ notchOpen: Boolean(payload.open) }, { type: 'notch' });
+        break;
+
+      // Whether the pointer is on the island, answered by the bridge because
+      // the island cannot answer it about itself. See watchHover.
+      case 'notchHover':
+        store.set({ notchHover: Boolean(payload.over) }, { type: 'notchHover' });
+        break;
+
+      case 'question':
+        store.setQuestion(payload);
         break;
 
       default:

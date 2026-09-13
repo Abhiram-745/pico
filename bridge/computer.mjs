@@ -203,12 +203,47 @@ export async function loadComputer({ onPointer } = {}) {
       await mouse.doubleClick(Button.LEFT);
     },
 
+    /**
+     * Press, travel, release — the way a hand does it.
+     *
+     * Every pause here is load-bearing, which is why dragging a window used
+     * to do nothing at all. Windows does not treat a button-down followed by
+     * a jump as a drag: the pointer has to cross a few pixels while the
+     * button is held before the application starts one, the application
+     * needs a frame to notice the button went down in the first place, and
+     * letting go in the same instant the pointer arrives drops whatever was
+     * being dragged at the position before last.
+     *
+     * So: settle, press, settle, nudge past the threshold, travel, settle,
+     * release. A tenth of a second in total, and it is the difference
+     * between moving a window and pressing on its title bar.
+     */
     async drag(path = []) {
       if (path.length < 2) return;
       await glide(path[0].x, path[0].y);
+      await sleep(60);                       // let the target see the pointer arrive
+
       await mouse.pressButton(Button.LEFT);
-      for (const p of path.slice(1)) await glide(p.x, p.y, 260);
-      await mouse.releaseButton(Button.LEFT);
+      await sleep(90);                       // and see the button go down
+
+      // Past the system drag threshold before doing anything else, or the
+      // application treats the whole gesture as a click.
+      const next = path[1];
+      const dx = Math.sign(next.x - at.x) || 1;
+      const dy = Math.sign(next.y - at.y) || 1;
+      await setPointer(at.x + (dx * 8), at.y + (dy * 8));
+      await sleep(40);
+
+      try {
+        for (const p of path.slice(1)) await glide(p.x, p.y, 320);
+        await sleep(110);                    // arrive, then let go — not both at once
+      } finally {
+        // Never leave the button down. A run that failed mid-drag would
+        // otherwise hand the desk back with the mouse held, and every
+        // subsequent click would be a selection.
+        await mouse.releaseButton(Button.LEFT);
+      }
+      await sleep(60);
     },
 
     async scroll(x, y, dx = 0, dy = 0) {

@@ -70,6 +70,7 @@ const initial = () => ({
   phase: 'Idle',
   task: '',
   action: null,            // { type, detail }
+  step: null,              // { index, total, text } — the plan step being worked on
   approval: null,          // { id, summary, target, risk }
   takeover: null,          // { id, reason, appName }
   error: null,             // { title, message, recoverable }
@@ -91,12 +92,14 @@ const initial = () => ({
   // in the notch is the same thread you see in the app window.
   messages: [],            // { id, from: 'you'|'pico'|'event', text, done }
   routed: null,            // { mode, why, source } — which fork the last message took
+  question: null,          // { id, text } — asked before starting, answered in the composer
   mode: 'auto',            // what the composer is set to: auto | chat | agent
 
   // Where the real pointer is while Pico drives it. Drawn rather than
   // guessed: Windows has one system cursor and this is its live position.
   cursor: { x: 0, y: 0, visible: false },
   notchOpen: false,
+  notchHover: false,
 
   turn: 0,
   timeline: [],
@@ -146,6 +149,12 @@ class Store {
     }
     if (phase === 'Starting') this.state.summary = null;
     this.emit({ type: 'phase', phase, previous, ...meta });
+  }
+
+  /** Which step of the plan Pico is on, so the island can say so. */
+  setStep(step) {
+    this.state.step = step && step.text ? step : null;
+    this.emit({ type: 'step', step: this.state.step });
   }
 
   setAction(action) {
@@ -201,6 +210,12 @@ class Store {
   clearMessages() {
     this.state.messages = [];
     this.emit({ type: 'message', cleared: true });
+  }
+
+  /** Pico needs one detail before it starts. The next thing you type answers it. */
+  setQuestion(question) {
+    this.state.question = question && question.text ? question : null;
+    this.emit({ type: 'question', question: this.state.question });
   }
 
   setRouted(routed) {

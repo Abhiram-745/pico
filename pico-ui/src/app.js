@@ -234,7 +234,8 @@ export function mountApp(host = document.body, { demo = false } = {}) {
 
     const input = el('input');
     input.type = 'text';
-    input.placeholder = state.mode === 'chat' ? `Talk to ${petName}…`
+    input.placeholder = state.question ? 'Answer to carry on…'
+      : state.mode === 'chat' ? `Talk to ${petName}…`
       : state.mode === 'agent' ? `Tell ${petName} what to do…`
       : 'Message or task…';
     input.disabled = !state.guardian.ready;
@@ -245,13 +246,25 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     send.append(icon(ICONS.send));
     send.disabled = true;
 
-    const sync = () => { send.disabled = !input.value.trim() || !store.canSubmit; };
+    // A pending question is answered mid-run, so it is not subject to the
+    // "is Pico free?" rule that gates starting a new task.
+    const canSend = () => Boolean(state.question) || store.canSubmit;
+    const sync = () => { send.disabled = !input.value.trim() || !canSend(); };
     input.addEventListener('input', sync);
 
     const submit = () => {
       const text = input.value.trim();
       if (!text || send.disabled) return;
       const id = `you_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      if (state.question) {
+        // The bridge writes the question and the answer into the thread
+        // together once it has the answer, so nothing is added here.
+        bridge.send('answerQuestion', { id: state.question.id, text });
+        store.setQuestion(null);
+        input.value = '';
+        render(store.state);
+        return;
+      }
       store.addMessage({ id, from: 'you', text, done: true });
       store.addRecent(text);
       bridge.send('submitTask', { text, mode: state.mode, id });
@@ -353,8 +366,62 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     return wrap;
   }
 
+  // --- start with Windows ---------------------------------------------------
+  let startup = null;
+  let startupBusy = false;
+
+  async function loadStartup() {
+    if (demo || startup) return;
+    try {
+      const res = await fetch('/startup/state');
+      if (res.ok) { startup = await res.json(); render(store.state); }
+    } catch { /* no bridge behind this page */ }
+  }
+
+  async function toggleStartup() {
+    if (startupBusy || !startup) return;
+    startupBusy = true;
+    render(store.state);
+    try {
+      const res = await fetch(startup.enabled ? '/startup/disable' : '/startup/enable',
+        { method: 'POST' });
+      startup = await res.json();
+    } catch (err) {
+      startup = { ...startup, error: err.message };
+    } finally {
+      startupBusy = false;
+      render(store.state);
+    }
+  }
+
   function renderSettings() {
     const wrap = el('div', 'measure');
+
+    // --- start with Windows ---
+    const boot = el('div', 'panel');
+    boot.append(el('div', 'panel__title', 'Start with Windows'));
+    boot.append(el('p', 'panel__sub',
+      'Pico comes up when you sign in and then does nothing at all until you '
+      + 'ask it to — no window, no model, no work. The notch and this window '
+      + 'open when you use them.'));
+
+    const bootRow = el('div', 'row');
+    const bootMain = el('div', 'row__main');
+    bootMain.append(el('div', 'row__title',
+      startup?.enabled ? 'On' : startup ? 'Off' : 'Checking…'));
+    bootMain.append(el('div', 'row__sub', demo
+      ? 'Only the installed app can start with Windows.'
+      : startup?.error ? startup.error
+      : startup?.enabled ? 'A shortcut in your Startup folder, which you can delete any time.'
+      : 'Adds a shortcut to your Startup folder.'));
+    const bootBtn = el('button', startup?.enabled ? 'btn' : 'btn btn--primary',
+      startupBusy ? 'Working…' : startup?.enabled ? 'Turn off' : 'Turn on');
+    bootBtn.type = 'button';
+    bootBtn.disabled = demo || startupBusy || !startup?.supported;
+    bootBtn.addEventListener('click', toggleStartup);
+    bootRow.append(bootMain, bootBtn);
+    boot.append(bootRow);
+    wrap.append(boot);
 
     // --- permissions ---
     const perm = el('div', 'panel');
@@ -640,6 +707,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
   function go(id) {
     section = id;
     if (!demo && id === 'updates' && !updateInfo && !updateBusy) checkUpdates(true);
+    if (id === 'settings') loadStartup();
     render(store.state);
   }
 

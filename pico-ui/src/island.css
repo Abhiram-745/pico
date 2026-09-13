@@ -25,8 +25,10 @@ body {
   --ink: #f5f5f7;
   --dim: #8e8e93;
   --faint: #636366;
-  --well: #1c1c1e;
-  --well-hi: #2c2c2e;
+  /* Black, all the way down. Surfaces are separated by a little white light
+     rather than by grey paint, so the whole thing reads as one cut-out. */
+  --well: rgba(255, 255, 255, .055);
+  --well-hi: rgba(255, 255, 255, .11);
   --line: rgba(255, 255, 255, .08);
   --spring: cubic-bezier(.32, 1.25, .5, 1);
   --out: cubic-bezier(.2, .8, .2, 1);
@@ -40,9 +42,37 @@ body {
   flex-direction: column;
 }
 
-.island[data-view="compact"] { --w: 236px; }
-.island[data-view="live"]    { --w: 408px; }
-.island[data-view="open"]    { --w: 584px; }
+/* When the frame will not come.
+
+   The island lays itself out at the size it has asked the window to be and
+   the window follows. If it does not — no window helper on this machine, a
+   bridge that has been restarted, a resize refused for any reason — the
+   island is left wider and taller than the window it lives in, and the frame
+   slices through the text. There is no scrollbar to hint at it and no way to
+   drag the window bigger: the window is the island.
+
+   So, as a last resort, the island folds itself into the room it actually
+   has: full-size type, ellipsised where it must be, and the conversation
+   scrolls. What it never does is shrink itself — a miniature island floating
+   inside a black rectangle is just a small window, which is the one thing
+   this is not. See postMeasure in island.js. */
+.island.is-capped {
+  width: min(var(--w), 100vw);
+  max-height: 100vh;
+  overflow: hidden;
+}
+.island.is-capped .island__panel,
+.island.is-capped .island__thread {
+  min-height: 0;
+}
+.island.is-capped .island__thread {
+  flex: 1 1 auto;
+}
+
+.island[data-view="compact"] { --w: 232px; }
+.island[data-view="peek"]    { --w: 392px; }
+.island[data-view="live"]    { --w: 440px; }
+.island[data-view="open"]    { --w: 600px; }
 
 /* The phase colour, riding the bottom edge. Off when idle, so the island is
    inert black until something is actually happening. */
@@ -88,8 +118,9 @@ body {
   padding: 0 12px 0 10px;
   cursor: pointer;
 }
-.island[data-view="live"] .island__bar { min-height: 48px; padding: 7px 10px 7px 12px; }
-.island[data-view="open"] .island__bar { min-height: 54px; padding: 8px 12px 8px 14px; }
+.island[data-view="peek"] .island__bar { min-height: 54px; padding: 7px 12px 7px 12px; }
+.island[data-view="live"] .island__bar { min-height: 52px; padding: 7px 10px 7px 12px; }
+.island[data-view="open"] .island__bar { min-height: 56px; padding: 8px 12px 8px 14px; }
 
 .island__lead {
   flex: none;
@@ -99,8 +130,9 @@ body {
   place-items: center;
   transition: transform .4s var(--spring);
 }
-.island[data-view="compact"] .island__lead { transform: scale(.82); }
-.island[data-view="open"] .island__lead { transform: scale(1.12); }
+.island[data-view="compact"] .island__lead { transform: scale(.86); }
+.island[data-view="peek"] .island__lead { transform: scale(1.18); }
+.island[data-view="open"] .island__lead { transform: scale(1.14); }
 
 .island__text {
   flex: 1;
@@ -113,6 +145,52 @@ body {
 /* Compact is the notch itself: pet on one side, status on the other, and the
    middle left empty like the camera housing it imitates. */
 .island[data-view="compact"] .island__text { visibility: hidden; }
+
+/* ==========================================================================
+   The mascot, alive
+
+   At rest it breathes. Hovered it hops, because the island reacting to the
+   pointer before you click is most of what makes it feel like a thing rather
+   than a bar. While Pico is working it bobs on a quicker beat.
+   ========================================================================== */
+.island__lead {
+  animation: pet-float 3.6s ease-in-out infinite;
+  transform-origin: 50% 100%;
+}
+.island[data-view="peek"] .island__lead { animation: pet-hop .62s cubic-bezier(.28,.84,.42,1) infinite; }
+.island[data-phase="Acting"] .island__lead,
+.island[data-phase="Starting"] .island__lead { animation: pet-bob .82s ease-in-out infinite; }
+.island[data-phase="Completed"] .island__lead { animation: pet-cheer .7s cubic-bezier(.2,1.5,.4,1) 1 both; }
+.island[data-phase="Failed"] .island__lead,
+.island[data-phase="Stopped"] .island__lead { animation: pet-sink .5s ease-out 1 both; }
+
+@keyframes pet-float {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -1.5px; }
+}
+@keyframes pet-hop {
+  0%    { translate: 0 0;     scale: 1 1; }
+  22%   { translate: 0 0;     scale: 1.12 .88; }
+  48%   { translate: 0 -9px;  scale: .92 1.1; }
+  74%   { translate: 0 0;     scale: 1.14 .86; }
+  100%  { translate: 0 0;     scale: 1 1; }
+}
+@keyframes pet-bob {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -4px; }
+}
+@keyframes pet-cheer {
+  0%   { translate: 0 0;    scale: 1 1; }
+  40%  { translate: 0 -11px; scale: .9 1.12; }
+  100% { translate: 0 0;    scale: 1 1; }
+}
+@keyframes pet-sink {
+  to { translate: 0 2px; scale: 1.06 .94; opacity: .75; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island__lead { animation: none !important; }
+}
 
 .island__title {
   font-size: 13px;
@@ -383,6 +461,63 @@ body {
 .island__decision-icon svg { width: 17px; height: 17px; }
 .island__decision[data-kind="approval"] .island__decision-icon { background: color-mix(in oklab, #ff9f0a 20%, #000); color: #ffb340; }
 .island__decision[data-kind="takeover"] .island__decision-icon { background: color-mix(in oklab, #0a84ff 22%, #000); color: #5eb1ff; }
+.island__decision[data-kind="question"] .island__decision-icon { background: color-mix(in oklab, #bf5af2 22%, #000); color: #d07ffb; }
+
+/* The one moment Pico is stopped and waiting on you. It says so, above the
+   card, under a dot that keeps blinking until it is dealt with — because the
+   failure this replaces was a waiting Pico looking exactly like an idle one. */
+.island__attention {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.island__attention-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: island-beat 1.1s ease-in-out infinite;
+}
+.island__decision[data-kind="approval"] .island__attention { color: #ffb340; }
+.island__decision[data-kind="takeover"] .island__attention { color: #5eb1ff; }
+.island__decision[data-kind="question"] .island__attention { color: #d07ffb; }
+
+/* --- answering a question -------------------------------------------------
+   Its own field, on the card, rather than the box a job is typed into. */
+.island__answer {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 4px 0 12px;
+  border-radius: 19px;
+  background: #000;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+  transition: box-shadow .18s;
+}
+.island__answer:focus-within { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .28); }
+.island__answer-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  user-select: text;
+}
+.island__answer-input::placeholder { color: var(--faint); }
+.island__answer .island__send { width: 30px; height: 30px; }
+.island__answer .island__send svg { width: 15px; height: 15px; }
 
 .island__decision-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; grid-row: span 2; align-self: center; }
 .island__decision-title { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
@@ -395,6 +530,8 @@ body {
   gap: 8px;
   margin-top: 8px;
 }
+/* An answer field is not a row of buttons: it wants the whole width. */
+.island__decision[data-kind="question"] .island__decision-actions { justify-content: stretch; }
 
 .island__pill {
   height: 32px;
@@ -415,6 +552,7 @@ body {
 .island__pill--primary:hover { background: #fff; }
 
 /* --- composer ------------------------------------------------------------ */
+.island__composer[hidden] { display: none; }
 .island__composer {
   display: flex;
   align-items: center;

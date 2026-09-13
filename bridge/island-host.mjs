@@ -56,7 +56,13 @@ async function build() {
   if (!csc) throw new Error('the Windows C# compiler was not found');
 
   await new Promise((resolve, reject) => {
-    execFile(csc, ['/nologo', '/optimize+', '/target:exe', `/out:${exe}`, SOURCE],
+    // A console target, not winexe: the protocol is stdin/stdout, and a
+    // winexe has no console to read from. The window is hidden at spawn.
+    execFile(csc, [
+      '/nologo', '/optimize+', '/target:exe',
+      '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll',
+      `/out:${exe}`, SOURCE,
+    ],
       { windowsHide: true, timeout: 60_000 },
       (err, stdout) => (err ? reject(new Error(String(stdout || err.message).trim())) : resolve()));
   });
@@ -112,8 +118,42 @@ export class IslandHost {
     return this.send(['place', hwnd, n(rect.x), n(rect.y), n(rect.width), n(rect.height)].join(' '));
   }
 
+  /* ------------------------------------------------------------------------
+     Pico's cursor — a layered window that follows the pointer while it works
+     ---------------------------------------------------------------------- */
+  cursorOn(pngPath) { return this.send(`cursor on ${pngPath}`); }
+  cursorAt(x, y) { return this.send(`cursor at ${Math.round(x)} ${Math.round(y)}`); }
+  cursorState(name) { return this.send(`cursor state ${name}`); }
+  cursorOff() { return this.send('cursor off'); }
+
+  /* Whose pointer is on screen.
+
+     There is only one pointer on Windows, so Pico working means Pico moving
+     yours. Hiding the system cursor for the duration is what makes that read
+     as Pico's own cursor doing the moving rather than as your mouse being
+     yanked around; `cursorSave` / `cursorRestore` then put the pointer back
+     where you left it, so when Pico finishes nothing has moved. */
+  cursorHide() { return this.send('cursor hide'); }
+  cursorShow() { return this.send('cursor show'); }
+  cursorSave() { return this.send('cursor save'); }
+  cursorRestore() { return this.send('cursor restore'); }
+
+  /**
+   * Shut down without leaving the pointer invisible.
+   *
+   * Killing the helper outright runs none of its own cleanup — Windows just
+   * stops the process — so the pointer is asked for back first, and the kill
+   * only happens if it has not exited on its own by then. (The helper also
+   * restores the pointer when stdin closes, and again on a timer, so there
+   * are three ways out of hidden and none of them need this one to work.)
+   */
   stop() {
+    this.cursorShow();
+    this.cursorOff();
     try { this.proc?.stdin.end(); } catch { /* gone */ }
-    try { this.proc?.kill(); } catch { /* gone */ }
+    const proc = this.proc;
+    setTimeout(() => {
+      try { proc?.kill(); } catch { /* gone */ }
+    }, 250).unref?.();
   }
 }

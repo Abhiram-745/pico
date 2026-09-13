@@ -90,10 +90,34 @@ export class NotchWindow {
     // not it — which is exactly what happened.
     this.token = randomBytes(9).toString('base64url');
     this.size = { ...COMPACT };       // content size currently on screen
+    this.placed = null;               // last rectangle actually placed
+    // Whether the pointer is on the island. Kept here rather than inside the
+    // watcher because it is only ever sent on a change, and a page that
+    // connects between two changes would otherwise never be told at all —
+    // which is the island failing to react the very first time it is hovered
+    // after opening.
+    this.over = false;
+    this.hoverTimer = null;
     this.run = 0;
   }
 
   get isOpen() { return Boolean(this.proc && this.proc.exitCode === null); }
+
+  /**
+   * How wide the screen is, asked each time rather than remembered.
+   *
+   * A notch that is not in the middle is not a notch, and the screen stops
+   * being the width it was when someone plugs in a monitor, changes the
+   * resolution or moves the scaling slider. Remembering it from startup meant
+   * the island sat off to one side until the bridge was restarted.
+   */
+  get width() {
+    try {
+      const w = nut?.getScreenSize?.().width;
+      if (Number.isFinite(w) && w > 320) return w;
+    } catch { /* fall back on what we were told */ }
+    return this.screenWidth;
+  }
 
   /** Window rectangle that shows exactly `content`, centred, flush to the top. */
   rectFor({ width, height }) {
@@ -101,7 +125,7 @@ export class NotchWindow {
     const outerW = Math.round(width + (2 * f.side));
     const outerH = Math.round(height + f.top + f.bottom);
     return {
-      x: Math.round((this.screenWidth / 2) - (outerW / 2)),
+      x: Math.round((this.width / 2) - (outerW / 2)),
       y: -f.top,
       width: outerW,
       height: outerH,
@@ -121,16 +145,33 @@ export class NotchWindow {
   }
 
   async open() {
-    // Already up — possibly left open by a previous run of the bridge, in
-    // which case its page reconnects to this one on its own. Spawning again
-    // would put a second island on screen.
+    // Already up, and opened by this bridge — nothing to do but make sure it
+    // is still pinned and the right size. Spawning again would put a second
+    // island on screen.
     const existing = this.findWindow();
-    if (existing) {
+    if (existing && this.isOpen) {
       this.hwnd = existing;
       this.host?.pin(existing);
       this.host?.trim(existing);
       this.apply(this.rectFor(this.size));
       return { ok: true, already: true };
+    }
+
+    // Left over from an earlier run of the bridge. It looks alive — its page
+    // reconnects on its own and still shows what Pico is doing — but it is
+    // carrying that run's token, so every size it reports is refused and it
+    // can never change shape again. The island then lays its content out at
+    // a size the window is not, and the text is clipped against a frame that
+    // will not move: the bug this window cannot recover from on its own.
+    //
+    // So do not adopt it. Close it, and open one that this bridge can drive.
+    if (existing) {
+      console.log('[bridge] replacing an island left over from an earlier run');
+      await this.close();
+      // The browser has to let go of its profile directory before another
+      // one can be started on it, and the window outliving the process by a
+      // moment is the visible sign that it has not yet.
+      for (let i = 0; i < 20 && this.findWindow(); i++) await sleep(100);
     }
 
     const browser = findBrowser();
@@ -148,7 +189,7 @@ export class NotchWindow {
       `--window-size=${r.width},${r.height}`,
     ], { detached: true, stdio: 'ignore' });
 
-    this.proc.on('exit', () => { this.proc = null; this.hwnd = null; });
+    this.proc.on('exit', () => { this.proc = null; this.hwnd = null; this.placed = null; });
     this.proc.unref();
 
     const found = await this.waitForWindow(8000);
@@ -187,15 +228,34 @@ export class NotchWindow {
     if (!h) return false;
     this.hwnd = h;
 
-    if (this.host?.ready) return this.host.place(h, rect);
+    // A morph steps far more often than the window can actually change size,
+    // and rounding means many of those steps ask for the rectangle it is
+    // already in. Asking anyway is not free: every call is a real move, and
+    // a burst of them is what makes the frame tear away from its content
+    // mid-morph, leaving a band of window the page has not painted yet.
+    const key = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)},${Math.round(rect.height)}`;
+    if (key === this.placed) return true;
+
+    // Remembered only once it has actually happened. Recording the intention
+    // instead means one refused placement is enough to convince this that the
+    // window is somewhere it is not, and every later request for that same
+    // rectangle is then skipped as redundant — the island stuck at one size
+    // for good, with the page still politely asking.
+    if (this.host?.ready) {
+      const sent = this.host.place(h, rect);
+      if (sent) this.placed = key;
+      return sent;
+    }
 
     if (!nut) return false;
     try {
       nut.moveWindow(h, { x: rect.x, y: rect.y });
       nut.resizeWindow(h, { width: rect.width, height: rect.height });
+      this.placed = key;
       return true;
     } catch {
       this.hwnd = null;     // stale handle; found again next time
+      this.placed = null;
       return false;
     }
   }
@@ -229,9 +289,54 @@ export class NotchWindow {
       };
       this.apply(this.rectFor(this.size));
       if (t >= 1) break;
-      await sleep(8);
+      await sleep(16);
     }
     this.size = to;
+  }
+
+  /* ------------------------------------------------------------------------
+     Is the pointer over the island?
+
+     The page cannot be trusted to answer this about itself. A browser reports
+     a pointer leaving whenever the window resizes under it — and hovering is
+     what makes the island resize — so the island flickered between two sizes
+     under a pointer that had not moved. Its own hit-testing is no better:
+     after the pointer is put somewhere rather than moved there, :hover can
+     still say the island is not under it.
+
+     None of that is in doubt out here. There is a window, at a rectangle this
+     process chose, and a pointer, at a position Windows will state plainly.
+     So the bridge answers it and the page believes the bridge.
+     ---------------------------------------------------------------------- */
+  watchHover(onChange) {
+    this.unwatchHover();
+    if (!nut) return;
+
+    this.hoverTimer = setInterval(() => {
+      if (!this.hwnd && !this.findWindow()) return;
+      let p;
+      try { p = nut.getMousePos(); } catch { return; }
+
+      // The frame is parked above the top of the screen, so only the part on
+      // screen counts. A little slack once the pointer is on it, so a morph
+      // moving the edge past a stationary pointer cannot rattle it on and off.
+      const r = this.rectFor(this.size);
+      const m = this.over ? 3 : 0;
+      const top = Math.max(0, r.y);
+      const now = p.x >= r.x - m && p.x < r.x + r.width + m
+        && p.y >= top - m && p.y < r.y + r.height + m;
+
+      if (now === this.over) return;
+      this.over = now;
+      onChange(now, `p=${p.x},${p.y} rect=${r.x},${r.y} ${r.width}x${r.height}`);
+    }, 70);
+    this.hoverTimer.unref?.();
+  }
+
+  unwatchHover() {
+    clearInterval(this.hoverTimer);
+    this.hoverTimer = null;
+    this.over = false;
   }
 
   raise() {
@@ -244,9 +349,11 @@ export class NotchWindow {
   }
 
   async close() {
+    this.unwatchHover();
     try { this.proc?.kill(); } catch { /* already gone */ }
     this.proc = null;
     this.hwnd = null;
+    this.placed = null;
     this.size = { ...COMPACT };
 
     // The browser may have handed the window to a process this one did not

@@ -92,7 +92,8 @@ export function assess(action = {}, windowTitle = '') {
 
   // Only acts that commit something need weighing. Moving, looking, scrolling
   // and waiting change nothing, whatever the window happens to be.
-  const commits = ['click', 'double_click', 'right_click', 'type', 'key'].includes(action.type);
+  const commits = ['click', 'double_click', 'right_click', 'middle_click',
+    'drag', 'type', 'key'].includes(action.type);
   if (!commits) return { ...ALLOW };
 
   for (const rule of RULES) {
@@ -118,6 +119,8 @@ export function describe(action = {}) {
     case 'click': return 'Click something on screen';
     case 'double_click': return 'Double-click something on screen';
     case 'right_click': return 'Open a context menu';
+    case 'middle_click': return 'Middle-click something on screen';
+    case 'drag': return 'Drag something across the screen';
     case 'type': return 'Enter text';            // never the text itself
     case 'key': return `Press ${(action.keys || []).join('+')}`;
     case 'scroll': return 'Scroll the view';
@@ -133,6 +136,7 @@ export const ACTION_PHASE = {
   click: 'Click',
   double_click: 'Click',
   right_click: 'Click',
+  middle_click: 'Click',
   type: 'Type',
   key: 'Keypress',
   scroll: 'Scroll',

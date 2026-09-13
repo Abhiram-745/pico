@@ -186,17 +186,30 @@ export class Screen {
        An exact hash is useless here: a live desktop is never pixel-identical
        twice — the clock alone changes — so comparing full frames reports
        "something moved" every single time, which is exactly as unhelpful as
-       reporting nothing ever does. 32 columns of grey is enough to see a menu
-       open and blind to a blinking caret. */
-    const thumb = img.clone().resize(32, Jimp.AUTO).greyscale();
+       reporting nothing ever does.
+
+       64 columns rather than 32, because the comparison now also asks whether
+       any single cell changed a lot, and at 32 a cell is a large enough piece
+       of the desktop to average a pressed button back into the wallpaper. */
+    const thumb = img.clone().resize(64, Jimp.AUTO).greyscale();
     const grey = Buffer.alloc(thumb.bitmap.width * thumb.bitmap.height);
     for (let i = 0; i < grey.length; i++) grey[i] = thumb.bitmap.data[i * 4];
 
-    // model space -> physical -> the virtual units SetCursorPos takes
+    // model space -> physical -> the virtual units SetCursorPos takes.
+    //
+    // Half a model pixel, added back. A model pixel covers kx screen pixels,
+    // and `x * kx` is the left edge of that block rather than the middle of
+    // it — so every coordinate came back biased up and to the left by half a
+    // block. On a 2560-wide screen shown to the model 1024 wide that is more
+    // than a pixel in each axis, for free, on every single click.
     const kx = desktop.width / shotW / desktop.scale;
     const ky = desktop.height / shotH / desktop.scale;
     const maxX = Math.round(desktop.width / desktop.scale) - 1;
     const maxY = Math.round(desktop.height / desktop.scale) - 1;
+    const toScreen = (x, y) => ({
+      x: Math.round(Math.max(0, Math.min(maxX, ((Number(x) + 0.5) * kx) - 0.5))),
+      y: Math.round(Math.max(0, Math.min(maxY, ((Number(y) + 0.5) * ky) - 0.5))),
+    });
 
     return {
       b64: buffer.toString('base64'),
@@ -206,10 +219,52 @@ export class Screen {
       width: shotW,
       height: shotH,
       mode: this.mode,
-      toScreen: (x, y) => ({
-        x: Math.round(Math.max(0, Math.min(maxX, Number(x) * kx))),
-        y: Math.round(Math.max(0, Math.min(maxY, Number(y) * ky))),
-      }),
+      toScreen,
+
+      /**
+       * A close-up of one part of the same frame, at full resolution.
+       *
+       * The screenshot a model plans from is a whole desktop squeezed into
+       * about a thousand pixels, so a button is a dozen pixels wide and being
+       * a few pixels out in that picture is being a couple of centimetres out
+       * on the screen. That is the entire reason clicks land "a bit off".
+       *
+       * This crops the frame that has already been taken — no second look at
+       * the screen, nothing has moved in between — around the point the model
+       * chose, at the display's own resolution. Aiming again inside that is
+       * aiming in screen pixels.
+       */
+      crop: async ({ x, y, half = 120, zoom = 2, quality = 84 } = {}) => {
+        const s2 = desktop.scale;
+        const pw = Math.min(desktop.width, Math.round(half * 2 * s2));
+        const ph = Math.min(desktop.height, Math.round(half * 2 * s2 * 0.7));
+        const px = Math.max(0, Math.min(desktop.width - pw, Math.round((x * s2) - (pw / 2))));
+        const py = Math.max(0, Math.min(desktop.height - ph, Math.round((y * s2) - (ph / 2))));
+
+        const near = await fromRaw(Buffer.from(desktop.data), desktop.width, desktop.height);
+        near.crop(px, py, pw, ph);
+
+        // Magnified, not merely cropped. A model asked for a coordinate is
+        // more accurate in a larger picture of the same thing — the answer
+        // comes back in units that are half a screen pixel each, so rounding
+        // in its answer costs half as much.
+        if (zoom !== 1) near.scale(zoom, Jimp.RESIZE_BICUBIC);
+        near.quality(quality);
+        const bytes = await near.getBufferAsync('image/jpeg');
+
+        return {
+          b64: bytes.toString('base64'),
+          mime: 'image/jpeg',
+          width: near.bitmap.width,
+          height: near.bitmap.height,
+          // Magnified crop pixels -> physical pixels -> the units the mouse
+          // works in, with the crop's own offset added back.
+          toScreen: (cx, cy) => ({
+            x: Math.round(Math.max(0, Math.min(maxX, (px + ((Number(cx) + 0.5) / zoom)) / s2))),
+            y: Math.round(Math.max(0, Math.min(maxY, (py + ((Number(cy) + 0.5) / zoom)) / s2))),
+          }),
+        };
+      },
     };
   }
 

@@ -32,6 +32,7 @@ import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
 import { LLM, PROVIDERS } from './llm.mjs';
 import { NotchWindow } from './notch-window.mjs';
+import * as autostart from './autostart.mjs';
 import { IslandHost } from './island-host.mjs';
 import { check as checkUpdate, install as installUpdate, localBuild } from './updater.mjs';
 
@@ -43,7 +44,7 @@ const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
 const ALLOWED_COMMANDS = new Set([
   'submitTask', 'pause', 'resume', 'stop',
   'approve', 'deny', 'takeoverDone',
-  'saveSettings', 'setName', 'tuckAway',
+  'saveSettings', 'setName', 'answerQuestion', 'tuckAway',
   'openPalette', 'closePalette', 'movePalette',
   'openNotch', 'closeNotch',
 ]);
@@ -114,6 +115,7 @@ class Bridge {
       pauseState: { paused: false },
       approval: null,
       takeover: null,
+      question: null,
     };
 
     // The conversation so far, so a phone joining mid-thread sees it rather
@@ -194,6 +196,11 @@ class Bridge {
       else this.messages[i] = payload;
     }
 
+    if (type === 'phase') showCursorFor(payload.phase);
+    if (type === 'action' && /click/i.test(payload.type || '')) {
+      islandHost?.cursorState('clicking');
+    }
+
     if (type === 'phase') {
       // decision cards do not survive a phase change
       if (payload.phase !== 'AwaitingApproval') this.snapshot.approval = null;
@@ -219,6 +226,11 @@ class Bridge {
     send('pauseState', s.pauseState);
     send('approval', s.approval);
     send('takeover', s.takeover);
+    send('question', s.question);
+    // Not part of the snapshot, because it is not the agent's state — but it
+    // has to be replayed for the same reason everything else here is: a page
+    // that has just connected knows nothing until it is told.
+    if (this.notch?.hoverTimer) client.conn.sendJSON({ type: 'notchHover', payload: { over: this.notch.over } });
   }
 
   /** Rate limit: 5 wrong codes per address, then a 60s lockout. */
@@ -326,6 +338,15 @@ class Bridge {
 
     // approve/deny must name the decision they are answering, so a stale phone
     // cannot approve whatever happens to be pending now.
+    if (command === 'answerQuestion') {
+      const text = String(payload.text ?? '').slice(0, MAX_TASK_LENGTH).trim();
+      if (!text) return;
+      // The thread entry is written by the agent once the answer has landed,
+      // so that the question and the answer appear together and in order.
+      this._hostHandler?.({ command, payload: { text } });
+      return;
+    }
+
     if (command === 'approve' || command === 'deny') {
       const pending = this.snapshot.approval;
       if (!pending || pending.id !== payload.id) {
@@ -376,6 +397,87 @@ async function saveKey(key) {
   ].join('\n').replace(/^\s+/, '');
 
   await writeFile(envPath, body, { encoding: 'utf8', mode: 0o600 });
+}
+
+/* Pico's cursor. Shown only while Pico is actually working — the rest of the
+   time there is nothing on screen and nothing running to draw it.
+
+   WHILE PICO WORKS, YOUR POINTER IS NOT ON SCREEN
+   Windows has one pointer and driving an application means moving it, so
+   without this a run looks like your own mouse being wrenched across the
+   desk. Instead the system pointer goes invisible for the duration and
+   Pico's cursor is the only one you see move; where yours was sitting is
+   remembered first and given back the moment the run ends, so nothing of
+   yours has moved by the time you look again.
+
+   Touching the mouse mid-run takes it straight back — the helper notices the
+   pointer moving when nothing is driving it and returns the system cursor
+   without being asked. */
+const CURSOR_ART = join(ROOT, 'pico-ui', 'assets', 'pico.png');
+const WORKING = new Set([
+  'Starting', 'Observing', 'Thinking', 'Acting', 'Paused',
+  'AwaitingApproval', 'AwaitingTakeover',
+]);
+let islandHost = null;
+let cursorShown = false;
+let cursorOffTimer = null;
+
+function showCursorFor(phase) {
+  if (!islandHost?.ready) return;
+  const working = WORKING.has(phase);
+
+  if (working && !cursorShown) {
+    clearTimeout(cursorOffTimer);
+    // Remember where the pointer is before anything moves it, and take it
+    // off screen before Pico's cursor appears — otherwise both are visible
+    // for a frame and it reads as two pointers rather than a handover.
+    islandHost.cursorSave();
+    islandHost.cursorHide();
+    islandHost.cursorOn(CURSOR_ART);
+    cursorShown = true;
+    if (process.env.PICO_DEBUG) console.log('[cursor] shown');
+  }
+  if (working) {
+    islandHost.cursorState(phase === 'Thinking' ? 'thinking' : 'moving');
+
+    // Nothing is being pointed at while Pico thinks, and thinking is most of
+    // a run. So the pointer goes home and waits there between actions — what
+    // crosses the screen in the meantime is Pico's cursor, and the user's is
+    // where they left it whenever they look. (Once they touch the mouse
+    // themselves the helper stops obeying this: it is their pointer again.)
+    if (phase === 'Thinking') islandHost.cursorRestore();
+    return;
+  }
+  if (!cursorShown) return;
+
+  // Linger a moment on the result rather than blinking out mid-gesture.
+  islandHost.cursorState(phase === 'Completed' ? 'done' : 'moving');
+  clearTimeout(cursorOffTimer);
+  cursorOffTimer = setTimeout(() => {
+    // Order matters the other way round on the way out: the pointer goes
+    // back to where the user left it while it is still invisible, so they
+    // never see it travel there.
+    islandHost?.cursorRestore();
+    islandHost?.cursorOff();
+    islandHost?.cursorShow();
+    cursorShown = false;
+    if (process.env.PICO_DEBUG) console.log('[cursor] hidden');
+  }, 1400);
+}
+
+/* The pointer must never be left invisible because the bridge went away.
+   The helper restores it on stdin closing and again on a timer of its own,
+   but asking politely first is faster and covers Ctrl-C. */
+function releasePointer() {
+  try { islandHost?.cursorShow(); } catch { /* the helper is already gone */ }
+}
+process.once('exit', releasePointer);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  process.once(sig, () => {
+    releasePointer();
+    try { islandHost?.stop(); } catch { /* already gone */ }
+    process.exit(0);
+  });
 }
 
 /* A bug anywhere must not take the bridge down with it. When it did, the
@@ -538,6 +640,32 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // --- start with Windows -------------------------------------------------
+  // Local only: it writes a shortcut into this user's Startup folder.
+  if (url.pathname.startsWith('/startup/')) {
+    const isLocal = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
+    if (!isLocal) { res.writeHead(403).end('Local only.'); return; }
+
+    const reply = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+
+    try {
+      if (url.pathname === '/startup/state') return reply(200, autostart.state());
+      if (url.pathname === '/startup/enable' && req.method === 'POST') {
+        return reply(200, await autostart.enable());
+      }
+      if (url.pathname === '/startup/disable' && req.method === 'POST') {
+        return reply(200, await autostart.disable());
+      }
+    } catch (err) {
+      return reply(500, { error: String(err.message) });
+    }
+    res.writeHead(404).end('Not found');
+    return;
+  }
+
   // --- the notch window --------------------------------------------------
   // The notch page posts the height it wants as its content changes. Local
   // only: it resizes a window on this machine.
@@ -553,6 +681,9 @@ const server = createServer(async (req, res) => {
     }
 
     const n = (k) => Number(url.searchParams.get(k));
+    if (process.env.PICO_DEBUG) {
+      console.log(`[notch/size] ${url.search}`);
+    }
     if (bridge.notch) {
       bridge.notch.learnFrame({ iw: n('iw'), ih: n('ih'), ow: n('ow'), oh: n('oh') });
       if (Number.isFinite(n('w')) && Number.isFinite(n('h'))) {
@@ -659,14 +790,30 @@ const pairingUrl = () => `http://${host}:${PORT}/#p=${bridge.pairCode}`;
 // is it; there is nothing to interpolate or guess. Throttled to about 30 a
 // second, which is smooth to watch and cheap to send.
 let lastPointer = 0;
+let lastDrawn = 0;
 const computer = await loadComputer({
   onPointer: ({ x, y, done }) => {
     const now = Date.now();
+
+    // Two rates, because these two consumers want different things. The
+    // cursor drawn on screen is the one the user is watching, so it gets
+    // every frame it can use (~60 a second) — a cursor updated at 30Hz
+    // visibly steps. The remote clients are watching a diagram of where
+    // Pico is, and 30 a second is plenty for that and half the traffic.
+    if (done || now - lastDrawn >= 15) {
+      lastDrawn = now;
+      islandHost?.cursorAt(x, y);
+    }
     if (!done && now - lastPointer < 33) return;
     lastPointer = now;
     bridge.broadcast({ type: 'cursor', payload: { x, y, done } });
   },
 });
+/* Put the pointer back where the user left it. The driver calls this the
+   moment it has finished looking at the screen, so across a whole run the
+   pointer is only away from where they left it for the fraction of a second
+   an action takes — and it is invisible for that. */
+if (computer) computer.park = () => { islandHost?.cursorRestore(); };
 if (computer) await bridge.attachComputer(computer);
 
 /* ---------------------------------------------------------------------------
@@ -676,11 +823,41 @@ if (computer) await bridge.attachComputer(computer);
    app. The page measures itself and posts back the size it wants; the window
    springs to it (see notch-window.mjs).
    -------------------------------------------------------------------------*/
+islandHost = await IslandHost.start();
+
 bridge.notch = new NotchWindow({
   url: `http://localhost:${PORT}/pico-ui/notch.html`,
   screenWidth: bridge.screenSize?.width ?? 1920,
-  host: await IslandHost.start(),
+  host: islandHost,
 });
+
+/* An island can outlive the bridge that opened it — restarting the bridge
+   leaves the window on screen, reconnecting happily, but holding a token
+   this process has never heard of. Nothing it reports is believed after
+   that, so it is stuck at whatever size it happened to be and its content
+   is clipped against a frame that will not move again.
+
+   Take it back at startup rather than waiting for the user to notice: the
+   island they already had stays where it was, driven by the bridge that is
+   actually running. */
+if (bridge.notch.findWindow()) {
+  try {
+    await bridge.notch.open();
+    watchIslandHover();
+    bridge.broadcast({ type: 'notch', payload: { open: true } });
+  } catch (err) {
+    console.warn(`[bridge] could not take back the island (${err.message})`);
+  }
+}
+
+/* The page is told whether the pointer is on it rather than working it out —
+   see watchHover in notch-window.mjs for why it cannot work it out. */
+function watchIslandHover() {
+  bridge.notch.watchHover((over, where) => {
+    if (process.env.PICO_DEBUG) console.log(`[hover] ${over ? 'on ' : 'off'} ${where}`);
+    bridge.broadcast({ type: 'notchHover', payload: { over } });
+  });
+}
 
 bridge.onNotchCommand = async (command) => {
   if (command === 'closeNotch') {
@@ -697,6 +874,7 @@ bridge.onNotchCommand = async (command) => {
     });
     return;
   }
+  watchIslandHover();
   bridge.broadcast({ type: 'notch', payload: { open: true } });
 };
 
