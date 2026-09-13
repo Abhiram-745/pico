@@ -302,6 +302,26 @@
   padding: 0;
 }
 
+/* A reply that has been asked for but has not started arriving. Three dots
+   rather than a spinner: it says "writing", not "loading". */
+.bubble__typing { display: inline-flex; gap: 4px; align-items: center; padding: 2px 0; }
+.bubble__typing i {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  animation: bubble-dot 1.15s ease-in-out infinite;
+}
+.bubble__typing i:nth-child(2) { animation-delay: .16s; }
+.bubble__typing i:nth-child(3) { animation-delay: .32s; }
+
+@keyframes bubble-dot {
+  0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+  30%           { opacity: 1;  transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble__typing i { animation: none; opacity: .6; }
+}
+
 .composer2 {
   flex: none;
   display: flex;
@@ -345,6 +365,89 @@
 .composer2__send:not(:disabled):hover { background: color-mix(in oklab, var(--accent) 88%, white); }
 .composer2__send:not(:disabled):active { transform: scale(.92); }
 .composer2__send svg { width: 16px; height: 16px; }
+
+/* What will happen to what you type, shown where you type it. */
+.composer2__mode {
+  flex: none;
+  border: 0;
+  border-radius: 9px;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  color: var(--text-mid);
+  background: color-mix(in oklab, #ffffff 8%, transparent);
+  transition: color .16s, background .16s;
+}
+.composer2__mode:hover { color: var(--text-hi); background: color-mix(in oklab, #ffffff 15%, transparent); }
+.composer2__mode[data-mode="chat"]  { color: #7dd3fc; background: color-mix(in oklab, #38bdf8 18%, transparent); }
+.composer2__mode[data-mode="agent"] { color: #86efac; background: color-mix(in oklab, #4ade80 18%, transparent); }
+
+/* ==========================================================================
+   Screen map
+
+   Your display, to scale, with Pico's pointer on it. Windows has one system
+   cursor, so there is one dot — the value is being able to follow it without
+   staring at the whole desktop.
+   ========================================================================== */
+.screenmap {
+  position: relative;
+  margin-top: 14px;
+  width: 100%;
+  aspect-ratio: 1 / var(--ratio, 0.5625);
+  border-radius: 12px;
+  background:
+    linear-gradient(168deg, color-mix(in oklab, var(--accent) 7%, var(--ink-1)), var(--ink-0));
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+}
+
+/* A taskbar line, so the map reads as a screen rather than a rectangle. */
+.screenmap::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4.2%;
+  background: color-mix(in oklab, #ffffff 6%, transparent);
+  border-top: 1px solid color-mix(in oklab, #ffffff 7%, transparent);
+}
+
+.screenmap__dot {
+  position: absolute;
+  width: 10px; height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ink-0) 70%, transparent);
+  opacity: 0;
+  transition: opacity .3s var(--ease-out);
+  z-index: 2;
+}
+
+/* The halo lags a fraction behind the dot, which reads as direction. */
+.screenmap__trail {
+  position: absolute;
+  width: 30px; height: 30px;
+  margin: -15px 0 0 -15px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in oklab, var(--accent) 45%, transparent), transparent 70%);
+  opacity: 0;
+  transition: left .18s linear, top .18s linear, opacity .4s var(--ease-out);
+  z-index: 1;
+}
+
+.screenmap[data-live="true"] .screenmap__dot,
+.screenmap[data-live="true"] .screenmap__trail { opacity: 1; }
+
+.screenmap__coords {
+  position: absolute;
+  right: 9px; top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  z-index: 3;
+}
 
 /* ==========================================================================
    Empty state

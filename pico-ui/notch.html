@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The window is found by this title, so it must contain "Pico Notch".
+     See NOTCH_TITLE in bridge/notch-window.mjs. -->
+<title>Pico Notch</title>
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<link rel="icon" href="../phone/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="src/theme.css">
+<link rel="stylesheet" href="src/motion.css">
+<link rel="stylesheet" href="src/island.css">
+</head>
+<body>
+<script type="module">
+  import { store } from './src/store.js';
+  import { connect } from './src/bridge.js';
+  import { mountIsland } from './src/island.js';
+
+  const { mode, transport } = connect({
+    onStatus: (s) => { document.body.dataset.conn = s; },
+  });
+
+  /* The page decides what size it wants; the bridge moves the window.
+     The window's own frame is reported with it: outer minus inner is the
+     browser's title bar and borders, which the bridge parks above the top
+     edge of the screen so only the island itself is visible. */
+  const island = mountIsland(document.body, {
+    onMeasure: ({ width, height, view }) => {
+      const q = new URLSearchParams({
+        w: String(width),
+        h: String(height),
+        view,
+        iw: String(innerWidth),
+        ih: String(innerHeight),
+        ow: String(outerWidth),
+        oh: String(outerHeight),
+      });
+      fetch(`/notch/size?${q}`, { method: 'POST' }).catch(() => {
+        /* no bridge behind this page — nothing to resize */
+      });
+    },
+  });
+
+  if (mode === 'mock') {
+    const { MockAgent } = await import('./mock/agent.js');
+    const agent = new MockAgent(transport);
+    agent.start();
+    window.pico = { store, agent, island };
+  } else {
+    window.pico = { store, island };
+  }
+</script>
+</body>
+</html>

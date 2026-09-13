@@ -59,6 +59,13 @@ await copyDir(join(ROOT, 'pico-ui'), join(DIST, 'pico-ui'), {
 // 3. the phone app, so its shared imports resolve
 await copyDir(join(ROOT, 'phone'), join(DIST, 'phone'));
 
+// 4. the intent router. The preview's stand-in agent makes the same
+//    chat-or-work decision as the real host, using the same rules, rather
+//    than a second copy that could drift. It is pure logic with no Node
+//    imports and no secrets, so it runs unchanged in a browser.
+await mkdir(join(DIST, 'bridge'), { recursive: true });
+await cp(join(ROOT, 'bridge', 'intent.mjs'), join(DIST, 'bridge', 'intent.mjs'));
+
 // A service worker scoped to /phone/ would try to cache the demo offline and
 // serve stale files; the hosted copy is a preview, not an install.
 await rm(join(DIST, 'phone', 'sw.js'), { force: true });
@@ -84,6 +91,7 @@ const required = [
   'pico-ui/src/theme.css',
   'pico-ui/assets/pico.png',
   'pico-ui/mock/agent.js',
+  'bridge/intent.mjs',
   'phone/icons/icon-192.png',
 ];
 

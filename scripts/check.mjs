@@ -127,6 +127,7 @@ for (const f of scripts) {
 const PAGES = [
   { html: 'pico-ui/app.html', js: ['pico-ui/src/app.js', 'pico-ui/src/setup.js'] },
   { html: 'pico-ui/desktop.html', js: ['pico-ui/src/notch.js', 'pico-ui/src/cursors.js'] },
+  { html: 'pico-ui/notch.html', js: ['pico-ui/src/island.js'] },
 ];
 
 for (const page of PAGES) {
@@ -166,6 +167,20 @@ for (const f of files) {
   const text = (() => { try { return readFileSync(f, 'utf8'); } catch { return ''; } })();
   if (/sk-(?:proj|bl)-[A-Za-z0-9_-]{24,}/.test(text)) {
     fail(`${relative(ROOT, f)}: contains something shaped like a live API key`);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   5. The intent router still routes every phrasing it is meant to
+
+   This is the one behaviour where being wrong is immediately visible: a
+   misrouted greeting means Pico takes over the desktop to type "hello".
+   -------------------------------------------------------------------------- */
+for (const suite of ['test-intent.mjs', 'test-shortcuts.mjs']) {
+  try {
+    execFileSync(process.execPath, [join(ROOT, 'scripts', suite)], { stdio: 'pipe' });
+  } catch (err) {
+    fail(`${suite}:\n${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trimEnd());
   }
 }
 

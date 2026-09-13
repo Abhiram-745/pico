@@ -13,6 +13,8 @@
     "check": "node scripts/check.mjs"
   },
   "dependencies": {
-    "@nut-tree-fork/nut-js": "^4.2.6"
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "jimp": "^0.22.10",
+    "node-screenshots": "^0.2.8"
   }
 }

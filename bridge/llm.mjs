@@ -33,14 +33,17 @@ export const PROVIDERS = {
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     envKey: 'OPENAI_API_KEY',
-    // nano is the low-latency one; mini handles real writing
-    tiers: { fast: 'gpt-5.4-nano', hard: 'gpt-5.4-mini' },
+    // nano is the low-latency one; mini handles real writing.
+    // `see` drives the desktop and has to read a screenshot accurately, which
+    // nano does not do well enough to click with — it answers plausibly and
+    // misses the control.
+    tiers: { fast: 'gpt-5.4-nano', hard: 'gpt-5.4-mini', see: 'gpt-5.4-mini' },
   },
   bazaarlink: {
     label: 'BazaarLink',
     baseUrl: 'https://api.bazaarlink.ai/v1',
     envKey: 'BAZAARLINK_API_KEY',
-    tiers: { fast: 'auto:free', hard: 'deepseek/deepseek-v4-flash' },
+    tiers: { fast: 'auto:free', hard: 'deepseek/deepseek-v4-flash', see: 'deepseek/deepseek-v4-flash' },
   },
 };
 
@@ -122,6 +125,7 @@ export class LLM {
         tiers: {
           fast: env.PICO_MODEL_FAST || p.tiers.fast,
           hard: env.PICO_MODEL_HARD || p.tiers.hard,
+          see: env.PICO_MODEL_SEE || p.tiers.see,
         },
       });
     }
@@ -135,15 +139,22 @@ export class LLM {
   }
 
   /** GPT-5 family renamed the token cap and fixes temperature at 1. */
-  _body(model, messages, maxTokens, stream) {
+  _body(model, messages, { maxTokens, stream, tools, effort = 'none' }) {
     const body = { model, messages, stream };
+    if (tools) {
+      body.tools = tools;
+      body.tool_choice = 'required';
+      body.parallel_tool_calls = false;   // one action per turn, then look again
+    }
     if (/^gpt-5/.test(model)) {
       body.max_completion_tokens = maxTokens;
-      // Planning a handful of UI steps needs no thinking budget, and asking
-      // for one is most of the latency on a reasoning-capable model.
+      // Chatting and planning need no thinking budget, and asking for one is
+      // most of the latency on a reasoning-capable model. Driving the desktop
+      // is the exception: deciding whether a task is finished is a judgement,
+      // and with no budget at all the model just repeats its last action.
       // The accepted values differ by model, so `_noReasoningEffort` drops
-      // the parameter entirely if a model rejects it.
-      if (!this._noReasoningEffort) body.reasoning_effort = 'none';
+      // the parameter entirely if one rejects it.
+      if (!this._noReasoningEffort) body.reasoning_effort = effort;
     } else {
       body.max_tokens = maxTokens;
       body.temperature = 0.3;
@@ -151,15 +162,15 @@ export class LLM {
     return body;
   }
 
-  _post(model, messages, { maxTokens, stream, signal }) {
+  _post(model, messages, opts) {
     return fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(this._body(model, messages, maxTokens, stream)),
-      signal: signal ?? AbortSignal.timeout(90_000),
+      body: JSON.stringify(this._body(model, messages, opts)),
+      signal: opts.signal ?? AbortSignal.timeout(90_000),
     });
   }
 
@@ -262,6 +273,88 @@ export class LLM {
       throw this._error(res.status, body);
     }
     return (body?.choices?.[0]?.message?.content || '').trim();
+  }
+
+  /* ------------------------------------------------------------------------
+     Driving the desktop
+     ---------------------------------------------------------------------- */
+
+  /**
+   * One turn of the desktop loop: a screenshot in, a single tool call out.
+   *
+   * Not streamed on purpose. A tool call is only useful once its arguments
+   * are complete, so streaming it would buy nothing but complexity — the
+   * perceived speed here comes from acting between turns, not from watching
+   * JSON arrive.
+   *
+   * @returns {Promise<{call:{name,args,raw}|null, text:string}>}
+   */
+  async toolCall(messages, { model, tools, maxTokens = 1400, signal, effort = 'low' } = {}) {
+    const useModel = model || this.tiers.see || this.model;
+    let res;
+    try {
+      res = await this._post(useModel, messages, { maxTokens, stream: false, signal, tools, effort });
+    } catch (err) {
+      throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
+    }
+
+    const raw = await res.text();
+    let body = null;
+    try { body = JSON.parse(raw); } catch { /* non-JSON error body */ }
+
+    if (!res.ok) {
+      if (this._rejectsReasoningEffort(res.status, body)) {
+        this._noReasoningEffort = true;
+        return this.toolCall(messages, { model: useModel, tools, maxTokens, signal, effort });
+      }
+      throw this._error(res.status, body);
+    }
+
+    const message = body?.choices?.[0]?.message ?? {};
+    const call = message.tool_calls?.[0];
+    if (!call) return { call: null, text: (message.content || '').trim() };
+
+    let args = {};
+    try {
+      args = JSON.parse(call.function?.arguments || '{}');
+    } catch {
+      // Malformed arguments are the model's fault, not the user's. Treat the
+      // turn as a no-op rather than crashing a run halfway through.
+      return { call: null, text: '' };
+    }
+
+    return {
+      call: { name: call.function?.name, args, raw: call },
+      text: (message.content || '').trim(),
+    };
+  }
+
+  /* ------------------------------------------------------------------------
+     Talking
+     ---------------------------------------------------------------------- */
+
+  static CHAT_SYSTEM =
+    'You are Pico, a small agent that lives on the user\'s Windows desktop ' +
+    'and can operate it for them. Right now you are talking, not working.\n\n' +
+    'Be brief and plain — two or three sentences unless more is genuinely ' +
+    'needed. No lists unless asked. Never claim to have done something on ' +
+    'their computer; in this mode you have not touched it.\n\n' +
+    'If they seem to want something done, say what you would do and that they ' +
+    'can send it again as a task.';
+
+  /**
+   * A conversational reply, streamed so it appears as it is written.
+   * @param {Array} history  prior turns as { role, content }
+   */
+  async converse(history, { onDelta, signal, name = 'Pico' } = {}) {
+    const system = name && name !== 'Pico'
+      ? `${LLM.CHAT_SYSTEM}\n\nThe user has named you ${name}. Answer to it.`
+      : LLM.CHAT_SYSTEM;
+
+    return this.stream(
+      [{ role: 'system', content: system }, ...history],
+      { model: this.tiers.fast, maxTokens: 500, onDelta, signal },
+    );
   }
 
   /* ------------------------------------------------------------------------

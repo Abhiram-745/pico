@@ -11,10 +11,8 @@ import { Mascot } from './mascot.js';
 import { renderApproval, renderTakeover, renderError } from './cards.js';
 import { renderTimeline } from './timeline.js';
 import { permissions, LEVELS } from './permissions.js';
-import { AGENT_COLORS, AGENT_NAMES } from './cursors.js';
 
 const NAME_KEY = 'pico.pet.name.v1';
-const AGENTS_KEY = 'pico.agents.v1';
 
 const read = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } };
 const write = (k, v) => { try { localStorage.setItem(k, String(v)); } catch { /* private mode */ } };
@@ -92,9 +90,9 @@ function notice(title, body) {
 }
 
 const SECTIONS = [
-  { id: 'chat',     label: 'Chat',     icon: ICONS.chat,     title: 'Chat',     sub: 'Tell Pico what to do' },
+  { id: 'chat',     label: 'Chat',     icon: ICONS.chat,     title: 'Chat',     sub: 'Talk to Pico, or give it a job' },
   { id: 'activity', label: 'Activity', icon: ICONS.activity, title: 'Activity', sub: 'Every step, as it happens' },
-  { id: 'cursors',  label: 'Cursors',  icon: ICONS.cursors,  title: 'Cursors',  sub: 'Run several tasks at once' },
+  { id: 'desktop',  label: 'Desktop',  icon: ICONS.cursors,  title: 'Desktop',  sub: 'The notch, and where the pointer is' },
   { id: 'updates',  label: 'Updates',  icon: ICONS.update,   title: 'Updates',  sub: 'Keep Pico current' },
   { id: 'settings', label: 'Settings', icon: ICONS.gear,     title: 'Settings', sub: 'Model, permissions, name' },
 ];
@@ -106,7 +104,6 @@ const SECTIONS = [
 export function mountApp(host = document.body, { demo = false } = {}) {
   let section = 'chat';
   let petName = read(NAME_KEY, 'Pico');
-  const messages = [];
 
   // --- shell ---------------------------------------------------------------
   const root = el('div', 'app');
@@ -175,53 +172,95 @@ export function mountApp(host = document.body, { demo = false } = {}) {
   host.append(root);
 
   // --- sections ------------------------------------------------------------
+  const MODE_ORDER = ['auto', 'chat', 'agent'];
+  const MODE_LABEL = { auto: 'Auto', chat: 'Chat', agent: 'Do it' };
+  const MODE_HINT = {
+    auto: 'Pico decides whether to talk or to work',
+    chat: 'Talk only — nothing on your computer is touched',
+    agent: 'Always act on the desktop',
+  };
+
   function renderChat(state) {
     const wrap = el('div', 'chat');
     const scroll = el('div', 'chat__scroll');
     const list = el('div', 'chat__list');
 
+    if (!state.messages.length && !state.approval && !state.takeover) {
+      list.append(emptyState({
+        title: `Talk to ${petName}, or give it a job`,
+        sub: state.guardian.canAct === false && state.guardian.reason
+          ? state.guardian.reason
+          : 'Say hello and it answers. Tell it to open something and it goes '
+            + 'and does it — reading the screen, clicking and typing, and '
+            + 'stopping to ask before anything it cannot undo.',
+      }));
+    }
+
+    for (const m of state.messages) {
+      if (m.from === 'event') {
+        list.append(el('div', 'bubble bubble--event', m.text));
+        continue;
+      }
+      const b = el('div', `bubble bubble--${m.from}`);
+      if (!m.text && !m.done) {
+        // A reply that has been asked for but has not started arriving.
+        const dots = el('span', 'bubble__typing');
+        dots.append(el('i'), el('i'), el('i'));
+        b.append(dots);
+      } else {
+        b.textContent = m.text;
+      }
+      list.append(b);
+    }
+
+    // Decisions belong at the end of the thread, where the conversation is,
+    // rather than pinned above everything that has been said since.
     if (state.approval) list.append(renderApproval(state.approval));
     else if (state.takeover) list.append(renderTakeover(state.takeover));
     else if (state.error) list.append(renderError(state.error));
 
-    if (!messages.length && !state.approval && !state.takeover) {
-      list.append(emptyState({
-        title: `Ask ${petName} to do something`,
-        sub: state.guardian.ready
-          ? 'Describe it the way you would to a person. Pico reads the screen and works, and stops to ask before anything it cannot undo.'
-          : 'The safety guardian is not running, so tasks cannot start yet.',
-      }));
-    }
-    for (const m of messages) {
-      list.append(el('div', `bubble bubble--${m.from}`, m.text));
-    }
     scroll.append(list);
 
+    // --- composer ---
     const composer = el('div', 'composer2');
+
+    const modeBtn = el('button', 'composer2__mode', MODE_LABEL[state.mode]);
+    modeBtn.type = 'button';
+    modeBtn.dataset.mode = state.mode;
+    modeBtn.title = MODE_HINT[state.mode];
+    modeBtn.addEventListener('click', () => {
+      store.setMode(MODE_ORDER[(MODE_ORDER.indexOf(state.mode) + 1) % MODE_ORDER.length]);
+    });
+
     const input = el('input');
     input.type = 'text';
-    input.placeholder = `Tell ${petName} what to do…`;
+    input.placeholder = state.mode === 'chat' ? `Talk to ${petName}…`
+      : state.mode === 'agent' ? `Tell ${petName} what to do…`
+      : 'Message or task…';
     input.disabled = !state.guardian.ready;
+
     const send = el('button', 'composer2__send');
     send.type = 'button';
-    send.setAttribute('aria-label', 'Send task');
+    send.setAttribute('aria-label', 'Send');
     send.append(icon(ICONS.send));
     send.disabled = true;
 
     const sync = () => { send.disabled = !input.value.trim() || !store.canSubmit; };
     input.addEventListener('input', sync);
+
     const submit = () => {
       const text = input.value.trim();
       if (!text || send.disabled) return;
-      messages.push({ from: 'you', text });
+      const id = `you_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      store.addMessage({ id, from: 'you', text, done: true });
       store.addRecent(text);
-      bridge.send('submitTask', { text });
+      bridge.send('submitTask', { text, mode: state.mode, id });
       input.value = '';
       render(store.state);
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
     send.addEventListener('click', submit);
-    composer.append(input, send);
+    composer.append(modeBtn, input, send);
 
     wrap.append(scroll, composer);
     queueMicrotask(() => {
@@ -232,47 +271,85 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     return wrap;
   }
 
-  function renderCursors() {
+  /* The pointer map is built once and updated in place. Rebuilding it per
+     frame would mean re-rendering a whole section thirty times a second to
+     move one dot. */
+  const map = el('div', 'screenmap');
+  const mapDot = el('div', 'screenmap__dot');
+  const mapTrail = el('div', 'screenmap__trail');
+  const mapCoords = el('div', 'screenmap__coords', '—');
+  map.append(mapTrail, mapDot, mapCoords);
+
+  function paintCursor(state) {
+    const screen = state.guardian.screen;
+    if (!screen) return;
+    map.style.setProperty('--ratio', String(screen.height / screen.width));
+    const { x, y, visible } = state.cursor;
+    map.dataset.live = String(visible);
+    mapDot.style.left = `${(x / screen.width) * 100}%`;
+    mapDot.style.top = `${(y / screen.height) * 100}%`;
+    mapTrail.style.left = mapDot.style.left;
+    mapTrail.style.top = mapDot.style.top;
+    mapCoords.textContent = visible ? `${Math.round(x)}, ${Math.round(y)}` : '—';
+  }
+
+  function renderDesktop(state) {
     const wrap = el('div', 'measure');
-    let count = Math.max(1, Math.min(6, Number(read(AGENTS_KEY, '1')) || 1));
 
-    const panel = el('div', 'panel');
-    const h = el('div', 'panel__head');
-    h.append(el('div', 'panel__title', 'How many cursors'));
-    const actions = el('div', 'panel__actions');
-    const minus = el('button', 'btn', '−');
-    const n = el('span', 'build', String(count));
-    const plus = el('button', 'btn', '+');
-    minus.type = plus.type = 'button';
-    const apply = (d) => {
-      count = Math.max(1, Math.min(6, count + d));
-      write(AGENTS_KEY, count);
-      window.dispatchEvent(new CustomEvent('pico:agents', { detail: count }));
-      render(store.state);
-    };
-    minus.addEventListener('click', () => apply(-1));
-    plus.addEventListener('click', () => apply(1));
-    actions.append(minus, n, plus);
-    h.append(actions);
-    panel.append(h);
-    panel.append(el('p', 'panel__sub',
-      'Windows has one system pointer, so these are drawn rather than the real ' +
-      'mouse. That is what lets several run at once while your own mouse stays ' +
-      'yours — each takes its own task and makes its own model request.'));
-    wrap.append(panel);
+    // --- the notch ---
+    const notch = el('div', 'panel');
+    notch.append(el('div', 'panel__title', 'The notch'));
+    notch.append(el('p', 'panel__sub',
+      'A strip that sits at the top of your screen while you work. Type into '
+      + 'it without coming back to this window, and it grows to show what '
+      + `${petName} is doing, then settles back.`));
 
-    const list = el('div', 'panel');
-    for (let i = 0; i < count; i++) {
-      const row = el('div', 'row');
-      const dot = el('div', 'swatch', AGENT_NAMES[i]);
-      dot.style.background = AGENT_COLORS[i];
-      const m = el('div', 'row__main');
-      m.append(el('div', 'row__title', `Cursor ${AGENT_NAMES[i]}`));
-      m.append(el('div', 'row__sub', 'Idle'));
-      row.append(dot, m);
-      list.append(row);
+    const notchRow = el('div', 'row');
+    const notchMain = el('div', 'row__main');
+    notchMain.append(el('div', 'row__title', state.notchOpen ? 'Showing' : 'Not showing'));
+    notchMain.append(el('div', 'row__sub', state.notchOpen
+      ? 'Docked to the top centre of your main display.'
+      : 'Opens in its own small window at the top of the screen.'));
+    const notchBtn = el('button', state.notchOpen ? 'btn' : 'btn btn--primary',
+      state.notchOpen ? 'Hide it' : 'Show the notch');
+    notchBtn.type = 'button';
+    notchBtn.disabled = demo;
+    notchBtn.addEventListener('click', () => {
+      bridge.send(state.notchOpen ? 'closeNotch' : 'openNotch');
+    });
+    notchRow.append(notchMain, notchBtn);
+    notch.append(notchRow);
+    if (demo) {
+      notch.append(el('p', 'panel__sub',
+        'The notch is a window on your own desktop, so it only exists in the '
+        + 'installed app.'));
     }
-    wrap.append(list);
+    wrap.append(notch);
+
+    // --- the pointer ---
+    const ptr = el('div', 'panel');
+    ptr.append(el('div', 'panel__title', 'Where the pointer is'));
+
+    if (state.guardian.screen) {
+      ptr.append(el('p', 'panel__sub',
+        `Your screen, live. The dot is ${petName}'s pointer — the real one, `
+        + 'drawn here as it moves so you can follow it without watching the '
+        + 'whole desktop.'));
+      ptr.append(map);
+      paintCursor(state);
+    } else {
+      ptr.append(el('p', 'panel__sub', state.guardian.reason
+        || 'Pico cannot reach the mouse on this machine, so there is nothing '
+           + 'to show here yet.'));
+    }
+
+    ptr.append(el('p', 'panel__sub',
+      'Windows has exactly one mouse pointer and this is it, which is why '
+      + 'there is one dot and not several. It glides to each target rather '
+      + 'than jumping, so you can see where it is going and take the mouse '
+      + 'back the moment you want it.'));
+    wrap.append(ptr);
+
     return wrap;
   }
 
@@ -627,7 +704,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
             sub: 'Every step Pico takes shows up here as it happens — what it looked at, what it clicked, and what it decided to ask you about.',
             action: { label: 'Start a task', run: () => go('chat') },
           }))
-        : section === 'cursors' ? renderCursors()
+        : section === 'desktop' ? renderDesktop(state)
         : section === 'updates' ? renderUpdates()
         : section === 'settings' ? renderSettings()
         : renderChat(state),
@@ -635,7 +712,12 @@ export function mountApp(host = document.body, { demo = false } = {}) {
   }
 
   store.subscribe((state, meta) => {
-    if (meta.type === 'summary' && state.summary) messages.push({ from: 'pico', text: state.summary });
+    // Thirty positions a second must not re-render the window. Move the dot
+    // and stop — everything else about the page is unchanged.
+    if (meta.type === 'cursor') {
+      if (section === 'desktop') paintCursor(state);
+      return;
+    }
     if ((meta.type === 'approval' || meta.type === 'takeover') && section !== 'chat') section = 'chat';
     render(state);
   });

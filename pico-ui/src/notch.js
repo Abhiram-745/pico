@@ -64,10 +64,18 @@ const icon = (d) => {
   return s;
 };
 
-export function mountNotch(host = document.body) {
+/**
+ * @param {HTMLElement} host
+ * @param {object}  opts
+ * @param {boolean} opts.windowed   the notch is its own OS window, so it
+ *                                  fills the frame and reports its own size
+ * @param {(size:{height:number})=>void} opts.onMeasure
+ */
+export function mountNotch(host = document.body, { windowed = false, onMeasure } = {}) {
   const root = el('div', 'notch-layer');
   root.dataset.mode = 'rest';
   root.dataset.phase = 'Idle';
+  if (windowed) root.dataset.host = 'window';
 
   const scrim = el('div', 'notch-layer__scrim');
 
@@ -94,16 +102,37 @@ export function mountNotch(host = document.body) {
   const body = el('div', 'notch__body');
 
   const field = el('div', 'notch__field');
+
+  /* Auto decides between talking and working; the other two settle it by
+     hand. It has to be visible, not buried in settings, because the whole
+     point is that you can see and change what Pico is about to do with
+     what you typed. */
+  const modeBtn = el('button', 'notch__mode');
+  modeBtn.type = 'button';
+  const MODE_ORDER = ['auto', 'chat', 'agent'];
+  const MODE_LABEL = { auto: 'Auto', chat: 'Chat', agent: 'Do it' };
+  const MODE_HINT = {
+    auto: 'Pico decides: talk, or work',
+    chat: 'Talk only — nothing is touched',
+    agent: 'Always act on the desktop',
+  };
+  modeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const next = MODE_ORDER[(MODE_ORDER.indexOf(store.state.mode) + 1) % MODE_ORDER.length];
+    store.setMode(next);
+    input.focus();
+  });
+
   const input = el('input', 'notch__input');
   input.type = 'text';
   input.autocomplete = 'off';
   input.spellcheck = false;
-  input.setAttribute('aria-label', 'Task');
+  input.setAttribute('aria-label', 'Message or task');
   const send = el('button', 'notch__send');
   send.type = 'button';
   send.setAttribute('aria-label', 'Send');
   send.append(icon(ICONS.send));
-  field.append(input, send);
+  field.append(modeBtn, input, send);
 
   const scroll = el('div', 'notch__scroll');
 
@@ -156,7 +185,6 @@ export function mountNotch(host = document.body) {
   let view = 'tasks';        // tasks | agents | chat | rename
   let mode = 'rest';         // rest | glance | panel | chat
   let glanceTimer = null;
-  const messages = [];
   const agentState = new Map();   // id -> { task, state }
   const autoApproved = new Set(); // approval ids answered without asking
 
@@ -268,7 +296,7 @@ export function mountNotch(host = document.body) {
     }
     wrap.append(list);
 
-    const note = el('p', 'setting__help',
+    const note = el('p', 'notch__note',
       'Each cursor runs its own task and makes its own model request, ' +
       'concurrently. They are drawn, not the system pointer — so your real ' +
       'mouse stays yours while they work.');
@@ -300,7 +328,7 @@ export function mountNotch(host = document.body) {
     }
     wrap.append(list);
 
-    const note = el('p', 'setting__help',
+    const note = el('p', 'notch__note',
       'Credentials, CAPTCHAs and Windows security prompts always come to you — ' +
       'Pico cannot type a credential, so there is nothing to auto-approve. ' +
       '"Accept all" lasts for this session only and is never remembered.');
@@ -309,11 +337,13 @@ export function mountNotch(host = document.body) {
     return wrap;
   }
 
-  function renderChat() {
+  function renderChat(state) {
     const wrap = el('div', 'notch__msgs');
-    for (const m of messages) {
+    // One thread, shared with the app window through the store — so what you
+    // type up here is the same conversation you see down there.
+    for (const m of state.messages) {
       const node = el('div', `msg msg--${m.from}`);
-      if (m.typing) {
+      if (!m.text && !m.done) {
         const t = el('span', 'msg__typing');
         t.append(el('i'), el('i'), el('i'));
         node.append(t);
@@ -367,8 +397,15 @@ export function mountNotch(host = document.body) {
       : copy.detail;
     statusEl.textContent = detail || (state.phase === 'Idle' ? 'Ready' : '');
 
-    input.placeholder = `Tell ${petName} what to do…`;
+    input.placeholder = state.mode === 'chat'
+      ? `Talk to ${petName}…`
+      : state.mode === 'agent'
+        ? `Tell ${petName} what to do…`
+        : `Message or task…`;
     input.disabled = !state.guardian.ready;
+    modeBtn.textContent = MODE_LABEL[state.mode];
+    modeBtn.dataset.mode = state.mode;
+    modeBtn.title = MODE_HINT[state.mode];
     updateSend();
 
     chatBtn.setAttribute('aria-pressed', String(view === 'chat'));
@@ -383,7 +420,7 @@ export function mountNotch(host = document.body) {
     if (mode === 'panel' || mode === 'chat') {
       scroll.replaceChildren(
         view === 'agents' ? renderAgents()
-          : view === 'chat' ? renderChat()
+          : view === 'chat' ? renderChat(state)
           : view === 'rename' ? renderRename()
           : view === 'perms' ? renderPermissions()
           : renderTasks(state),
@@ -391,18 +428,36 @@ export function mountNotch(host = document.body) {
       // Keep the task box available everywhere except while renaming,
       // where it would compete with the name field for Enter.
       field.hidden = view === 'rename' || view === 'perms';
-
-      // Let the notch size itself to its content rather than a fixed height.
-      requestAnimationFrame(() => {
-        const wanted = Math.min(
-          window.innerHeight * 0.7,
-          bar.offsetHeight + (field.hidden ? 0 : field.offsetHeight + 12)
-            + scroll.scrollHeight + foot.offsetHeight + 16,
-        );
-        notch.style.setProperty('--panel-h', `${Math.max(180, wanted)}px`);
-        if (view === 'chat') scroll.scrollTop = scroll.scrollHeight;
-      });
     }
+
+    // Size to content rather than to a fixed height — in a page that means
+    // the element's own height, in a window it means the window's.
+    requestAnimationFrame(() => measure());
+  }
+
+  /** What this notch wants to be, given what it is currently showing. */
+  function measure() {
+    if (mode === 'rest' || mode === 'glance') {
+      const h = bar.offsetHeight + (windowed ? 8 : 0);
+      if (windowed) onMeasure?.({ height: Math.max(52, h) });
+      return;
+    }
+
+    const content = bar.offsetHeight
+      + (field.hidden ? 0 : field.offsetHeight + 12)
+      + scroll.scrollHeight
+      + foot.offsetHeight
+      + 18;
+
+    if (windowed) {
+      onMeasure?.({ height: Math.max(180, Math.min(720, content)) });
+    } else {
+      notch.style.setProperty(
+        '--panel-h',
+        `${Math.max(180, Math.min(window.innerHeight * 0.7, content))}px`,
+      );
+    }
+    if (view === 'chat') scroll.scrollTop = scroll.scrollHeight;
   }
 
   // --- agents --------------------------------------------------------------
@@ -462,13 +517,19 @@ export function mountNotch(host = document.body) {
   function submit() {
     const text = input.value.trim();
     if (!text || send.disabled) return;
-    messages.push({ from: 'you', text });
+
+    // Added locally under an id the host echoes back, so it appears the
+    // instant you press Enter rather than after a network round trip.
+    const id = `you_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    store.addMessage({ id, from: 'you', text, done: true });
     store.addRecent(text);
-    bridge.send('submitTask', { text });
+    bridge.send('submitTask', { text, mode: store.state.mode, id });
+
     input.value = '';
     updateSend();
-    if (view !== 'chat') close();
-    else render(store.state);
+    // Stay open on the conversation. Closing the moment you said something
+    // meant a reply arrived to a notch that was no longer showing it.
+    open('chat');
   }
 
   // --- store ---------------------------------------------------------------
@@ -483,7 +544,7 @@ export function mountNotch(host = document.body) {
     if (!auto) return false;
 
     autoApproved.add(a.id);
-    messages.push({ from: 'event', text: `Auto-approved: ${a.summary} — ${why}` });
+    store.addMessage({ from: 'event', text: `Auto-approved: ${a.summary} — ${why}` });
     bridge.send('approve', { id: a.id });
     glance(2200);
     return true;
@@ -510,10 +571,13 @@ export function mountNotch(host = document.body) {
       } else if (state.phase !== 'Idle') glance();
     }
     if (meta.type === 'action') { mascot.pulse(); glance(1800); }
-    if (meta.type === 'summary' && state.summary) {
-      messages.push({ from: 'pico', text: state.summary });
-      glance(3200);
-    }
+    if (meta.type === 'summary' && state.summary) glance(3200);
+
+    // A reply is a conversation, not a run: show it where it can be read
+    // rather than flashing a status line that vanishes.
+    if (meta.type === 'routed' && state.routed?.mode === 'chat') open('chat');
+    if (meta.type === 'message' && mode === 'rest') glance(2600);
+
     render(state);
   });
 

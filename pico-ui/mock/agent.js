@@ -9,6 +9,8 @@
    AppData\Local\Pico\audit.jsonl (106 events across 9 sessions).
    ========================================================================== */
 
+import { localRoute } from '../../bridge/intent.mjs';
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let sessionCounter = 0;
@@ -44,6 +46,7 @@ export class MockAgent {
     this.paused = false;
     this.heldModifiers = [];
     this.phase = 'Idle';
+    this.petName = 'Pico';
     this.settings = {
       model: 'gpt-5.4-nano',
       pauseOnPhysicalInput: true,
@@ -109,7 +112,11 @@ export class MockAgent {
   handle({ command, payload = {} }) {
     switch (command) {
       case 'submitTask':
-        this.run(payload.text);
+        this.run(payload.text, { mode: payload.mode });
+        break;
+
+      case 'setName':
+        this.petName = String(payload.name || 'Pico').slice(0, 24);
         break;
 
       case 'pause':
@@ -196,7 +203,7 @@ export class MockAgent {
   }
 
   // --- scenarios -----------------------------------------------------------
-  async run(text = '') {
+  async run(text = '', opts = {}) {
     // Cancel anything still in flight first. Without this, submitting a second
     // task leaves the previous scenario's loop running and the two interleave
     // phase changes — which is exactly what a real host must never do either.
@@ -206,6 +213,18 @@ export class MockAgent {
 
     this.cancelled = false;
     this.sessionId = newSessionId();
+
+    // The same fork the real host makes, so the preview demonstrates the
+    // behaviour rather than describing it. The rules are shared code; only
+    // the model tiebreak is missing here, and it has no key to call it with.
+    const decision = localRoute(text) ?? { mode: 'chat', why: 'not clearly an instruction' };
+    const mode = opts.mode === 'chat' || opts.mode === 'agent' ? opts.mode : decision.mode;
+    this.emit('routed', {
+      mode,
+      why: opts.mode && opts.mode !== 'auto' ? 'you chose it' : decision.why,
+      source: opts.mode && opts.mode !== 'auto' ? 'user' : 'rules',
+    });
+    if (mode === 'chat') return this.scenarioChat(text);
 
     const t = text.toLowerCase();
     if (t.includes('email') || t.includes('send') || t.includes('post')) return this.scenarioApproval(text);
@@ -361,6 +380,42 @@ export class MockAgent {
 
     this.setPhase('Completed');
     this.audit('run_completed', { metadata: { completed_actions: 3 } });
+  }
+
+  /**
+   * Talking, not working. No phases, no desktop — which is the whole point
+   * of the distinction: saying hello must leave the machine alone.
+   */
+  async scenarioChat(text) {
+    const id = `msg_${Date.now()}`;
+    const t = String(text).toLowerCase();
+
+    const reply =
+      /^(?:hi|hey|hello|yo|sup|howdy)/.test(t)
+        ? `Hello. I'm ${this.petName}. Tell me something to do on your desktop `
+          + 'and I\'ll go and do it — or just keep talking, this is a preview.'
+      : /who|what are you|what can you do/.test(t)
+        ? 'I read your screen and work it for you — clicking, typing, '
+          + 'scrolling — and I stop to ask before anything I can\'t undo. '
+          + 'This is the hosted preview, so nothing here touches your computer.'
+      : /thank/.test(t)
+        ? 'Any time.'
+        : 'This is the preview, so I can show you the interface but I\'m not '
+          + 'wired to a model here. Installed, this is where the reply would '
+          + 'stream in.';
+
+    // Typed out rather than dropped in whole, because that is what the real
+    // one does and the difference is the thing worth showing.
+    this.emit('message', { id, text: '', done: false });
+    const words = reply.split(' ');
+    let acc = '';
+    for (let i = 0; i < words.length; i++) {
+      if (this.cancelled) return;
+      acc += (i ? ' ' : '') + words[i];
+      this.emit('message', { id, text: acc, done: false });
+      await sleep(26);
+    }
+    this.emit('message', { id, text: reply, done: true });
   }
 
   async scenarioFailure() {

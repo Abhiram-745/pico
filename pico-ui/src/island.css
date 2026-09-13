@@ -1,0 +1,450 @@
+/* ==========================================================================
+   Pico — the island
+
+   Pure black, so it reads as part of the bezel rather than as a panel laid
+   on top of the screen. Every edge you see is the window's own; the page
+   paints nothing outside the island, because there is nothing outside it.
+   ========================================================================== */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  color: #f5f5f7;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+.island {
+  --ink: #f5f5f7;
+  --dim: #8e8e93;
+  --faint: #636366;
+  --well: #1c1c1e;
+  --well-hi: #2c2c2e;
+  --line: rgba(255, 255, 255, .08);
+  --spring: cubic-bezier(.32, 1.25, .5, 1);
+  --out: cubic-bezier(.2, .8, .2, 1);
+
+  position: absolute;
+  top: 0;
+  left: 50%;
+  translate: -50% 0;
+  width: var(--w);
+  display: flex;
+  flex-direction: column;
+}
+
+.island[data-view="compact"] { --w: 236px; }
+.island[data-view="live"]    { --w: 408px; }
+.island[data-view="open"]    { --w: 584px; }
+
+/* The frame is springing to a new size; bring the content in with it. */
+.island.is-morphing .island__text,
+.island.is-morphing .island__trail,
+.island.is-morphing .island__panel {
+  animation: island-in .34s var(--out) both;
+}
+.island.is-morphing .island__panel { animation-delay: .05s; }
+
+@keyframes island-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.985); filter: blur(5px); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+
+/* ==========================================================================
+   Bar — the row that is always there
+   ========================================================================== */
+.island__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px 0 10px;
+  cursor: pointer;
+}
+.island[data-view="live"] .island__bar { height: 48px; padding: 0 10px 0 12px; }
+.island[data-view="open"] .island__bar { height: 54px; padding: 0 12px 0 14px; }
+
+.island__lead {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  transition: transform .4s var(--spring);
+}
+.island[data-view="compact"] .island__lead { transform: scale(.82); }
+.island[data-view="open"] .island__lead { transform: scale(1.12); }
+
+.island__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+/* Compact is the notch itself: pet on one side, status on the other, and the
+   middle left empty like the camera housing it imitates. */
+.island[data-view="compact"] .island__text { visibility: hidden; }
+
+.island__title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -.012em;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.island__sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dim);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.island[data-view="open"] .island__title { font-size: 14px; }
+
+.island__trail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- status glyph -------------------------------------------------------- */
+.island__glyph {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+}
+.island__glyph > * { grid-area: 1 / 1; display: none; }
+.island__glyph[data-mark="dot"]   .island__dot,
+.island__glyph[data-mark="bars"]  .island__bars,
+.island__glyph[data-mark="tick"]  .island__tick,
+.island__glyph[data-mark="cross"] .island__cross { display: flex; }
+
+.island__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+.island[data-phase="Idle"] .island__dot {
+  background: #30d158;
+  box-shadow: 0 0 10px rgba(48, 209, 88, .55);
+}
+.island[data-phase="AwaitingApproval"] .island__dot,
+.island[data-phase="AwaitingTakeover"] .island__dot { animation: island-beat 1.1s ease-in-out infinite; }
+
+@keyframes island-beat {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.45); opacity: .7; }
+}
+
+.island__bars {
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+.island__bars i {
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: island-bar .9s ease-in-out infinite;
+}
+.island__bars i:nth-child(2) { animation-delay: -.62s; }
+.island__bars i:nth-child(3) { animation-delay: -.28s; }
+.island__bars i:nth-child(4) { animation-delay: -.46s; }
+
+@keyframes island-bar {
+  0%, 100% { height: 4px; }
+  50%      { height: 14px; }
+}
+
+.island__tick, .island__cross {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  place-items: center;
+  justify-content: center;
+  align-items: center;
+  animation: island-pop .42s var(--spring) both;
+}
+.island__tick  { background: #30d158; color: #000; }
+.island__cross { background: #ff453a; color: #000; }
+.island__tick svg, .island__cross svg { width: 12px; height: 12px; stroke-width: 3; }
+
+@keyframes island-pop {
+  from { transform: scale(.4); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+
+/* --- buttons in the bar -------------------------------------------------- */
+.island__btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--well);
+  color: #d1d1d6;
+  cursor: pointer;
+  transition: background .16s, color .16s, transform .18s var(--spring);
+}
+.island__btn:hover { background: var(--well-hi); color: var(--ink); }
+.island__btn:active { transform: scale(.9); }
+.island__btn svg { width: 15px; height: 15px; }
+.island__btn[hidden] { display: none; }
+
+.island__btn--stop { background: color-mix(in oklab, #ff453a 22%, #000); color: #ff6961; }
+.island__btn--stop:hover { background: color-mix(in oklab, #ff453a 34%, #000); color: #ff8a84; }
+.island__btn--stop svg { width: 11px; height: 11px; }
+
+.island__perm {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px 0 8px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--well);
+  color: #d1d1d6;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background .16s, color .16s;
+}
+.island__perm:hover { background: var(--well-hi); color: var(--ink); }
+.island__perm svg { width: 14px; height: 14px; }
+.island__perm[hidden] { display: none; }
+.island__perm-label { line-height: 1; }
+.island__perm[data-level="smart"] { color: #64d2ff; }
+.island__perm[data-level="all"]   { color: #ff9f0a; background: color-mix(in oklab, #ff9f0a 16%, #000); }
+
+/* ==========================================================================
+   Panel — only when open
+   ========================================================================== */
+.island__panel {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 12px 12px;
+}
+.island[data-view="open"] .island__panel { display: flex; }
+
+/* --- empty --------------------------------------------------------------- */
+.island__empty { padding: 2px 4px 2px; }
+.island__empty[hidden] { display: none; }
+.island__empty-line { font-size: 12.5px; color: var(--dim); line-height: 1.5; }
+
+.island__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.island__chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: #d1d1d6;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .16s, border-color .16s, color .16s;
+}
+.island__chip:hover { background: var(--well); border-color: transparent; color: var(--ink); }
+
+/* --- thread -------------------------------------------------------------- */
+.island__thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 290px;
+  overflow-y: auto;
+  padding: 0 4px;
+  user-select: text;
+  scrollbar-width: none;
+}
+.island__thread:empty { display: none; }
+.island__thread::-webkit-scrollbar { display: none; }
+
+.island__msg {
+  max-width: 86%;
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: island-msg .28s var(--out) both;
+}
+.island__msg--you {
+  align-self: flex-end;
+  background: var(--well-hi);
+  padding: 7px 12px;
+  border-radius: 16px 16px 5px 16px;
+}
+.island__msg--pico {
+  align-self: flex-start;
+  color: #e5e5ea;
+  padding: 2px 2px;
+}
+.island__msg--event {
+  align-self: center;
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--faint);
+  text-align: center;
+}
+
+@keyframes island-msg {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.island__typing { display: inline-flex; gap: 4px; padding: 6px 0; }
+.island__typing i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  animation: island-typing 1.1s ease-in-out infinite;
+}
+.island__typing i:nth-child(2) { animation-delay: .15s; }
+.island__typing i:nth-child(3) { animation-delay: .3s; }
+
+@keyframes island-typing {
+  0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+  30%           { opacity: 1;  transform: translateY(-3px); }
+}
+
+/* --- a decision ---------------------------------------------------------- */
+.island__decision {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  padding: 12px 12px 12px;
+  border-radius: 18px;
+  background: var(--well);
+  animation: island-msg .3s var(--out) both;
+}
+.island__decision[hidden] { display: none; }
+
+.island__decision-icon {
+  grid-row: span 2;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+.island__decision-icon svg { width: 17px; height: 17px; }
+.island__decision[data-kind="approval"] .island__decision-icon { background: color-mix(in oklab, #ff9f0a 20%, #000); color: #ffb340; }
+.island__decision[data-kind="takeover"] .island__decision-icon { background: color-mix(in oklab, #0a84ff 22%, #000); color: #5eb1ff; }
+
+.island__decision-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; grid-row: span 2; align-self: center; }
+.island__decision-title { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+.island__decision-reason { font-size: 12px; color: var(--dim); line-height: 1.45; }
+
+.island__decision-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.island__pill {
+  height: 32px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--well-hi);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .16s, transform .18s var(--spring);
+}
+.island__pill:hover { background: #3a3a3c; }
+.island__pill:active { transform: scale(.96); }
+.island__pill--primary { background: #f5f5f7; color: #000; }
+.island__pill--primary:hover { background: #fff; }
+
+/* --- composer ------------------------------------------------------------ */
+.island__composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 6px 0 7px;
+  border-radius: 22px;
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px transparent;
+  transition: box-shadow .18s;
+}
+.island__composer:focus-within { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16); }
+
+.island__mode {
+  flex: none;
+  height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 15px;
+  background: var(--well-hi);
+  color: #d1d1d6;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .16s, color .16s;
+}
+.island__mode:hover { background: #3a3a3c; color: var(--ink); }
+.island__mode[data-mode="chat"]  { background: color-mix(in oklab, #64d2ff 20%, #000); color: #64d2ff; }
+.island__mode[data-mode="agent"] { background: color-mix(in oklab, #30d158 20%, #000); color: #4cd964; }
+
+.island__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  user-select: text;
+}
+.island__input::placeholder { color: var(--faint); }
+
+.island__send {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: #f5f5f7;
+  color: #000;
+  cursor: pointer;
+  transition: background .16s, opacity .16s, transform .2s var(--spring);
+}
+.island__send svg { width: 16px; height: 16px; stroke-width: 2.4; }
+.island__send:not(:disabled):active { transform: scale(.88); }
+.island__send:disabled { background: var(--well-hi); color: var(--faint); cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  .island *, .island { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

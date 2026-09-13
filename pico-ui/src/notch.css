@@ -89,6 +89,42 @@
 }
 .notch-layer:not([data-phase="Idle"]) .notch::after { opacity: .9; }
 
+/* ==========================================================================
+   Windowed
+
+   When the notch is its own window at the top of the screen, the window IS
+   the notch: it fills the frame edge to edge and reports the height it wants
+   so the bridge can resize around it. The morph between sizes then happens
+   to the window, not inside it — which is why the element's own width and
+   height transitions are turned off here rather than fighting the resize.
+   ========================================================================== */
+.notch-layer[data-host="window"] {
+  position: static;
+  inset: auto;
+  display: block;
+  pointer-events: auto;
+}
+.notch-layer[data-host="window"] .notch-layer__scrim { display: none; }
+
+.notch-layer[data-host="window"] .notch {
+  width: 100%;
+  height: auto;
+  min-height: 100vh;
+  border: 0;
+  border-radius: 0 0 20px 20px;
+  transition: none;
+  box-shadow: none;
+}
+
+/* Nothing but the bar at rest — the window shrinks to it. */
+.notch-layer[data-host="window"][data-mode="rest"] .notch__body,
+.notch-layer[data-host="window"][data-mode="glance"] .notch__body { display: none; }
+
+.notch-layer[data-host="window"] .notch__bar { height: 46px; }
+.notch-layer[data-host="window"] .notch__pet { width: 28px; height: 28px; }
+.notch-layer[data-host="window"] .notch__pet .pet { --pet-size: 28px; }
+.notch-layer[data-host="window"] .notch__scroll { max-height: none; }
+
 .notch-layer[data-mode="rest"]   .notch { --notch-w: 188px; --notch-h: 34px; }
 .notch-layer[data-mode="glance"] .notch { --notch-w: 330px; --notch-h: 60px; }
 .notch-layer[data-mode="panel"]  .notch { --notch-w: 560px; --notch-h: var(--panel-h, 300px); border-radius: 0 0 28px 28px; }
@@ -246,6 +282,27 @@
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* What will happen to what you type. Sits inside the field, before the
+   caret, because it is a property of the message rather than a setting
+   somewhere else. */
+.notch__mode {
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  letter-spacing: .01em;
+  cursor: pointer;
+  color: var(--text-mid);
+  background: color-mix(in oklab, #ffffff 8%, transparent);
+  transition: color .16s, background .16s;
+}
+.notch__mode:hover { color: var(--text-hi); background: color-mix(in oklab, #ffffff 14%, transparent); }
+.notch__mode[data-mode="chat"] { color: #7dd3fc; background: color-mix(in oklab, #38bdf8 18%, transparent); }
+.notch__mode[data-mode="agent"] { color: #86efac; background: color-mix(in oklab, #4ade80 18%, transparent); }
+
 .notch__input {
   flex: 1;
   min-width: 0;
@@ -273,6 +330,15 @@
 .notch__send:disabled { opacity: .3; cursor: not-allowed; }
 .notch__send:not(:disabled):active { transform: scale(.9); }
 .notch__send svg { width: 15px; height: 15px; }
+
+/* Explanatory text under a list. The notch is its own window and does not
+   load palette.css, so it cannot borrow that sheet's help style. */
+.notch__note {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
 
 /* --- scrollable region --- */
 .notch__scroll {

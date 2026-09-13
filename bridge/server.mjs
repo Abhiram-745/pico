@@ -31,6 +31,8 @@ import { encode, toTerminal, toSVG } from './qr.mjs';
 import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
 import { LLM, PROVIDERS } from './llm.mjs';
+import { NotchWindow } from './notch-window.mjs';
+import { IslandHost } from './island-host.mjs';
 import { check as checkUpdate, install as installUpdate, localBuild } from './updater.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -41,7 +43,9 @@ const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
 const ALLOWED_COMMANDS = new Set([
   'submitTask', 'pause', 'resume', 'stop',
   'approve', 'deny', 'takeoverDone',
-  'saveSettings', 'tuckAway', 'openPalette', 'closePalette', 'movePalette',
+  'saveSettings', 'setName', 'tuckAway',
+  'openPalette', 'closePalette', 'movePalette',
+  'openNotch', 'closeNotch',
 ]);
 
 const MAX_TASK_LENGTH = 2000;   // mirrors the desktop app's own task limit
@@ -112,6 +116,10 @@ class Bridge {
       takeover: null,
     };
 
+    // The conversation so far, so a phone joining mid-thread sees it rather
+    // than an empty window. Capped: this is a replay buffer, not a store.
+    this.messages = [];
+
     this.transport = {
       emit: (type, payload) => this._fromHost(type, payload),
       onCommand: (handler) => { this._hostHandler = handler; },
@@ -120,6 +128,8 @@ class Bridge {
     this.agent = new HostAgent(this.transport);
     this.agent.start();
     this.llm = null;
+    this.screenSize = null;
+    this.notch = null;        // set once the server knows its own address
   }
 
   /**
@@ -132,23 +142,41 @@ class Bridge {
     llm.onDowngrade = (from, to) => {
       console.warn(`[bridge] ${from} unavailable, using ${to} for this request`);
     };
-    this.agent.planner = (task) => llm.plan(task);
-    this.agent.summariser = (task, steps) => llm.summarise(task, steps);
-    // Only OpenAI serves the Responses API computer-use tool; BazaarLink does
-    // not (see bridge/README.md), so a computer-use model with that provider
-    // just falls back to the scripted demo rather than driving the desktop.
-    this.agent.attachResponses(llm);
+    this.agent.attachLLM(llm);
     this.agent.settings = {
       ...this.agent.settings,
-      model: llm.tiers.fast,
+      // The desktop loop reads a screenshot every turn, so it runs on the
+      // model that can actually see — not the fast text tier, which is what
+      // silently made real control impossible before.
+      model: llm.tiers.see,
       hasApiKey: true,
     };
     this.emitSettings();
+    this.publishCapability();
   }
 
-  /** Real mouse/keyboard/screen control, when the native module loaded. */
-  attachComputer(computer) {
+  /** Real mouse/keyboard/screen control, when the machine allows it. */
+  async attachComputer(computer) {
     this.agent.attachComputer(computer);
+    try { this.screenSize = await computer.size(); } catch { this.screenSize = null; }
+    this.publishCapability();
+  }
+
+  /**
+   * Say plainly whether Pico can actually work, and why not when it cannot.
+   * The old build reported `guardian: ready` unconditionally and then ran a
+   * scripted stand-in, so a machine with no key looked identical to a working
+   * one right up until nothing happened.
+   */
+  publishCapability() {
+    this._fromHost('guardian', {
+      ready: true,                       // chat always works
+      canAct: this.agent.canAct(),       // driving the desktop may not
+      reason: this.agent.blockedReason(),
+      // So the interface can place the live cursor on a map of the screen
+      // at the right proportions instead of assuming 16:9.
+      screen: this.agent.computer ? this.screenSize : null,
+    });
   }
 
   emitSettings() {
@@ -158,6 +186,15 @@ class Bridge {
   /** Host -> every connected client. */
   _fromHost(type, payload) {
     if (type in this.snapshot) this.snapshot[type] = payload;
+
+    if (type === 'message') {
+      // Streamed replies arrive many times under one id; keep the latest of
+      // each rather than a bubble per token.
+      const i = this.messages.findIndex((m) => m.id === payload.id);
+      if (i === -1) this.messages = [...this.messages, payload].slice(-40);
+      else this.messages[i] = payload;
+    }
+
     if (type === 'phase') {
       // decision cards do not survive a phase change
       if (payload.phase !== 'AwaitingApproval') this.snapshot.approval = null;
@@ -178,6 +215,7 @@ class Bridge {
     const send = (type, payload) => payload && client.conn.sendJSON({ type, payload });
     send('guardian', s.guardian);
     send('settings', s.settings);
+    for (const m of this.messages) send('message', m);
     send('phase', s.phase);
     send('pauseState', s.pauseState);
     send('approval', s.approval);
@@ -259,8 +297,31 @@ class Bridge {
     if (command === 'submitTask') {
       const text = String(payload.text ?? '').slice(0, MAX_TASK_LENGTH).trim();
       if (!text) return;
-      console.log(`[bridge] task from ${client.ip}`);
-      this._hostHandler?.({ command, payload: { text } });
+      const mode = ['auto', 'chat', 'agent'].includes(payload.mode) ? payload.mode : 'auto';
+
+      // Echo it to everyone, so the phone and the laptop show the same thread
+      // rather than each keeping its own half of it. The sender already added
+      // it locally under this id, and messages upsert by id, so echoing back
+      // to the sender replaces its own copy rather than duplicating it.
+      const id = typeof payload.id === 'string' && /^[\w-]{1,48}$/.test(payload.id)
+        ? payload.id
+        : `you_${Date.now()}`;
+      this._fromHost('message', { id, from: 'you', text, done: true });
+
+      console.log(`[bridge] message from ${client.ip} (${mode})`);
+      this._hostHandler?.({ command, payload: { text, mode } });
+      return;
+    }
+
+    // Opening a window on the laptop is a local action. A paired phone gets
+    // the same authority as the desktop UI over the agent, but spawning a
+    // browser process is not part of that.
+    if (command === 'openNotch' || command === 'closeNotch') {
+      if (!client.local) {
+        console.warn(`[bridge] refused ${command} from ${client.ip} (not local)`);
+        return;
+      }
+      this.onNotchCommand?.(command);
       return;
     }
 
@@ -317,6 +378,17 @@ async function saveKey(key) {
 
   await writeFile(envPath, body, { encoding: 'utf8', mode: 0o600 });
 }
+
+/* A bug anywhere must not take the bridge down with it. When it did, the
+   interface and the paired phone both lost their connection and the only
+   symptom the user saw was that Pico stopped existing. Log it, keep
+   serving. */
+process.on('uncaughtException', (err) => {
+  console.error('[bridge] uncaught:', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[bridge] unhandled rejection:', err);
+});
 
 const BUILD = await localBuild();
 const bridge = new Bridge();
@@ -467,6 +539,25 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // --- the notch window --------------------------------------------------
+  // The notch page posts the height it wants as its content changes. Local
+  // only: it resizes a window on this machine.
+  if (url.pathname === '/notch/size' && req.method === 'POST') {
+    const isLocal = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
+    if (!isLocal) { res.writeHead(403).end('Local only.'); return; }
+
+    const n = (k) => Number(url.searchParams.get(k));
+    if (bridge.notch) {
+      bridge.notch.learnFrame({ iw: n('iw'), ih: n('ih'), ow: n('ow'), oh: n('oh') });
+      if (Number.isFinite(n('w')) && Number.isFinite(n('h'))) {
+        bridge.notch.morph({ width: n('w'), height: n('h') });
+      }
+    }
+
+    res.writeHead(204, { 'Cache-Control': 'no-store' }).end();
+    return;
+  }
+
   // Pairing QR, rendered server-side so the laptop can show it anywhere.
   if (url.pathname === '/pair.svg') {
     const svg = toSVG(encode(pairingUrl()), { size: 260 });
@@ -531,7 +622,7 @@ server.on('upgrade', (req, socket, head) => {
   if (!conn) return;
 
   const local = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
-  const client = { conn, ip: ip.replace(/^::ffff:/, ''), paired: local };
+  const client = { conn, ip: ip.replace(/^::ffff:/, ''), paired: local, local };
   bridge.clients.add(client);
 
   // Anyone on the laptop itself already has full control of it, so the
@@ -553,14 +644,56 @@ server.on('upgrade', (req, socket, head) => {
 const host = lanAddress();
 const pairingUrl = () => `http://${host}:${PORT}/#p=${bridge.pairCode}`;
 
-// Real desktop control is optional too: on a platform where the native
-// module cannot load, or during local development, the bridge still runs
-// the scripted scenarios instead of crashing.
-const computer = await loadComputer();
-if (computer) {
-  bridge.attachComputer(computer);
-  console.log('[bridge] desktop control ready');
-}
+// Real desktop control is optional: on a platform that cannot be driven, or
+// during local development, Pico still talks — it just says plainly that it
+// cannot work rather than running a stand-in that looks like success.
+//
+// Pointer positions are broadcast as they happen so the interface can draw
+// where Pico's cursor actually is. Windows has one system pointer and this
+// is it; there is nothing to interpolate or guess. Throttled to about 30 a
+// second, which is smooth to watch and cheap to send.
+let lastPointer = 0;
+const computer = await loadComputer({
+  onPointer: ({ x, y, done }) => {
+    const now = Date.now();
+    if (!done && now - lastPointer < 33) return;
+    lastPointer = now;
+    bridge.broadcast({ type: 'cursor', payload: { x, y, done } });
+  },
+});
+if (computer) await bridge.attachComputer(computer);
+
+/* ---------------------------------------------------------------------------
+   The notch
+
+   Its own window, hanging from the top centre of the screen, opened from the
+   app. The page measures itself and posts back the size it wants; the window
+   springs to it (see notch-window.mjs).
+   -------------------------------------------------------------------------*/
+bridge.notch = new NotchWindow({
+  url: `http://localhost:${PORT}/pico-ui/notch.html`,
+  screenWidth: bridge.screenSize?.width ?? 1920,
+  host: await IslandHost.start(),
+});
+
+bridge.onNotchCommand = async (command) => {
+  if (command === 'closeNotch') {
+    await bridge.notch.close();
+    bridge.broadcast({ type: 'notch', payload: { open: false } });
+    return;
+  }
+  const result = await bridge.notch.open();
+  if (!result.ok) {
+    bridge._fromHost('error', {
+      title: 'The notch could not open',
+      message: result.error,
+      recoverable: true,
+    });
+    return;
+  }
+  bridge.broadcast({ type: 'notch', payload: { open: true } });
+};
+
 
 // Model provider is optional: without a key the bridge still runs the
 // scripted scenarios, so the UI is always demonstrable.
@@ -577,6 +710,19 @@ if (llm) {
 } else {
   console.log('[bridge] no API key in .env - add OPENAI_API_KEY to use a model; running scripted scenarios');
 }
+
+// Failing to bind is not a recoverable bug for the crash guard above to
+// swallow: without the port there is no bridge, and a process that stays
+// alive anyway just looks like Pico is running when it is not.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  Port ${PORT} is already in use — Pico is probably already running.`);
+    console.error('  Close the other Pico window, or set PICO_BRIDGE_PORT to use another port.\n');
+  } else {
+    console.error('[bridge] server error:', err);
+  }
+  process.exit(1);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   const line = '─'.repeat(52);

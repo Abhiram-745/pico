@@ -1,314 +1,252 @@
 /* ==========================================================================
-   HostAgent — drives the real desktop when it can, falls back to the
-   scripted demo agent when it can't.
+   HostAgent — what happens when you press Enter.
 
-   Extends MockAgent rather than duplicating it: pause/resume/stop/settings
-   plumbing, the approval and takeover promise dance, and the audit log all
-   stay exactly as already built and already trusted by pico-ui. This class
-   only adds a second path for run(): when a computer-control backend
-   (computer.mjs) and an OpenAI key are both available and the selected
-   model is a computer-use model, it drives OpenAI's Responses API
-   "computer_use_preview" tool loop instead of a scripted scenario —
-   screenshot in, action out, repeat.
+   Everything you type arrives here, and the first decision is the one the
+   app was missing: is this a message, or a job?
 
-   OpenAI's own safety-check mechanism (pending_safety_checks on a
-   computer_call) is what feeds the existing approval-card UI here: nothing
-   new was invented for that, it is wired straight into the mechanism the
-   approval cards were already built for.
+     "hello"          -> a reply, streamed back. Nothing is touched.
+     "open chrome"    -> the desktop loop in driver.mjs.
+
+   Before this, every line was a job. Saying hello opened whatever was
+   focused and typed "hello" into it, which is a fair description of an app
+   that does not work.
+
+   It extends MockAgent rather than replacing it, so the pause/resume/stop
+   plumbing, the audit log and the approval dance stay exactly as built and
+   already trusted by the interface — and so the hosted preview, which has no
+   desktop and no key, still demonstrates the same UI against scripted runs.
    ========================================================================== */
 
 import { MockAgent } from '../pico-ui/mock/agent.js';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+import { route } from './intent.mjs';
+import { runTask } from './driver.mjs';
+import { matchShortcut, runShortcut } from './shortcuts.mjs';
+import { ALLOW } from './policy.mjs';
 
 let sessionCounter = 0;
 const newSessionId = () =>
   `host${(++sessionCounter).toString().padStart(4, '0')}${Math.random().toString(16).slice(2, 10)}`;
 
-const ALLOW_RISK = {
-  level: 'None',
-  decision: 'Allow',
-  categories: 'None',
-  reason: 'No protected or high-impact operation was detected.',
-};
-
-const ACTION_TYPE_MAP = {
-  click: 'Click', double_click: 'Click', drag: 'Drag', keypress: 'Keypress',
-  move: 'Move', screenshot: 'Screenshot', scroll: 'Scroll', type: 'Type', wait: 'Wait',
-};
-
-/* OpenAI's computer-use safety-check codes, mapped onto the risk shape the
-   approval card already knows how to render. */
-const SAFETY_CATEGORY = {
-  malicious_instructions: { level: 'High', categories: 'PromptInjection' },
-  irrelevant_domain: { level: 'Medium', categories: 'UnexpectedSite' },
-  sensitive_domain: { level: 'Medium', categories: 'SensitiveSite' },
-};
-
-function describeAction(action = {}) {
-  switch (action.type) {
-    case 'click': return `Click at (${action.x}, ${action.y})`;
-    case 'double_click': return `Double-click at (${action.x}, ${action.y})`;
-    case 'move': return `Move the pointer to (${action.x}, ${action.y})`;
-    case 'drag': return 'Drag across the screen';
-    case 'scroll': return 'Scroll the current view';
-    case 'type': return 'Type text';   // never the text itself — see store.js
-    case 'keypress': return `Press ${(action.keys || []).join('+')}`;
-    case 'wait': return 'Wait for the app to respond';
-    case 'screenshot': return 'Take a fresh screenshot';
-    default: return action.type || 'Unknown action';
-  }
-}
-
-function extractText(message) {
-  if (!message?.content) return '';
-  return message.content
-    .filter((c) => c.type === 'output_text')
-    .map((c) => c.text)
-    .join(' ')
-    .trim();
-}
+/** How much conversation the chat side remembers. */
+const CHAT_MEMORY = 12;
 
 export class HostAgent extends MockAgent {
   constructor(transport) {
     super(transport);
-    // Off by default. Turning it on means every approval card is skipped —
-    // only for a machine and account the user fully trusts. See settings.js.
+    // Off by default. On, every approval card is skipped — only for a
+    // machine and an account the user fully trusts. See settings.js.
     this.settings.autoApproveAll = false;
     this.computer = null;
-    this.responses = null;
+    this.llm = null;
+    this.history = [];      // chat turns, oldest first
+    this.petName = 'Pico';
   }
 
   attachComputer(computer) { this.computer = computer; }
-  attachResponses(llm) { this.responses = llm; }
+  attachLLM(llm) { this.llm = llm; }
 
-  canDriveDesktop() {
-    return Boolean(this.computer)
-      && Boolean(this.responses)
-      && this.responses.provider === 'openai'
-      && /computer-use/i.test(this.settings.model || '');
+  /** Can a task actually be carried out on this machine, right now? */
+  canAct() { return Boolean(this.computer && this.llm); }
+
+  /** Why not, in words the interface can show without inventing any. */
+  blockedReason() {
+    if (!this.llm) return 'No model is configured, so Pico cannot plan anything yet.';
+    if (!this.computer) {
+      return 'Pico cannot reach the screen or the mouse on this machine, so it '
+        + 'can talk but not work.';
+    }
+    return null;
   }
 
-  async run(text = '') {
-    if (this.canDriveDesktop()) return this.runComputerUse(text);
-    return super.run(text);   // no real backend yet — same scripted demo as before
+  handle(msg) {
+    if (msg?.command === 'setName') {
+      this.petName = String(msg.payload?.name || 'Pico').slice(0, 24);
+      return;
+    }
+    return super.handle(msg);
   }
 
   /* ------------------------------------------------------------------------
-     The real loop
+     The fork
      ---------------------------------------------------------------------- */
-  async runComputerUse(task) {
+  async run(text = '', opts = {}) {
+    const task = String(text || '').trim();
+    if (!task) return;
+
+    // Cancel anything still in flight. Without this a second message leaves
+    // the first run's loop going and the two interleave phase changes.
     this.cancelled = true;
     this.paused = false;
-    await sleep(150);
+    await new Promise((r) => setTimeout(r, 160));
     this.cancelled = false;
     this.sessionId = newSessionId();
 
-    this.setPhase('Starting');
-    this.audit('run_started', { metadata: { model: this.settings.model } });
+    const decision = await route(task, { hint: opts.mode || 'auto', llm: this.llm });
+    this.emit('routed', { mode: decision.mode, why: decision.why, source: decision.source });
 
-    let size;
-    try {
-      size = await this.computer.size();
-    } catch (err) {
-      return this.fail('desktop_unavailable', `Could not read the screen: ${err.message}`);
-    }
-
-    if (!(await this.gate())) return;
-    this.setPhase('Observing');
-    if (!(await this.performAction('Screenshot', 'Take a fresh screenshot', { type: 'screenshot' }))) return;
-
-    let shot;
-    try {
-      shot = await this.computer.screenshotBase64();
-    } catch (err) {
-      return this.fail('desktop_unavailable', `Could not capture the screen: ${err.message}`);
-    }
-
-    this.setPhase('Thinking');
-
-    const tool = { type: 'computer_use_preview', display_width: size.width, display_height: size.height, environment: 'windows' };
-    let response;
-    try {
-      response = await this.callResponses({
-        model: this.settings.model,
-        tools: [tool],
-        input: [{
-          role: 'user',
-          content: [
-            { type: 'input_text', text: String(task) },
-            { type: 'input_image', image_url: `data:image/png;base64,${shot}` },
-          ],
-        }],
-        truncation: 'auto',
-      });
-    } catch (err) {
-      return this.fail('model_error', err.message);
-    }
-
-    const executed = [];
-    const maxTurns = Math.max(1, Number(this.settings.maximumComputerTurns) || 100);
-
-    for (let turns = 0; ; turns++) {
-      if (!(await this.gate())) return;
-
-      const calls = (response.output || []).filter((o) => o.type === 'computer_call');
-      if (!calls.length) {
-        this.setPhase('Completed');
-        this.audit('run_completed', { metadata: { completed_actions: executed.length } });
-        const text = extractText((response.output || []).find((o) => o.type === 'message'));
-        if (text) this.emit('summary', { text });
-        return;
-      }
-
-      if (turns >= maxTurns) {
-        return this.fail('turn_limit', `Stopped after ${maxTurns} actions, the configured limit.`);
-      }
-
-      const call = calls[0];
-      let acknowledged = [];
-
-      if (call.pending_safety_checks?.length) {
-        const ok = this.settings.autoApproveAll
-          ? await this.autoApprove(call.pending_safety_checks)
-          : await this.requestApproval(call);
-        if (!ok) {
-          this.audit('stop_requested', { metadata: { source: 'approval-denied' } });
-          this.setPhase('Stopped');
-          this.audit('run_stopped');
-          return;
-        }
-        acknowledged = call.pending_safety_checks.map((c) => ({ id: c.id }));
-      }
-
-      if (!(await this.gate())) return;
-      this.setPhase('Acting');
-
-      try {
-        if (!(await this.performAction(
-          ACTION_TYPE_MAP[call.action?.type] || 'Move',
-          describeAction(call.action),
-          call.action,
-        ))) return;
-      } catch (err) {
-        return this.fail('action_failed', `Could not perform that action: ${err.message}`);
-      }
-      executed.push(call.action?.type);
-
-      if (!(await this.gate())) return;
-      this.setPhase('Observing');
-      try {
-        shot = await this.computer.screenshotBase64();
-      } catch (err) {
-        return this.fail('desktop_unavailable', `Could not capture the screen: ${err.message}`);
-      }
-
-      this.setPhase('Thinking');
-      try {
-        response = await this.callResponses({
-          model: this.settings.model,
-          tools: [tool],
-          previous_response_id: response.id,
-          input: [{
-            type: 'computer_call_output',
-            call_id: call.call_id,
-            ...(acknowledged.length ? { acknowledged_safety_checks: acknowledged } : {}),
-            output: { type: 'computer_screenshot', image_url: `data:image/png;base64,${shot}` },
-          }],
-          truncation: 'auto',
-        });
-      } catch (err) {
-        return this.fail('model_error', err.message);
-      }
-    }
-  }
-
-  /** Assess -> execute for real -> log, in that order (unlike the mock's timed stand-in). */
-  async performAction(type, detail, action) {
-    if (!(await this.gate())) return false;
-    this.audit('action_assessed', { action_type: type, risk: ALLOW_RISK });
-    this.emit('action', { type, detail });
-    await this.execute(action);
-    if (!(await this.gate())) return false;
-    this.audit('action_executed', { action_type: type, risk: ALLOW_RISK });
-    return true;
-  }
-
-  async execute(action) {
-    const c = this.computer;
-    switch (action?.type) {
-      case 'click': return c.click(action.x, action.y, action.button);
-      case 'double_click': return c.doubleClick(action.x, action.y);
-      case 'move': return c.move(action.x, action.y);
-      case 'drag': return c.drag(action.path || []);
-      case 'scroll': return c.scroll(action.x, action.y, action.scroll_x, action.scroll_y);
-      case 'type': return c.type(action.text);
-      case 'keypress': return c.keypress(action.keys || []);
-      case 'wait': return c.wait(1000);
-      case 'screenshot': return;   // the observation step already takes one
-      default: return;
-    }
-  }
-
-  async requestApproval(call) {
-    const checks = call.pending_safety_checks;
-    const infos = checks.map((c) => SAFETY_CATEGORY[c.code] || { level: 'Medium', categories: 'Unknown' });
-    const level = infos.some((i) => i.level === 'High') ? 'High' : 'Medium';
-    const categories = [...new Set(infos.map((i) => i.categories))].join(', ');
-    const reason = checks.map((c) => c.message).join(' ');
-    const risk = { level, decision: 'RequireConfirmation', categories, reason };
-
-    const id = `apr_${Date.now()}`;
-    this.audit('action_assessed', { action_type: ACTION_TYPE_MAP[call.action?.type] || 'Move', risk });
-
-    // Arm before emitting — an auto-approval could come back on the same tick.
-    const decision = new Promise((res) => { this._approveResolve = res; });
-    this.emit('approval', { id, summary: describeAction(call.action), target: reason, risk });
-
-    const approved = await decision;
-    this._approveResolve = null;
-    return approved && !this.cancelled;
-  }
-
-  /** Explicit user opt-in (settings.autoApproveAll): skip the card, log it anyway. */
-  async autoApprove(checks) {
-    this.audit('action_assessed', {
-      action_type: 'Approval',
-      risk: {
-        level: 'High',
-        decision: 'AutoApproved',
-        categories: 'UserOverride',
-        reason: checks.map((c) => c.message).join(' '),
-      },
-      metadata: { source: 'autoApproveAll setting' },
-    });
-    return true;
-  }
-
-  fail(failureClass, message) {
-    this.setPhase('Failed');
-    this.audit('run_failed', { metadata: { failure_class: failureClass } });
-    this.emit('error', { title: 'Pico stopped', message, recoverable: true });
+    if (decision.mode === 'chat') return this.converse(task);
+    return this.work(task);
   }
 
   /* ------------------------------------------------------------------------
-     OpenAI Responses API — the computer_use_preview tool loop
+     Talking
      ---------------------------------------------------------------------- */
-  async callResponses(body) {
-    const llm = this.responses;
-    const res = await fetch(`${llm.baseUrl}/responses`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${llm.apiKey}`,
-        'Content-Type': 'application/json',
+  async converse(text) {
+    const id = `msg_${Date.now()}`;
+    this.history.push({ role: 'user', content: text });
+    this.history = this.history.slice(-CHAT_MEMORY);
+
+    if (!this.llm) {
+      this.emit('message', {
+        id,
+        text: 'No model is configured yet, so I can\'t reply properly. '
+          + 'Add your OpenAI key and I\'ll be able to talk.',
+        done: true,
+      });
+      return;
+    }
+
+    // Chat has no phases — it must not drive the mascot through Observing and
+    // Acting for a run that never touches the desktop.
+    this.emit('message', { id, text: '', done: false });
+
+    let full = '';
+    try {
+      full = await this.llm.converse(this.history, {
+        name: this.petName,
+        onDelta: (piece) => {
+          if (this.cancelled) return;
+          full += piece;
+          this.emit('message', { id, text: full, done: false });
+        },
+      });
+    } catch (err) {
+      this.emit('message', {
+        id,
+        text: `I couldn't reach the model just then — ${err.message}`,
+        done: true,
+      });
+      return;
+    }
+
+    this.history.push({ role: 'assistant', content: full });
+    this.emit('message', { id, text: full, done: true });
+  }
+
+  /* ------------------------------------------------------------------------
+     Working
+     ---------------------------------------------------------------------- */
+  async work(task) {
+    if (!this.canAct()) {
+      // Say what is actually wrong instead of running a scripted stand-in
+      // that looks like success. Pretending was the whole problem.
+      const why = this.blockedReason();
+      this.emit('message', { id: `msg_${Date.now()}`, text: why, done: true });
+      this.emit('error', { title: 'Pico cannot work yet', message: why, recoverable: true });
+      this.setPhase('Failed');
+      return;
+    }
+
+    this.history.push({ role: 'user', content: task });
+    this.history = this.history.slice(-CHAT_MEMORY);
+
+    // A bug in the loop must surface as a failed run, not as a dead bridge.
+    // It took down the whole server once, which also killed the phone's
+    // connection and the interface along with it.
+    try {
+      if (await this.tryShortcut(task)) return;
+      await this.drive(task);
+    } catch (err) {
+      console.error('[bridge] run crashed:', err);
+      this.setPhase('Failed');
+      this.audit('run_failed', { metadata: { failure_class: 'internal' } });
+      this.emit('error', {
+        title: 'Pico hit an internal error',
+        message: String(err?.message || err),
+        recoverable: true,
+      });
+    }
+  }
+
+  /**
+   * Simple, unambiguous jobs done directly — no screenshot, no model call.
+   * "Open Notepad" took several seconds through the full loop; this is about
+   * one. Returns false when there is no fast path or it could not confirm
+   * success, so the full loop picks it up from wherever the screen now is.
+   */
+  async tryShortcut(task) {
+    const sc = matchShortcut(task);
+    if (!sc) return false;
+
+    this.setPhase('Starting');
+    this.audit('run_started', { metadata: { model: 'shortcut', kind: sc.kind } });
+    this.setPhase('Acting');
+
+    const ok = await runShortcut(sc, this.computer, {
+      onAction: (a) => {
+        this.audit('action_executed', { action_type: a.type, risk: ALLOW });
+        this.emit('action', a);
       },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90_000),
+      gate: () => this.gate(),
     });
-    const raw = await res.text();
-    let parsed = null;
-    try { parsed = JSON.parse(raw); } catch { /* non-JSON error body */ }
-    if (!res.ok) throw new Error(llm.redact(parsed?.error?.message || `HTTP ${res.status}`));
-    return parsed;
+    if (this.cancelled) return true;
+
+    if (!ok) {
+      this.audit('shortcut_unconfirmed', { metadata: { kind: sc.kind } });
+      return false;
+    }
+
+    const summary = sc.kind === 'app' ? `Opened ${sc.name}.` : sc.label;
+    this.setPhase('Completed');
+    this.audit('run_completed', { metadata: { completed_actions: sc.kind === 'app' ? 3 : 1 } });
+    this.history.push({ role: 'assistant', content: summary });
+    this.emit('summary', { text: summary });
+    return true;
+  }
+
+  drive(task) {
+    return runTask({
+      task,
+      computer: this.computer,
+      llm: this.llm,
+      model: this.settings.model,
+      maxTurns: Math.max(1, Number(this.settings.maximumComputerTurns) || 40),
+      hooks: {
+        gate: () => this.gate(),
+        onPhase: (phase) => this.setPhase(phase),
+        onAction: (a) => this.emit('action', a),
+        onAudit: (event, extra) => this.audit(event, extra),
+        onSummary: (text) => {
+          this.history.push({ role: 'assistant', content: text });
+          this.emit('summary', { text });
+        },
+        onError: (e) => this.emit('error', e),
+
+        onApproval: async (card) => {
+          if (this.settings.autoApproveAll) {
+            this.audit('action_assessed', {
+              action_type: 'Approval',
+              risk: { ...card.risk, decision: 'AutoApproved', categories: 'UserOverride' },
+              metadata: { source: 'autoApproveAll setting' },
+            });
+            return true;
+          }
+          // Arm before emitting: the interface can answer on the same tick
+          // when the user has auto-approval on, and the answer would be lost.
+          const decision = new Promise((res) => { this._approveResolve = res; });
+          this.emit('approval', card);
+          const approved = await decision;
+          this._approveResolve = null;
+          return approved && !this.cancelled;
+        },
+
+        onHandover: async (card) => {
+          const done = new Promise((res) => { this._takeoverResolve = res; });
+          this.emit('takeover', card);
+          await done;
+          this._takeoverResolve = null;
+        },
+      },
+    });
   }
 }

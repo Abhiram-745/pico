@@ -24,11 +24,15 @@ export const HOST_EVENTS = [
   'summary',     // { text } — written after a run completes
   'auditEvent',  // raw audit.jsonl record
   'error',       // { title, message, recoverable }
+  'routed',      // { mode: 'chat'|'agent', why, source } — which fork was taken
+  'message',     // { id, text, done } — a chat reply, streamed
+  'cursor',      // { x, y, done } — where the pointer actually is, live
+  'notch',       // { open } — whether the notch window is up
 ];
 
 /** Commands the UI sends up to the host. */
 export const UI_COMMANDS = [
-  'submitTask',   // { text }
+  'submitTask',   // { text, mode?: 'auto'|'chat'|'agent' }
   'pause',        // {}
   'resume',       // {}
   'stop',         // {}
@@ -36,10 +40,13 @@ export const UI_COMMANDS = [
   'deny',         // { id }
   'takeoverDone', // { id }
   'saveSettings', // { model?, pauseOnPhysicalInput?, maximumComputerTurns?, apiKey? }
+  'setName',      // { name } — so replies answer to what you called it
   'tuckAway',     // {}
   'openPalette',  // {}
   'closePalette', // {}
   'movePalette',  // { x, y }
+  'openNotch',    // {} — raise the notch window on the real desktop
+  'closeNotch',   // {}
 ];
 
 class Bridge {
@@ -102,6 +109,22 @@ class Bridge {
       case 'error':
         store.setError(payload);
         store.setPhase('Failed');
+        break;
+
+      case 'routed':
+        store.setRouted(payload);
+        break;
+
+      case 'message':
+        store.setMessage(payload);
+        break;
+
+      case 'cursor':
+        store.setCursor(payload);
+        break;
+
+      case 'notch':
+        store.set({ notchOpen: Boolean(payload.open) }, { type: 'notch' });
         break;
 
       default:

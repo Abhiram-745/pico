@@ -87,6 +87,17 @@ const initial = () => ({
     hasApiKey: false,
   },
 
+  // The conversation lives here rather than inside a view, so what you type
+  // in the notch is the same thread you see in the app window.
+  messages: [],            // { id, from: 'you'|'pico'|'event', text, done }
+  routed: null,            // { mode, why, source } — which fork the last message took
+  mode: 'auto',            // what the composer is set to: auto | chat | agent
+
+  // Where the real pointer is while Pico drives it. Drawn rather than
+  // guessed: Windows has one system cursor and this is its live position.
+  cursor: { x: 0, y: 0, visible: false },
+  notchOpen: false,
+
   turn: 0,
   timeline: [],
   recents: loadRecents(),
@@ -156,7 +167,62 @@ class Store {
 
   setSummary(text) {
     this.state.summary = text || null;
+    if (text) this.addMessage({ from: 'pico', text, done: true });
     this.emit({ type: 'summary', summary: this.state.summary });
+  }
+
+  // --- conversation --------------------------------------------------------
+  /** Append a finished message. Returns it, so the caller can keep the id. */
+  addMessage({ id, from, text, done = true }) {
+    const entry = { id: id ?? `m_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`, from, text, done };
+    this.state.messages = [...this.state.messages, entry].slice(-120);
+    this.emit({ type: 'message', message: entry });
+    return entry;
+  }
+
+  /**
+   * A streaming reply from the host. The same id arrives many times with a
+   * longer `text` each time, so this replaces in place rather than appending
+   * — otherwise one sentence becomes forty bubbles.
+   */
+  setMessage({ id, from = 'pico', text, done }) {
+    const list = this.state.messages;
+    const i = list.findIndex((m) => m.id === id);
+    if (i === -1) {
+      this.addMessage({ id, from, text, done: Boolean(done) });
+      return;
+    }
+    const next = [...list];
+    next[i] = { ...next[i], text, done: Boolean(done) };
+    this.state.messages = next;
+    this.emit({ type: 'message', message: next[i], streaming: !done });
+  }
+
+  clearMessages() {
+    this.state.messages = [];
+    this.emit({ type: 'message', cleared: true });
+  }
+
+  setRouted(routed) {
+    this.state.routed = routed;
+    this.emit({ type: 'routed', routed });
+  }
+
+  /** What the composer is set to. Not sent anywhere until you submit. */
+  setMode(mode) {
+    if (!['auto', 'chat', 'agent'].includes(mode)) return;
+    this.state.mode = mode;
+    this.emit({ type: 'mode', mode });
+  }
+
+  setCursor({ x, y, done }) {
+    this.state.cursor = { x, y, visible: true };
+    this.emit({ type: 'cursor', cursor: this.state.cursor, done: Boolean(done) });
+  }
+
+  hideCursor() {
+    this.state.cursor = { ...this.state.cursor, visible: false };
+    this.emit({ type: 'cursor', cursor: this.state.cursor });
   }
 
   setError(error) {
