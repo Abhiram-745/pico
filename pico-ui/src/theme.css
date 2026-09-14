@@ -6,15 +6,6 @@
 :root {
   color-scheme: dark;
 
-  /* --- Mascot geometry, measured from the real pico.png (1254x1254) --------
-     Opaque bbox   x 208-1063, y 163-1036
-     Face screen   x 415-840,  y 458-739   -> 33.09% 36.52% 33.97% 22.49%
-     Forehead dot  centre 49.64% 32.06%, diameter 3.99%                     */
-  --pet-screen-left: 33.09%;
-  --pet-screen-top: 36.52%;
-  --pet-screen-width: 33.97%;
-  --pet-screen-height: 22.49%;
-
   /* --- Neutral ramp (cool navy, tuned to the mascot's own body) ----------- */
   --ink-0:  #05070d;
   --ink-1:  #0a0e18;

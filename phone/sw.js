@@ -6,7 +6,9 @@
    over the WebSocket, which the service worker does not touch.
    ========================================================================== */
 
-const VERSION = 'pico-phone-v1';
+/* Bumped when the shell list changes, so an installed phone drops the old
+   cache rather than serving a mix of the two. */
+const VERSION = 'pico-phone-v2';
 
 const SHELL = [
   './',
@@ -23,7 +25,6 @@ const SHELL = [
   '../pico-ui/src/bridge.js',
   '../pico-ui/src/mascot.js',
   '../pico-ui/src/cards.js',
-  '../pico-ui/assets/pico.png',
 ];
 
 self.addEventListener('install', (event) => {

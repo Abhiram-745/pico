@@ -137,8 +137,13 @@ static class Native
 
     public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     public const int DWMWA_BORDER_COLOR = 34;
+    public const int DWMWA_CAPTION_COLOR = 35;
     public const int DWMWCP_ROUND = 2;
     public const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
+    /// COLORREF black: 0x00BBGGRR. The island is black, so a black frame is
+    /// an invisible one on every build, including those that will not accept
+    /// DWMWA_COLOR_NONE.
+    public const int COLOR_BLACK = 0x00000000;
 
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
@@ -761,6 +766,16 @@ static class IslandHost
     /// What this removes is the ~7px invisible resize margin, which Windows
     /// fills with the window's frame colour and which showed as a grey band
     /// down the right and bottom edges of the island.
+    ///
+    /// THE HAIRLINE
+    /// Dropping the resize margin still leaves DWM's own one-pixel border
+    /// around the window, drawn in the system's frame colour — a soft grey
+    /// ring around what is supposed to be a piece of the bezel. Asking for
+    /// DWMWA_COLOR_NONE removes it outright, but only on builds that know
+    /// that value; where it is not recognised the call fails, nothing is
+    /// changed, and the grey line stays. So: ask for none, check whether the
+    /// answer was yes, and paint the border black if it was not. Black on a
+    /// black island is the same thing as no border, and it works everywhere.
     static void Trim(IntPtr h)
     {
         long style = Native.GetWindowLongPtr(h, Native.GWL_STYLE).ToInt64();
@@ -768,7 +783,19 @@ static class IslandHost
         Native.SetWindowLongPtr(h, Native.GWL_STYLE, new IntPtr(style));
 
         int none = Native.DWMWA_COLOR_NONE;
-        Native.DwmSetWindowAttribute(h, Native.DWMWA_BORDER_COLOR, ref none, sizeof(int));
+        int hr = Native.DwmSetWindowAttribute(h, Native.DWMWA_BORDER_COLOR, ref none, sizeof(int));
+        if (hr != 0)
+        {
+            int black = Native.COLOR_BLACK;
+            Native.DwmSetWindowAttribute(h, Native.DWMWA_BORDER_COLOR, ref black, sizeof(int));
+        }
+
+        // The caption is parked above the screen, but a browser that decides
+        // to redraw its frame can flash it; black costs nothing and means
+        // there is nothing to see if it does.
+        int capBlack = Native.COLOR_BLACK;
+        Native.DwmSetWindowAttribute(h, Native.DWMWA_CAPTION_COLOR, ref capBlack, sizeof(int));
+
         int round = Native.DWMWCP_ROUND;
         Native.DwmSetWindowAttribute(h, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
 

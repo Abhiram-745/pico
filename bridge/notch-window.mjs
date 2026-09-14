@@ -70,6 +70,28 @@ function easeOutBack(t) {
   return 1 + (c3 * (t - 1) ** 3) + (c1 * (t - 1) ** 2);
 }
 
+/* How long the window takes to reach a new size.
+
+   This is the number that decides whether the island feels quick. It used to
+   be 320ms, which is a reasonable duration for something you are watching and
+   far too long for something you are *waiting on*: the pointer arrives, and
+   a third of a second later the island has finished getting out of its own
+   way. Under 200ms the overshoot still reads as a spring and the island is
+   simply there by the time you have looked at it.
+
+   Do not chase it below about 140ms. The window cannot be resized faster than
+   the compositor will redraw it, and asking it to tears the frame away from
+   the page that is painting inside it. */
+const MORPH_MS = 190;
+
+/* How often the pointer is checked against the window rectangle.
+
+   Every miss here is dead time before the island reacts — at 70ms the average
+   wait was a frame and a half of nothing happening, which is exactly the part
+   that felt sluggish. It is two comparisons against a cached rectangle, so
+   the cost of asking more often is nil. */
+const HOVER_MS = 25;
+
 export class NotchWindow {
   /**
    * @param {object} opts
@@ -185,6 +207,12 @@ export class NotchWindow {
       '--no-default-browser-check',
       '--disable-background-networking',
       '--disable-features=Translate,MediaRouter',
+      /* The island is black and the frame around it should be too. The
+         window helper paints the frame black outright (see Trim in
+         native/island-host.cs); this is for the machines where the helper
+         could not be built, where the least Chrome can do is not draw a
+         light grey one. */
+      '--force-dark-mode',
       `--window-position=${r.x},0`,
       `--window-size=${r.width},${r.height}`,
     ], { detached: true, stdio: 'ignore' });
@@ -265,12 +293,18 @@ export class NotchWindow {
    * island grows out from the middle rather than from its left edge. A newer
    * request cancels one in flight, so fast changes never queue up.
    */
-  async morph(target, { duration = 320 } = {}) {
+  async morph(target, { duration = MORPH_MS } = {}) {
     const run = ++this.run;
     const from = { ...this.size };
+    /* The upper bounds are a sanity rail against a page that has measured
+       itself wrongly, not a design decision — so they are read off the screen
+       rather than fixed, because the island's scale (see SCALE_KEY in
+       island.js) can legitimately ask for an island half the width of the
+       display, and a fixed 900 would quietly clip it. */
+    const maxW = Math.max(320, Math.min(1800, Math.round(this.width * 0.92)));
     const to = {
-      width: Math.max(120, Math.min(900, Math.round(target.width))),
-      height: Math.max(30, Math.min(760, Math.round(target.height))),
+      width: Math.max(120, Math.min(maxW, Math.round(target.width))),
+      height: Math.max(30, Math.min(900, Math.round(target.height))),
     };
     if (Math.abs(to.width - from.width) < 2 && Math.abs(to.height - from.height) < 2) {
       this.size = to;
@@ -329,7 +363,7 @@ export class NotchWindow {
       if (now === this.over) return;
       this.over = now;
       onChange(now, `p=${p.x},${p.y} rect=${r.x},${r.y} ${r.width}x${r.height}`);
-    }, 70);
+    }, HOVER_MS);
     this.hoverTimer.unref?.();
   }
 

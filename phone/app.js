@@ -81,11 +81,19 @@ const els = {
   installBtn: $('#install-btn'),
 };
 
-const stagePet = new Mascot({ src: '../pico-ui/assets/pico.png', size: 178 });
+/* Pico is drawn, not loaded: the rig builds the character from geometry, so
+   there is no artwork to fetch and it stays crisp on a phone screen at any
+   density. It was a PNG here until the rig replaced it. */
+const stagePet = new Mascot({ size: 178 });
 els.stageMount.append(stagePet.el);
 
-const pairPet = new Mascot({ src: '../pico-ui/assets/pico.png', size: 132 });
+const pairPet = new Mascot({ size: 132 });
 els.pairMount.append(pairPet.el);
+
+// A tap is a hover on a touchscreen, and a hop is a fine thing to get for one.
+for (const pet of [stagePet, pairPet]) {
+  pet.el.addEventListener('pointerdown', () => pet.jump());
+}
 
 function showPairing(show) {
   pairView.hidden = !show;

@@ -113,6 +113,8 @@ export function mountApp(host = document.body, { demo = false } = {}) {
   const mascot = new Mascot({ size: 30 });
   const brandName = el('div', 'side__brand-name', petName);
   brand.append(mascot.el, brandName);
+  brand.addEventListener('pointerenter', () => mascot.setHover(true));
+  brand.addEventListener('pointerleave', () => mascot.setHover(false));
 
   const nav = el('nav', 'side__nav');
   const navLinks = new Map();
@@ -743,6 +745,8 @@ export function mountApp(host = document.body, { demo = false } = {}) {
   function render(state) {
     root.dataset.phase = state.phase;
     mascot.setPhase(state.phase);
+    const tail = state.messages[state.messages.length - 1];
+    mascot.setActivity(tail && tail.from === 'pico' && !tail.done ? 'writing' : null);
     brandName.textContent = petName;
 
     const s = SECTIONS.find((x) => x.id === section) || SECTIONS[0];

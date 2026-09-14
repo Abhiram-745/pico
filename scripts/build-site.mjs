@@ -53,7 +53,7 @@ await copyDir(join(ROOT, 'docs'), DIST);
 // 2. the app, minus the dev harness. mock/ is kept on purpose: it is what
 //    makes the web demo work without a bridge behind it.
 await copyDir(join(ROOT, 'pico-ui'), join(DIST, 'pico-ui'), {
-  skip: new Set(['index.html', 'harness.css', 'dev-server.mjs', 'audit-sample.jsonl']),
+  skip: new Set(['index.html', 'mascot.html', 'harness.css', 'dev-server.mjs', 'audit-sample.jsonl']),
 });
 
 // 3. the phone app, so its shared imports resolve

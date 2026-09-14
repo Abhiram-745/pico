@@ -61,6 +61,10 @@ export function mountCompanion(host, { size = 190 } = {}) {
   // Clicking the character opens the palette — the one affordance the pet has.
   mascot.el.addEventListener('click', () => bridge.send('openPalette'));
 
+  // And hovering it makes it hop, which is how you find out it is clickable.
+  mascot.el.addEventListener('pointerenter', () => mascot.setHover(true));
+  mascot.el.addEventListener('pointerleave', () => mascot.setHover(false));
+
   store.subscribe((state, meta) => {
     const { phase, action, pause } = state;
 

@@ -89,6 +89,11 @@ export function mountNotch(host = document.body, { windowed = false, onMeasure }
   const mascot = new Mascot({ size: 40 });
   petMount.append(mascot.el);
 
+  /* Hovering the character is its own gesture, separate from hovering the
+     bar it sits in — see the same split in island.js. */
+  petMount.addEventListener('pointerenter', () => mascot.setHover(true));
+  petMount.addEventListener('pointerleave', () => mascot.setHover(false));
+
   const textWrap = el('div', 'notch__text');
   const nameEl = el('div', 'notch__name');
   const statusEl = el('div', 'notch__status');
@@ -388,6 +393,11 @@ export function mountNotch(host = document.body, { windowed = false, onMeasure }
   function render(state) {
     root.dataset.phase = state.phase;
     mascot.setPhase(state.phase);
+
+    // Writing a reply is not a phase, but it is plainly something Pico is
+    // doing, so the character says so.
+    const tail = state.messages[state.messages.length - 1];
+    mascot.setActivity(tail && tail.from === 'pico' && !tail.done ? 'writing' : null);
 
     const copy = PHASE_COPY[state.phase] || PHASE_COPY.Idle;
     nameEl.textContent = state.phase === 'Idle' ? petName : copy.title;

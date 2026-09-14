@@ -37,6 +37,39 @@ const NAME_KEY = 'pico.pet.name.v1';
  */
 export const WIDTHS = { compact: 232, peek: 392, live: 440, open: 600 };
 
+/* --------------------------------------------------------------------------
+   How big the island is
+
+   One number. Everything the island draws is laid out in the widths above and
+   in the stylesheet's own pixels; the scale multiplies the whole thing at the
+   end — type, spacing, the mascot, the rounding — and the size reported to
+   the bridge is multiplied with it, so the window comes out the same shape,
+   larger. Changing a font size here and a padding there to make the island
+   bigger is how you get an island that is bigger in some places.
+
+   Set it any of four ways, in this order of precedence:
+     ?scale=1.25              on the island's URL, for a one-off
+     localStorage             pico.island.scale.v1 — what the app remembers
+     window.pico.island.setScale(1.25)
+     Ctrl+Alt+= / Ctrl+Alt+- / Ctrl+Alt+0 while the island has focus
+   -------------------------------------------------------------------------- */
+const SCALE_KEY = 'pico.island.scale.v1';
+const SCALE_MIN = 0.7;
+const SCALE_MAX = 2.2;
+const SCALE_STEP = 0.1;
+
+const clampScale = (v) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(v * 100) / 100));
+
+function initialScale() {
+  const q = Number(new URLSearchParams(location.search).get('scale'));
+  if (Number.isFinite(q) && q > 0) return clampScale(q);
+  try {
+    const v = Number(localStorage.getItem(SCALE_KEY));
+    if (Number.isFinite(v) && v > 0) return clampScale(v);
+  } catch { /* private mode — the default is fine */ }
+  return 1;
+}
+
 const SHORT = {
   Idle: 'Ready',
   Starting: 'Starting',
@@ -121,18 +154,39 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   let flashTimer = null;
   let view = 'compact';
   let renderedCount = 0;     // messages already in the thread DOM
+  let scale = initialScale();
   const autoApproved = new Set();
 
   // --- skeleton ------------------------------------------------------------
   const root = el('div', 'island');
   root.dataset.view = view;
   root.dataset.phase = 'Idle';
+  root.style.setProperty('--island-scale', String(scale));
+  // WIDTHS is the single source of truth; the stylesheet reads it from here.
+  for (const [k, v] of Object.entries(WIDTHS)) root.style.setProperty(`--w-${k}`, `${v}px`);
 
   const bar = el('div', 'island__bar');
 
   const lead = el('div', 'island__lead');
   const mascot = new Mascot({ size: 26 });
   lead.append(mascot.el);
+
+  /* Pico hops when the pointer is on *Pico*.
+
+     It used to hop whenever the island was hovered anywhere along its width,
+     which meant two things at once, both wrong: crossing the island on the
+     way to somewhere else set it bouncing, and — because the hop was a CSS
+     animation swapped in by the hovered state — arriving on the island
+     replaced whatever Pico was in the middle of. Watching it think, moving
+     the mouse, and having it stop thinking is the specific annoyance. Now
+     the island's own reaction to the pointer (getting wider) and the
+     mascot's (a hop) are different gestures with different triggers, and
+     neither interrupts the animation the phase is running. */
+  lead.addEventListener('pointerenter', () => mascot.setHover(true));
+  lead.addEventListener('pointerleave', () => mascot.setHover(false));
+  /* A hop per visit is a greeting; a hop every 600ms is a tic. While the
+     pointer stays, it hops again only now and then. */
+  const hopTimer = setInterval(() => { if (mascot.hovered) mascot.jump(); }, 2600);
 
   const text = el('div', 'island__text');
   const title = el('div', 'island__title');
@@ -229,7 +283,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     if (!t) return;
     const id = `you_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-    if (!store.canSubmit) return;
+    if (!store.canSubmit) { mascot.nudge(); return; }
     store.addMessage({ id, from: 'you', text: t, done: true });
     store.addRecent(t);
     bridge.send('submitTask', { text: t, mode: store.state.mode, id });
@@ -268,12 +322,37 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   });
   sendBtn.addEventListener('click', () => submit());
 
+  /**
+   * Resize the whole island. See the note by SCALE_KEY: this is the only
+   * number involved, and everything follows from it.
+   */
+  function setScale(next) {
+    const v = clampScale(Number(next) || 1);
+    if (v === scale) return scale;
+    scale = v;
+    root.style.setProperty('--island-scale', String(scale));
+    try { localStorage.setItem(SCALE_KEY, String(scale)); } catch { /* fine */ }
+    // A different scale is a different window size for the same content, so
+    // the measurement has to be forced — nothing about the layout changed.
+    requestAnimationFrame(() => postMeasure(true));
+    return scale;
+  }
+
   // Esc keeps its meaning everywhere in Pico: during a run it is the stop
   // button, otherwise it puts the island away.
   window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (isActive(store.state.phase)) bridge.send('stop');
-    else collapse();
+    if (e.key === 'Escape') {
+      if (isActive(store.state.phase)) bridge.send('stop');
+      else collapse();
+      return;
+    }
+    // Ctrl+Alt rather than plain Ctrl: the island shares a keyboard with
+    // whatever is underneath it, and Ctrl+- is a browser's own zoom, which
+    // would scale the page without telling the window about it.
+    if (!e.ctrlKey || !e.altKey || e.shiftKey) return;
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); setScale(scale + SCALE_STEP); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); setScale(scale - SCALE_STEP); }
+    else if (e.key === '0') { e.preventDefault(); setScale(1); }
   });
 
   /* --- hovering ------------------------------------------------------------
@@ -319,7 +398,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     // While it believes it is hovered, keep asking. This is the safety net
     // for the opposite mistake: a leave that is never announced at all, which
     // would leave the island expanded over an empty desk.
-    if (!hoverPoll) hoverPoll = setInterval(verify, 200);
+    if (!hoverPoll) hoverPoll = setInterval(verify, 120);
   }
 
   function verify() {
@@ -337,7 +416,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     // island slow to tuck away.
     const gone = e && (e.clientX < 0 || e.clientY < 0
       || e.clientX > window.innerWidth || e.clientY > window.innerHeight);
-    hoverTimer = setTimeout(verify, gone ? 0 : 140);
+    hoverTimer = setTimeout(verify, gone ? 0 : 80);
   }
 
   page.addEventListener('pointerenter', enter);
@@ -611,6 +690,8 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     const iw = window.innerWidth;
     const ih = window.innerHeight;
     if (!(iw > 0 && ih > 0)) return true;      // nothing to measure against
+    // `want` is already in window pixels — scaled — so this compares like
+    // with like whatever the scale is.
     return iw >= want.width - 2 && ih >= want.height - 2;
   }
 
@@ -650,10 +731,14 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   }
 
   function postMeasure(force = false) {
+    /* The page lays out at 1x and is scaled visually, so what the window has
+       to be is the layout size times the scale — not the layout size. Reading
+       offsetHeight off a scaled box would give the unscaled number back and
+       the frame would come out too small by exactly the factor asked for. */
     const size = {
       view,
-      width: WIDTHS[view],
-      height: naturalHeight(),
+      width: Math.round(WIDTHS[view] * scale),
+      height: Math.round(naturalHeight() * scale),
     };
     want = { width: size.width, height: size.height };
     checkFit();
@@ -710,6 +795,18 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     root.dataset.phase = s.phase;
     mascot.setPhase(s.phase);
 
+    /* Inside a phase there are things Pico is doing that no phase describes.
+       Writing a reply is the obvious one — the phase is still Idle, but Pico
+       is plainly busy — and being asked a question is the other: it is not a
+       phase either, and a waiting Pico that looks exactly like a resting one
+       is the failure the decision card was built to fix. */
+    const tail = s.messages[s.messages.length - 1];
+    mascot.setActivity(
+      tail && tail.from === 'pico' && !tail.done ? 'writing'
+        : s.question ? 'waving'
+          : null,
+    );
+
     syncBar(s);
     if (view === 'open') {
       syncThread(s);
@@ -754,7 +851,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     if (meta.type === 'routed' && s.routed?.mode === 'agent') pinned = false;
 
     if (meta.type === 'summary' && s.summary) showFlash('done', s.summary, 4200);
-    if (meta.type === 'error' && s.error) showFlash('fail', s.error.message, 5200);
+    if (meta.type === 'error' && s.error) { showFlash('fail', s.error.message, 5200); mascot.nudge(); }
     if (meta.type === 'message' && meta.message?.from === 'pico' && meta.message.done && !pinned) {
       showFlash('reply', meta.message.text, 5200);
     }
@@ -764,9 +861,17 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
 
   return {
     root,
+    mascot,
     open,
     collapse,
+    setScale,
     setName(name) { petName = name || 'Pico'; update(); },
     get view() { return view; },
+    get scale() { return scale; },
+    destroy() {
+      clearInterval(hopTimer);
+      mascot.destroy();
+      root.remove();
+    },
   };
 }
