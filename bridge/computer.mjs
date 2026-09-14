@@ -146,7 +146,7 @@ export async function loadComputer({ onPointer } = {}) {
 
     const duration = ms > 0
       ? ms
-      : Math.max(90, Math.min(430, 70 + (52 * Math.log2(1 + (dist / 12)))));
+      : Math.max(70, Math.min(300, 52 + (40 * Math.log2(1 + (dist / 12)))));
 
     const ux = dx / dist;
     const uy = dy / dist;

@@ -123,6 +123,22 @@ body {
 }
 .island:not([data-phase="Idle"])::after { opacity: .9; }
 
+/* Waiting on a person is the one state worth interrupting for, so the island
+   itself carries it: the accent line runs the full width instead of fading
+   out at the ends, and breathes. Everything else Pico does is reported; this
+   is the only thing it asks. */
+.island[data-phase="AwaitingApproval"]::after,
+.island[data-phase="AwaitingTakeover"]::after {
+  left: 8%;
+  right: 8%;
+  height: 2.5px;
+  animation: island-await 1.6s var(--out) infinite;
+}
+@keyframes island-await {
+  0%, 100% { opacity: .45; }
+  50%      { opacity: 1; }
+}
+
 /* The frame is springing to a new size; bring the content in with it.
 
    Short, and shorter than the window morph rather than longer. The island's
@@ -437,30 +453,60 @@ body {
   30%           { opacity: 1;  transform: translateY(-3px); }
 }
 
-/* --- a decision ---------------------------------------------------------- */
+/* --- a decision -----------------------------------------------------------
+   The one moment Pico is stopped and waiting on a person.
+
+   It is built to be the least dialog-like thing in the interface, because a
+   dialog is a thing people dismiss without reading and this is the thing they
+   must not. The character is in the card, doing the asking; the kind of
+   asking is a small chip on its shoulder rather than a warning triangle
+   standing where a face should be; and the card carries a wash of the colour
+   its kind already uses everywhere else, so which of the three this is can be
+   told before a word of it is read. */
 .island__decision {
+  --kind: #ffb340;
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 4px 12px;
-  padding: 12px 12px 12px;
-  border-radius: 18px;
-  background: var(--well);
+  gap: 6px 13px;
+  padding: 13px 14px 14px;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 140% at 6% 0%, color-mix(in oklab, var(--kind) 15%, transparent), transparent 62%),
+    var(--well);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--kind) 22%, transparent);
   animation: island-msg .3s var(--out) both;
 }
 .island__decision[hidden] { display: none; }
+.island__decision[data-kind="approval"] { --kind: #ffb340; }
+.island__decision[data-kind="takeover"] { --kind: #5eb1ff; }
+.island__decision[data-kind="question"] { --kind: #d07ffb; }
 
+/* Pico, and the chip that says which kind of asking this is. */
 .island__decision-icon {
   grid-row: span 2;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  position: relative;
+  width: 46px;
+  height: 46px;
   display: grid;
   place-items: center;
+  align-self: start;
 }
-.island__decision-icon svg { width: 17px; height: 17px; }
-.island__decision[data-kind="approval"] .island__decision-icon { background: color-mix(in oklab, #ff9f0a 20%, #000); color: #ffb340; }
-.island__decision[data-kind="takeover"] .island__decision-icon { background: color-mix(in oklab, #0a84ff 22%, #000); color: #5eb1ff; }
-.island__decision[data-kind="question"] .island__decision-icon { background: color-mix(in oklab, #bf5af2 22%, #000); color: #d07ffb; }
+.island__asker { pointer-events: none; }
+
+.island__decision-chip {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--kind) 30%, #000);
+  box-shadow: 0 0 0 2.5px #000;
+  color: var(--kind);
+}
+.island__decision-chip svg { width: 11px; height: 11px; stroke-width: 2.4; }
 
 /* The one moment Pico is stopped and waiting on you. It says so, above the
    card, under a dot that keeps blinking until it is dealt with — because the
@@ -484,9 +530,7 @@ body {
   background: currentColor;
   animation: island-beat 1.1s ease-in-out infinite;
 }
-.island__decision[data-kind="approval"] .island__attention { color: #ffb340; }
-.island__decision[data-kind="takeover"] .island__attention { color: #5eb1ff; }
-.island__decision[data-kind="question"] .island__attention { color: #d07ffb; }
+.island__attention { color: var(--kind); }
 
 /* --- answering a question -------------------------------------------------
    Its own field, on the card, rather than the box a job is typed into. */
@@ -518,8 +562,8 @@ body {
 .island__answer .island__send { width: 30px; height: 30px; }
 .island__answer .island__send svg { width: 15px; height: 15px; }
 
-.island__decision-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; grid-row: span 2; align-self: center; }
-.island__decision-title { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+.island__decision-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; align-self: center; }
+.island__decision-title { font-size: 14px; font-weight: 600; letter-spacing: -.012em; line-height: 1.35; }
 .island__decision-reason { font-size: 12px; color: var(--dim); line-height: 1.45; }
 
 .island__decision-actions {
@@ -527,7 +571,7 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 /* An answer field is not a row of buttons: it wants the whole width. */
 .island__decision[data-kind="question"] .island__decision-actions { justify-content: stretch; }

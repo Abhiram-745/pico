@@ -171,12 +171,15 @@ for (const f of files) {
 }
 
 /* --------------------------------------------------------------------------
-   5. The intent router still routes every phrasing it is meant to
+   5. The behaviours that have gone wrong in front of a user
 
-   This is the one behaviour where being wrong is immediately visible: a
-   misrouted greeting means Pico takes over the desktop to type "hello".
+   The intent router: a misrouted greeting means Pico takes over the desktop
+   to type "hello".
+
+   The driver: it asked a question, was answered, and replied that there was
+   nothing to do — and it clicked Archived when it was told Locked chats.
    -------------------------------------------------------------------------- */
-for (const suite of ['test-intent.mjs', 'test-shortcuts.mjs']) {
+for (const suite of ['test-intent.mjs', 'test-shortcuts.mjs', 'test-driver.mjs']) {
   try {
     execFileSync(process.execPath, [join(ROOT, 'scripts', suite)], { stdio: 'pipe' });
   } catch (err) {

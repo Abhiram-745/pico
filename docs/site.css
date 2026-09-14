@@ -69,6 +69,45 @@ main {
   letter-spacing: -.015em;
 }
 
+/* The live mark. It replaces the static icon where the character rig can be
+   loaded; the sizing here is the rig's own, so the two occupy the same space
+   and the masthead does not shift when it swaps in. */
+.mark-pet {
+  margin: -2px -2px -2px -4px;
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   The states
+   ========================================================================== */
+.lede-sm {
+  margin: 0 0 1.4rem;
+  font-size: .9375rem;
+  color: var(--fg-mid);
+  text-wrap: pretty;
+}
+
+.pets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 1.2rem .6rem;
+}
+.pets[hidden] { display: none; }
+
+.pets figure {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: .55rem;
+}
+
+.pets figcaption {
+  font-size: .8125rem;
+  color: var(--fg-dim);
+  text-align: center;
+  text-wrap: balance;
+}
+
 /* ==========================================================================
    Type
    ========================================================================== */

@@ -13,6 +13,43 @@
 }
 
 /* ==========================================================================
+   Phase accents — one source of truth. Every surface reads --accent.
+   Set data-phase on any container to re-tint everything inside it.
+
+   They live here rather than in theme.css because the mascot is their main
+   consumer and carries its own data-phase, so anywhere the character goes,
+   its colours go with it — including the website, which loads this file and
+   nothing else of the app's. Every page that loads theme.css loads this one
+   straight after, so nothing in the interface changed by moving them.
+   ========================================================================== */
+[data-phase="Idle"]              { --accent: #8b97a8; }
+[data-phase="Starting"]          { --accent: #38bdf8; }
+[data-phase="Observing"]         { --accent: #22d3ee; }
+[data-phase="Thinking"]          { --accent: #a78bfa; }
+[data-phase="Acting"]            { --accent: #34d399; }
+[data-phase="Paused"]            { --accent: #fbbf24; }
+[data-phase="AwaitingApproval"]  { --accent: #fb923c; }
+[data-phase="AwaitingTakeover"]  { --accent: #60a5fa; }
+[data-phase="Completed"]         { --accent: #4ade80; }
+[data-phase="Stopped"]           { --accent: #94a3b8; }
+[data-phase="Failed"]            { --accent: #f87171; }
+
+/* A fallback for a page that has no phase palette of its own — the site, for
+   instance, where `--accent` is its own brand colour and the mascot would
+   otherwise be painted in it whatever it was doing. */
+.pet { --accent: #8b97a8; }
+.pet[data-phase="Starting"]         { --accent: #38bdf8; }
+.pet[data-phase="Observing"]        { --accent: #22d3ee; }
+.pet[data-phase="Thinking"]         { --accent: #a78bfa; }
+.pet[data-phase="Acting"]           { --accent: #34d399; }
+.pet[data-phase="Paused"]           { --accent: #fbbf24; }
+.pet[data-phase="AwaitingApproval"] { --accent: #fb923c; }
+.pet[data-phase="AwaitingTakeover"] { --accent: #60a5fa; }
+.pet[data-phase="Completed"]        { --accent: #4ade80; }
+.pet[data-phase="Stopped"]          { --accent: #94a3b8; }
+.pet[data-phase="Failed"]           { --accent: #f87171; }
+
+/* ==========================================================================
    Companion shell
 
    The rig itself is driven from JavaScript — see src/mascot.js. Poses,
@@ -56,10 +93,21 @@
   height: 100%;
   overflow: visible;
   display: block;
+  /* The light is where the phase lives. The body shifts only slightly (see
+     the tints below) because Pico repainted is a different Pico; the glow
+     around it goes the whole way, and that is what you actually read from
+     across a room. */
   filter:
     drop-shadow(0 calc(var(--pet-size, 190px) * .035) calc(var(--pet-size, 190px) * .07) rgba(3, 6, 16, .55))
-    drop-shadow(0 0 calc(var(--pet-size, 190px) * .10) color-mix(in oklab, var(--pico-skin) 34%, transparent));
+    drop-shadow(0 0 calc(var(--pet-size, 190px) * .11) color-mix(in oklab, var(--accent) 55%, transparent));
   transition: filter .5s var(--ease-out);
+}
+
+/* The gradient stops are CSS variables, so a phase change is a colour
+   transition rather than a swap — but only on the SVG's own paint, which
+   does not animate. The glow does, and carries the change. */
+.char__body, .char__arm path, .char__foot path, .ant__stem, .ant__tip, .char__dot {
+  transition: fill .55s var(--ease-out), stroke .55s var(--ease-out);
 }
 
 /* The two phases that need a person burn a little brighter, so the character
@@ -68,14 +116,43 @@
 .pet[data-phase="AwaitingTakeover"] .pet__char {
   filter:
     drop-shadow(0 calc(var(--pet-size, 190px) * .035) calc(var(--pet-size, 190px) * .07) rgba(3, 6, 16, .55))
-    drop-shadow(0 0 calc(var(--pet-size, 190px) * .16) color-mix(in oklab, var(--pico-skin) 62%, transparent));
+    drop-shadow(0 0 calc(var(--pet-size, 190px) * .18) color-mix(in oklab, var(--accent) 80%, transparent));
+}
+
+/* --- the phase, in Pico's own colour ---------------------------------------
+   Pico is blue, and stays blue: the identity is the shape and the colour
+   together, and a mascot repainted green every time it does something is a
+   different mascot each time. So the phase accent is mixed in rather than
+   swapped for — strongest at the bottom of the body where the gradient is
+   already darkest, lighter at the top, and carried fully by the glow around
+   it. The character reads as lit by what it is doing.
+
+   `--accent` is set per phase in theme.css, one source of truth for the whole
+   interface; these three lines are the whole of the mascot's share of it. */
+.pet[data-phase] .pet__char {
+  --pico-skin-hi: color-mix(in oklab, var(--accent) 9%,  #5C9AFA);
+  --pico-skin:    color-mix(in oklab, var(--accent) 15%, #3B82F6);
+  --pico-skin-lo: color-mix(in oklab, var(--accent) 30%, #2A6AD8);
+}
+/* Idle has no phase to show, so it is simply Pico. */
+.pet[data-phase="Idle"] .pet__char {
+  --pico-skin-hi: #5C9AFA;
+  --pico-skin:    #3B82F6;
+  --pico-skin-lo: #2A6AD8;
 }
 
 /* Paused and stopped drain the colour out rather than stopping the motion —
    a still frame is indistinguishable from a hung interface. */
 .pet[data-phase="Paused"] .pet__char,
 .pet[data-phase="Stopped"] .pet__char { opacity: .62; }
-.pet[data-phase="Failed"] .pet__char { --pico-skin-hi: #7d93b4; --pico-skin: #5b6f92; --pico-skin-lo: #44567a; }
+/* Failure is the one place the blue genuinely goes: it is the only state
+   where Pico is not working, and the colour draining out of it says so faster
+   than any wording on the card beside it. */
+.pet[data-phase="Failed"] .pet__char {
+  --pico-skin-hi: #8296b4;
+  --pico-skin: #5f7292;
+  --pico-skin-lo: #47587a;
+}
 
 /* The eyes carry the whole expression, so give their shape change the same
    spring the rest of the motion has. The `d` is rewritten every frame by the

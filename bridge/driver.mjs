@@ -160,6 +160,37 @@ const PLAN_TOOL = [{
   },
 }];
 
+/**
+ * The same tool with no way to ask a question.
+ *
+ * Used for the pass that follows an answered question, and it is not a
+ * refinement — it is the fix for a run that died in front of the user. The
+ * planner asked what to type into Google, was told, and then asked a *second*
+ * question; only one is allowed, so the loop broke out holding a plan with no
+ * steps in it and the run ended "There was nothing to do for that." The person
+ * had answered, and Pico replied that there was nothing to do.
+ *
+ * Taking the field away is what makes that impossible. A model with somewhere
+ * to put its uncertainty will use it; with nowhere, it plans — which is all
+ * that was ever wanted, since by this point the one thing it said it needed is
+ * sitting in the conversation above it.
+ */
+const PLAN_TOOL_SETTLED = [{
+  type: 'function',
+  function: {
+    ...PLAN_TOOL[0].function,
+    description: 'State the smallest complete plan. You have already been given '
+      + 'the answer you asked for; plan with it.',
+    parameters: {
+      ...PLAN_TOOL[0].function.parameters,
+      properties: Object.fromEntries(
+        Object.entries(PLAN_TOOL[0].function.parameters.properties)
+          .filter(([k]) => k !== 'question'),
+      ),
+    },
+  },
+}];
+
 const PLAN_SYSTEM = (shot, windowTitle) => [
   'You plan work for someone operating a Windows 11 desktop.',
   `The screenshot is ${shot.width} by ${shot.height} pixels.`,
@@ -191,10 +222,18 @@ const PLAN_SYSTEM = (shot, windowTitle) => [
   '',
   'If the screen already shows what was asked, say so with already_done.',
   '',
+  'MESSAGING AND MAIL NEED THE RIGHT CONVERSATION OPENED FIRST.',
+  'Sending a message to somebody is at least three steps, never one: open the',
+  'application, open that person or group\'s conversation, then type. Opening',
+  'the conversation is its own step — searching for them by name and clicking',
+  'the result is two more. Whatever conversation happens to be on screen is',
+  'not the right one unless it is the one named.',
+  '',
   'If one detail would genuinely change what you do — which file, which of',
   'two open windows, what text to write, which of several people to message —',
   'ask for it instead of guessing. One short question, and only when the',
-  'answer really decides something.',
+  'answer really decides something. Ask it once: you get one question for the',
+  'whole task, so ask for everything you actually need in it.',
 ].filter(Boolean).join('\n');
 
 /* --------------------------------------------------------------------------
@@ -305,6 +344,32 @@ const ACT_SYSTEM = (shot, windowTitle) => [
   'it is not installed. Do not open something else instead and do not pretend',
   'it worked — call ask, and say what is missing.',
   '',
+  'Read the label. A list of rows — chats, mailboxes, folders, settings — is',
+  'the easiest thing on a screen to be one row out on, and one row out is a',
+  'different thing entirely. Before aiming at a row, read the text on it in',
+  'the image and check it is the one you were asked for. "Archived" is not',
+  '"Locked chats"; "Drafts" is not "Sent". If you cannot read it clearly,',
+  'scroll it into full view rather than aiming at where you think it is.',
+  '',
+  'MESSAGING AND MAIL: OPEN IT BEFORE YOU WRITE IN IT.',
+  'In WhatsApp, Messenger, Teams, Slack, Discord, Gmail, Outlook — anywhere a',
+  'message goes to somebody — the conversation that is open decides who',
+  'receives what you type. So before typing a message:',
+  '  - Read the header of the open conversation. It names who you are talking',
+  '    to. If it is not the person or group you were told to message, do not',
+  '    type. Find the right conversation first.',
+  '  - Use the search box to find them by name rather than hunting the list.',
+  '    Click search, type the name, then click the matching result — and read',
+  '    the result before clicking it.',
+  '  - A newly opened application shows whichever conversation was last open.',
+  '    That is not the one you want unless it happens to be.',
+  'The same goes for a reply in mail: check the subject and the recipient on',
+  'screen before typing into the box.',
+  '',
+  'Sending is the last action, never an incidental one. Type the message,',
+  'look at what is in the box and who it is addressed to, and only then press',
+  'Enter or click Send.',
+  '',
   'The black bar at the top centre of the screen is Pico itself. It is not',
   'part of any task — never click or type into it.',
   '',
@@ -386,25 +451,40 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
   onPhase('Thinking');
   let brief = task;
   let plan;
-  // At most one question. A second would be an interrogation, and the point is
-  // to remove a guess, not to hand the work back.
+  let answered = null;     // the one question asked before starting, and its answer
+
+  /* At most one question. A second would be an interrogation, and the point is
+     to remove a guess, not to hand the work back.
+
+     The exchange is carried in the conversation rather than only stitched into
+     the task line, because the second pass plans much better when it can see
+     that it asked and what it was told — the answer is often a whole further
+     instruction ("lovable.dev and then open a project and see it"), not the
+     single word the question was fishing for. */
+  const messages = [
+    { role: 'system', content: PLAN_SYSTEM(shot, computer.focusedWindow()) },
+    { role: 'user', content: [{ type: 'text', text: `Task: ${task}` }, imagePart(shot)] },
+  ];
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const choice = await llm.toolCall(
-        [
-          { role: 'system', content: PLAN_SYSTEM(shot, computer.focusedWindow()) },
-          { role: 'user', content: [{ type: 'text', text: `Task: ${brief}` }, imagePart(shot)] },
-        ],
-        { model: llm.tiers.plan, tools: PLAN_TOOL, effort: 'low', maxTokens: 1200 },
-      );
+      const choice = await llm.toolCall(messages, {
+        model: llm.tiers.plan,
+        // The second pass has no question field at all — see PLAN_TOOL_SETTLED.
+        tools: attempt === 0 ? PLAN_TOOL : PLAN_TOOL_SETTLED,
+        effort: 'low',
+        maxTokens: 1200,
+      });
       plan = choice.call?.args;
     } catch (err) {
       return fail('model_error', err.message);
     }
     if (!(await gate())) return;
 
-    const asked = String(plan?.question || '').trim();
-    if (!asked || attempt > 0) break;
+    const asked = attempt === 0 ? String(plan?.question || '').trim() : '';
+    const hasSteps = Array.isArray(plan?.steps) && plan.steps.some((st) => st?.do);
+    // A question alongside a usable plan is a model hedging. Take the plan.
+    if (!asked || hasSteps || plan?.already_done) break;
 
     onAudit('question_asked', { metadata: { question: asked } });
     const answer = await onQuestion({ id: `q_${Date.now()}`, text: asked });
@@ -415,17 +495,37 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
       onSummary('I asked what you meant and did not hear back, so I left it.');
       return;
     }
+
+    answered = { asked, answer };
+    messages.push({ role: 'assistant', content: `Before I can plan this I need to know: ${asked}` });
+    messages.push({
+      role: 'user',
+      content: `${answer}\n\nThat is the answer. Plan it now and carry it out — `
+        + 'everything in that answer is part of the job, and you may not ask again.',
+    });
     brief = `${task} (${asked} ${answer})`;
     onPhase('Thinking');
   }
 
   const steps = Array.isArray(plan?.steps) ? plan.steps.filter((s) => s?.do).slice(0, 6) : [];
   if (!steps.length || plan.already_done) {
-    onPhase('Completed');
-    onAudit('run_completed', { metadata: { completed_actions: 0, already_done: true } });
-    onSummary(plan?.already_done
-      ? 'That was already the case, so I left it alone.'
-      : 'There was nothing to do for that.');
+    if (plan?.already_done) {
+      onPhase('Completed');
+      onAudit('run_completed', { metadata: { completed_actions: 0, already_done: true } });
+      onSummary('That was already the case, so I left it alone.');
+      return;
+    }
+    /* No steps and nothing already true. Saying "there was nothing to do" is
+       only honest when nothing was asked of the person — after they have
+       answered a question, it reads as their answer having been thrown away,
+       which is exactly what it looked like. Say what actually happened. */
+    onPhase('Stopped');
+    onAudit('run_stopped', { metadata: { failure_class: 'no_plan', answered: Boolean(answered) } });
+    onSummary(answered
+      ? `You told me: ${answered.answer} — and I still could not work out a first `
+        + 'step from what is on screen. Say where to start and I will take it from there.'
+      : 'I could not work out a first step for that from what is on screen. '
+        + 'Tell me where to start and I will take it from there.');
     return;
   }
 
@@ -445,6 +545,11 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
   let repeats = 0;
   let lastGrey = shot.grey;
   const asked = new Set();     // one question each; a loop of them is an interrogation
+  /* At most one refused aim per step. The check is a second opinion, not a
+     veto with a loop in it: if it disagrees twice about the same step, the
+     click goes through and the screen decides. */
+  let misfire = null;          // { want, found } from the aim that was refused
+  let misfireStep = -1;
 
   let announced = -1;
 
@@ -495,6 +600,16 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
                     ? `Your last attempt (${describe(lastAction)}) changed nothing on `
                       + 'screen. Do it a different way, or call step_done if it is '
                       + 'already the case.'
+                    : null,
+                  /* The single most useful sentence in this prompt. It is the
+                     application's own name for what was under the pointer, so
+                     it settles an argument the picture cannot: the row was
+                     Archived, not Locked chats, and nothing was clicked. */
+                  misfire
+                    ? `I did not click: the thing under that point is called `
+                      + `"${misfire.found}", which is not "${misfire.want}". Find `
+                      + `"${misfire.want}" properly in the image and aim at its `
+                      + 'centre, or scroll to bring it into view.'
                     : null,
                 ].filter(Boolean).join('\n'),
               },
@@ -655,6 +770,33 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
         };
       }
       if (!(await gate())) return;
+
+      /* Ask the application what is actually under there before pressing it.
+         See contradicts() — this refuses at most once per step, and only when
+         the name it gets back shares no word with what the step said it was
+         aiming for. */
+      const want = targetPhrase(action);
+      if (action.type === 'click' && want && computer.probe && misfireStep !== stepIndex) {
+        const point = action._quiet
+          ?? { x: Math.round(action._at.x * (shot.scale || 1)), y: Math.round(action._at.y * (shot.scale || 1)) };
+        let found = null;
+        try { found = await computer.probe(point); } catch { found = null; }
+        if (!(await gate())) return;
+        if (found && contradicts(want, found)) {
+          misfire = { want, found: found.slice(0, 80) };
+          misfireStep = stepIndex;
+          onAudit('action_skipped', {
+            metadata: { reason: 'aimed at the wrong control', wanted: want, found: misfire.found },
+          });
+          if (process.env.PICO_DEBUG) console.log(`[aim] refused: wanted "${want}", found "${found}"`);
+          onPhase('Observing');
+          try { shot = await look(); } catch (err) {
+            return fail('screen_unavailable', `Pico could not see the screen: ${err.message}`);
+          }
+          lastGrey = shot.grey;
+          continue;
+        }
+      }
     }
 
     onPhase('Acting');
@@ -694,6 +836,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {} }
       stepIndex += 1;
       repeats = 0;
       lastSignature = null;
+      misfire = null;         // a new step, and a clean slate to aim at it
     }
     lastGrey = shot.grey;
   }
@@ -845,16 +988,64 @@ const AIM_TOOL = [{
  * the thing is not in the close-up after all, the coarse point stands and the
  * click happens anyway.
  */
+/**
+ * What an action says it is aiming at, with the verb taken off the front.
+ *
+ * The agent's own words for what it is doing ("Click the Send button")
+ * describe the target well enough to find it again; the verb is just noise to
+ * something being asked where a thing is.
+ */
+function targetPhrase(action) {
+  return String(action.why || '')
+    .replace(/^(?:click(?:ing)?|press(?:ing)?|tap(?:ping)?|select(?:ing)?|open(?:ing)?|choose|choosing)\s+(?:on\s+)?(?:the\s+)?/i, '')
+    .trim();
+}
+
+/* Words that say nothing about which control this is. Two labels sharing only
+   these are not in agreement about anything. */
+const EMPTY_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'button', 'icon', 'menu', 'item',
+  'tab', 'option', 'list', 'row', 'entry', 'field', 'box', 'link', 'control',
+  'click', 'open', 'select', 'press', 'chat', 'chats', 'window', 'panel', 'bar',
+]);
+
+const words = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ')
+  .filter((w) => w.length > 2 && !EMPTY_WORDS.has(w));
+
+/**
+ * Does the name of the thing under the pointer contradict what was aimed at?
+ *
+ * The specific failure this is for: told to open Locked chats, Pico pressed
+ * Archived — the row above it, same shape, same place, and nothing anywhere
+ * in the run noticed. Aiming happens from a picture, and a picture is a poor
+ * way to tell two adjacent rows apart. The application itself has no trouble
+ * at all: through the accessibility layer it will say, before anything is
+ * pressed, that the thing under that point is called "Archived".
+ *
+ * Deliberately reluctant. It answers true only when both sides have real
+ * words and share none of them — "Send" against "Send message" agrees,
+ * "Locked chats" against "Archived" does not, and anything unnamed or
+ * wordless is no opinion at all rather than a veto. The cost of a false
+ * positive is one wasted turn; the cost of being too eager is a Pico that
+ * refuses to click things.
+ */
+function contradicts(want, found) {
+  const w = words(want);
+  const f = words(found);
+  if (!w.length || !f.length) return false;
+  for (const a of w) {
+    for (const b of f) {
+      if (a === b || a.includes(b) || b.includes(a)) return false;
+    }
+  }
+  return true;
+}
+
 async function aim(llm, shot, action) {
   const coarse = shot.toScreen(action.x ?? 0, action.y ?? 0);
   if (typeof shot.crop !== 'function') return coarse;
 
-  // The agent's own words for what it is doing ("Click the Send button")
-  // describe the target well enough to find it again; the verb at the front
-  // is just noise to something being asked where a thing is.
-  const what = String(action.why || '')
-    .replace(/^(?:click(?:ing)?|press(?:ing)?|tap(?:ping)?|select(?:ing)?|open(?:ing)?|choose|choosing)\s+(?:on\s+)?(?:the\s+)?/i, '')
-    .trim();
+  const what = targetPhrase(action);
   if (!what) return coarse;
 
   try {
@@ -940,3 +1131,8 @@ async function execute(computer, action, shot) {
 }
 
 export { ALLOW };
+
+/* Exported for scripts/test-driver.mjs. The check that decides whether a
+   click is refused has to be testable on its own: it is the one piece of
+   this file that can silently make Pico stop clicking things. */
+export { contradicts, PLAN_TOOL, PLAN_TOOL_SETTLED };

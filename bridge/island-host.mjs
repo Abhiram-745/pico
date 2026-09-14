@@ -197,7 +197,31 @@ export class IslandHost {
   async quietClick(x, y) {
     const answer = await this.request(`quiet click ${Math.round(x)} ${Math.round(y)}`);
     if (process.env.PICO_DEBUG) console.log(`[quiet] ${Math.round(x)},${Math.round(y)} -> ${answer || '(no answer)'}`);
-    return answer.startsWith('ok done');
+    if (!answer.startsWith('ok done')) return null;
+    // "ok done invoke Locked chats" — the third word on is what was pressed,
+    // which is worth having: it is the only account of what a click actually
+    // landed on that does not involve looking at a picture of it afterwards.
+    return { pressed: answer.split(' ').slice(3).join(' ').trim() };
+  }
+
+  /**
+   * Name what is at a point, pressing nothing.
+   *
+   * The check that stops a click going to the wrong row. Aiming is done from
+   * a picture, and a picture cannot tell "Archived" from "Locked chats" as
+   * reliably as the application itself can — it will happily point at the row
+   * above the one it meant. This asks the application, before the click, what
+   * is actually under the point.
+   *
+   * Resolves to the control's name, or null when there is nothing to ask
+   * (no accessibility tree, an unnamed control, a canvas). Null means "no
+   * opinion", never "wrong" — the click goes ahead.
+   */
+  async quietLook(x, y) {
+    const answer = await this.request(`quiet look ${Math.round(x)} ${Math.round(y)}`);
+    if (process.env.PICO_DEBUG) console.log(`[look] ${Math.round(x)},${Math.round(y)} -> ${answer || '(no answer)'}`);
+    if (!answer.startsWith('ok is ')) return null;
+    return answer.slice(6).trim() || null;
   }
 
   /**

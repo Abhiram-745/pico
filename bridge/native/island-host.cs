@@ -28,6 +28,8 @@
 //    cursor restore                put it back there
 //    quiet click <x> <y>           press what is at that point without the
 //                                  pointer going there. Physical pixels.
+//    quiet look <x> <y>            name what is at that point, pressing
+//                                  nothing. Physical pixels.
 //
 //  Rounding is left to DWM (DWMWA_WINDOW_CORNER_PREFERENCE) rather than a
 //  window region: SetWindowRgn reports success on a browser window and then
@@ -189,10 +191,32 @@ static class Native
 /// </summary>
 static class PicoCursor
 {
-    const int SIZE = 96;                 // canvas, with room for the mascot to trail
-    const int HOT_X = 8, HOT_Y = 6;      // where the real pointer sits in the canvas
-    const float PET_X = 40f, PET_Y = 42f;
-    const float TRAIL = 18f;             // how far behind the mascot may fall
+    /* The canvas is large and the pointer sits in the middle of it, rather
+       than in its top-left corner as it did when there was only an arrow and
+       a small mark to draw. The trail behind a moving cursor goes whichever
+       way it came from, so there has to be room on every side of the pointer
+       for it; with the hot spot in a corner, a cursor moving left or up drew
+       its trail outside its own window and you saw none of it.
+
+       It is a layered window composited by the GPU, so the extra area costs
+       effectively nothing, and clicks pass straight through it. */
+    const int SIZE = 240;
+    const int HOT_X = 120, HOT_Y = 120;  // where the real pointer sits in the canvas
+    const float PET_X = 152f, PET_Y = 162f;
+    const float TRAIL = 26f;             // how far behind the mascot may fall
+
+    /* A short comet behind the mascot while it is moving.
+
+       The complaint this answers is that you could not see Pico move. It was
+       a 30px mark on a busy desktop, going from one place to another in a
+       third of a second, and if you were not already looking at the right
+       part of the screen the whole journey was over before you found it. A
+       trail is what makes a fast thing legible: it draws the path as well as
+       the position, so the movement registers out of the corner of an eye. */
+    const int TRAIL_N = 9;
+    static readonly PointF[] history = new PointF[TRAIL_N];
+    static int historyAt = -1;
+    static double lastTrail;
 
     static readonly object gate = new object();
 
@@ -430,6 +454,15 @@ static class PicoCursor
         drawX += (targetX - drawX) * k;
         drawY += (targetY - drawY) * k;
 
+        // Sampled on its own clock, not per frame, so the comet is the same
+        // length whatever the frame rate happens to be.
+        if (now - lastTrail >= 0.022)
+        {
+            lastTrail = now;
+            historyAt = (historyAt + 1) % TRAIL_N;
+            history[historyAt] = new PointF(drawX, drawY);
+        }
+
         using (var bmp = new Bitmap(SIZE, SIZE, PixelFormat.Format32bppArgb))
         {
             using (var g = Graphics.FromImage(bmp))
@@ -453,53 +486,85 @@ static class PicoCursor
 
         // It bobs while it moves and breathes more slowly while thinking, so
         // the cursor itself says which of those is happening.
-        double bob = state == "thinking" ? Math.Sin(t * 3.2) * 2.4 : Math.Sin(t * 6.4) * 1.6;
+        double bob = state == "thinking" ? Math.Sin(t * 3.2) * 3.2 : Math.Sin(t * 6.8) * 2.4;
         float cx = PET_X + lagX;
         float cy = PET_Y + lagY + (float)bob;
 
         Color accent =
-            state == "clicking" ? Color.FromArgb(255, 255, 214, 102) :
-            state == "done" ? Color.FromArgb(255, 108, 227, 155) :
-            state == "thinking" ? Color.FromArgb(255, 168, 150, 255) :
-            Color.FromArgb(255, 96, 190, 255);
+            state == "clicking" ? Color.FromArgb(255, 255, 206, 74) :
+            state == "done" ? Color.FromArgb(255, 88, 226, 146) :
+            state == "thinking" ? Color.FromArgb(255, 170, 148, 255) :
+            Color.FromArgb(255, 92, 154, 250);
+
+        // The comet, oldest and faintest first so the newest draws on top.
+        if (historyAt >= 0)
+        {
+            for (int i = TRAIL_N - 1; i >= 1; i--)
+            {
+                PointF h = history[((historyAt - i) % TRAIL_N + TRAIL_N) % TRAIL_N];
+                if (h.X == 0 && h.Y == 0) continue;
+                float hx = h.X - (targetX - HOT_X);
+                float hy = h.Y - (targetY - HOT_Y);
+                // Only worth drawing where the cursor has actually travelled;
+                // a stationary cursor would otherwise sit inside a blob of
+                // its own history.
+                float gap = (float)Math.Sqrt(((hx - cx) * (hx - cx)) + ((hy - cy) * (hy - cy)));
+                if (gap < 6) continue;
+                float age = 1f - ((float)i / TRAIL_N);          // 0 oldest, 1 newest
+                float rad = 3f + (11f * age);
+                int alpha = (int)(105 * age * age);
+                if (alpha < 4) continue;
+                using (var b = new SolidBrush(Color.FromArgb(alpha, accent)))
+                    g.FillEllipse(b, hx - rad, hy - rad, rad * 2, rad * 2);
+            }
+        }
 
         using (var path = new GraphicsPath())
         {
-            path.AddEllipse(cx - 26, cy - 26, 52, 52);
+            path.AddEllipse(cx - 38, cy - 38, 76, 76);
             using (var glow = new PathGradientBrush(path))
             {
-                glow.CenterColor = Color.FromArgb(125, accent);
+                glow.CenterColor = Color.FromArgb(150, accent);
                 glow.SurroundColors = new Color[] { Color.FromArgb(0, accent) };
-                g.FillEllipse(glow, cx - 26, cy - 26, 52, 52);
+                g.FillEllipse(glow, cx - 38, cy - 38, 76, 76);
             }
         }
 
         // A ring that swells out of a click and fades. It belongs at the point
-        // that was clicked, which is the pointer, not the mascot.
+        // that was clicked, which is the pointer, not the mascot. Two rings,
+        // offset in time, because one thin ring on a busy screen is easy to
+        // miss and the whole point of it is to say "that just got pressed".
         double since = t - clickAt;
-        if (since >= 0 && since < 0.55)
+        if (since >= 0 && since < 0.62)
         {
-            float p = (float)(since / 0.55);
-            float r = 13 + (p * 21);
-            using (var pen = new Pen(Color.FromArgb((int)(200 * (1 - p)), accent), 2.4f))
-                g.DrawEllipse(pen, HOT_X - r, HOT_Y - r, r * 2, r * 2);
+            for (int ring = 0; ring < 2; ring++)
+            {
+                double s2 = since - (ring * 0.1);
+                if (s2 < 0 || s2 >= 0.52) continue;
+                float p = (float)(s2 / 0.52);
+                float r = 12 + (p * 34);
+                using (var pen = new Pen(Color.FromArgb((int)(215 * (1 - p) * (1 - (ring * 0.35))), accent), 3f))
+                    g.DrawEllipse(pen, HOT_X - r, HOT_Y - r, r * 2, r * 2);
+            }
         }
 
         if (mascot != null)
         {
-            g.DrawImage(mascot, cx - 15, cy - 15, 30, 30);
+            g.DrawImage(mascot, cx - 23, cy - 23, 46, 46);
         }
         else
         {
-            using (var b = new SolidBrush(accent)) g.FillEllipse(b, cx - 9, cy - 9, 18, 18);
+            using (var b = new SolidBrush(accent)) g.FillEllipse(b, cx - 13, cy - 13, 26, 26);
         }
 
+        // A slightly larger arrow than Windows' own, so that Pico's cursor is
+        // recognisably Pico's rather than looking like the pointer misbehaving.
         PointF[] tip = new PointF[]
         {
             new PointF(HOT_X, HOT_Y),
-            new PointF(HOT_X + 13.5f, HOT_Y + 10.5f),
-            new PointF(HOT_X + 5.6f, HOT_Y + 11.6f),
-            new PointF(HOT_X + 2.6f, HOT_Y + 18.0f),
+            new PointF(HOT_X + 15.5f, HOT_Y + 12.1f),
+            new PointF(HOT_X + 6.4f, HOT_Y + 13.3f),
+            new PointF(HOT_X + 3.0f, HOT_Y + 20.7f),
         };
         using (var shadow = new SolidBrush(Color.FromArgb(110, 0, 0, 0)))
         {
@@ -599,7 +664,22 @@ static class Quiet
     /// instead.
     const double MAX_W = 900, MAX_H = 700;
 
-    public static string Act(int x, int y)
+    public static string Act(int x, int y) { return Run(x, y, true); }
+
+    /// <summary>
+    /// What is under this point, without touching it.
+    ///
+    /// The same resolution as a press, stopping short of the press. It exists
+    /// because Pico was clicking the wrong things in a way that was invisible
+    /// to it: told to open Locked chats it pressed Archived, the row above,
+    /// and had no idea it had. The accessibility layer knew the difference the
+    /// whole time — it reports the control's name — so the bridge now reads
+    /// that name before committing to a click and can tell when the aim is
+    /// wrong while there is still time to do something about it.
+    /// </summary>
+    public static string Look(int x, int y) { return Run(x, y, false); }
+
+    static string Run(int x, int y, bool press)
     {
         string answer = "no timed-out";
 
@@ -608,7 +688,7 @@ static class Quiet
         // must not take Pico down with it.
         var t = new Thread(() =>
         {
-            try { answer = Press(x, y); }
+            try { answer = press ? Press(x, y) : Name(x, y); }
             catch (Exception e) { answer = "no " + e.GetType().Name; }
         });
         t.IsBackground = true;
@@ -701,6 +781,35 @@ static class Quiet
             catch { }
         }
         return best;
+    }
+
+    /// The name of the smallest operable thing under the point. Reads only.
+    static string Name(int x, int y)
+    {
+        var p = new System.Windows.Point(x, y);
+        var at = AutomationElement.FromPoint(p);
+        if (at == null) return "no nothing-there";
+
+        var el = Resolve(at, p) ?? at;
+        string name = null;
+        try { name = el.Current.Name; } catch { }
+        if (string.IsNullOrEmpty(name))
+        {
+            // A control with no name of its own is often labelled by the text
+            // inside it — a chat row whose label is a child Text element is
+            // the ordinary case in exactly the applications this is for.
+            try
+            {
+                foreach (AutomationElement c in el.FindAll(TreeScope.Descendants, Condition.TrueCondition))
+                {
+                    string cn = c.Current.Name;
+                    if (!string.IsNullOrEmpty(cn)) { name = cn; break; }
+                }
+            }
+            catch { }
+        }
+        if (string.IsNullOrEmpty(name)) return "no unnamed";
+        return "is " + name.Replace((char)10, ' ').Replace((char)13, ' ');
     }
 
     static string Press(int x, int y)
@@ -842,6 +951,7 @@ static class IslandHost
                         break;
                     case "quiet":
                         if (p[1] == "click") reply = "ok " + Quiet.Act(Int(p[2]), Int(p[3]));
+                        else if (p[1] == "look") reply = "ok " + Quiet.Look(Int(p[2]), Int(p[3]));
                         else reply = "err unknown quiet command";
                         break;
                     case "cursor":

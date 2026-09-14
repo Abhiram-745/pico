@@ -232,6 +232,20 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   const decision = el('div', 'island__decision');
   decision.hidden = true;      // nothing to decide until one arrives
 
+  /* Pico asks, in person.
+
+     The card used to lead with a coloured warning triangle, which is the
+     house style of every dialog anyone has ever dismissed without reading.
+     The one moment Pico is stopped and waiting on a person is the moment it
+     should be least like a dialog — so the character comes into the card and
+     does the asking, waving for a question or a handover, wide-eyed and
+     giving the occasional double-take for an approval.
+
+     One instance, built once and moved between cards, because a new Mascot
+     per decision is a new frame loop per decision. */
+  const asker = new Mascot({ size: 46 });
+  asker.el.classList.add('island__asker');
+
   const composer = el('div', 'island__composer');
   const modeBtn = el('button', 'island__mode');
   modeBtn.type = 'button';
@@ -502,7 +516,11 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     decisionKey = key;
     decision.replaceChildren();
     decision.hidden = !key;
-    if (!key) return;
+    if (!key) {
+      // Out of the document, so its frame loop parks itself. See Mascot._start.
+      asker.setActivity(null);
+      return;
+    }
 
     const kind = q ? 'question' : a ? 'approval' : 'takeover';
     decision.dataset.kind = kind;
@@ -510,8 +528,17 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     const flag = el('div', 'island__attention');
     flag.append(el('i', 'island__attention-dot'), el('span', null, ATTENTION[kind]));
 
+    /* The character, and the small badge that says which kind of asking this
+       is. The badge is tucked onto the mascot rather than standing in for it
+       — the icon is the footnote, Pico is the message. */
     const badge = el('div', 'island__decision-icon');
-    badge.append(icon(q ? 'ask' : a ? 'alert' : 'hand'));
+    asker.setPhase(a ? 'AwaitingApproval' : 'AwaitingTakeover');
+    asker.setActivity(a ? null : 'waving');
+    badge.append(asker.el, (() => {
+      const chip = el('span', 'island__decision-chip');
+      chip.append(icon(q ? 'ask' : a ? 'alert' : 'hand'));
+      return chip;
+    })());
 
     const body = el('div', 'island__decision-body');
     body.append(el('div', 'island__decision-title',

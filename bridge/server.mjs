@@ -416,7 +416,11 @@ async function saveKey(key) {
    touching the mouse mid-run takes it straight back: the helper notices the
    pointer moving when nothing is driving it and returns it without being
    asked. */
-const CURSOR_ART = join(ROOT, 'pico-ui', 'assets', 'pico.png');
+/* The mark Pico's own cursor carries. Rendered from the character rig (see
+   pico-ui/src/mascot.js) rather than being the old 1254px app icon, so the
+   cursor shows the same Pico as everything else and at a size where it is
+   legible instead of being a downscaled screenshot of one. */
+const CURSOR_ART = join(ROOT, 'pico-ui', 'assets', 'pico-mark.png');
 const WORKING = new Set([
   'Starting', 'Observing', 'Thinking', 'Acting', 'Paused',
   'AwaitingApproval', 'AwaitingTakeover',
@@ -855,9 +859,17 @@ if (computer) {
     if (!islandHost?.ready) return false;
     await walkGhost(vx, vy);
     islandHost.cursorState('clicking');
-    const pressed = await islandHost.quietClick(x, y);
+    const result = await islandHost.quietClick(x, y);
     islandHost.cursorState('moving');
-    return pressed;
+    return result;
+  };
+
+  /* Ask the application what is under a point, without pressing it.
+     The driver uses this to catch an aim that has landed on the wrong row
+     before it commits to the click — see checkTarget in driver.mjs. */
+  computer.probe = async ({ x, y }) => {
+    if (!islandHost?.ready) return null;
+    return islandHost.quietLook(x, y);
   };
 }
 
@@ -874,7 +886,13 @@ async function walkGhost(x, y) {
   ghost = { x, y };
   if (dist < 4) { islandHost?.cursorAt(x, y); return; }
 
-  const ms = Math.max(120, Math.min(340, 90 + (dist * 0.22)));
+  /* Faster than it was. This walk is the gesture that says "it is doing that,
+     there" — it is not a journey to sit through, and at the old timing a run
+     of a dozen clicks spent four seconds of itself watching a mark slide
+     across the screen. The trail behind the cursor now does the work of
+     making the movement legible, which is what the slow version was really
+     for. */
+  const ms = Math.max(80, Math.min(210, 55 + (dist * 0.12)));
   const t0 = Date.now();
   for (;;) {
     const t = Math.min(1, (Date.now() - t0) / ms);
