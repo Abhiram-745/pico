@@ -26,6 +26,8 @@ body {
   font-family: var(--font);
   color: #f5f5f7;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01";
   user-select: none;
   cursor: default;
 }
@@ -210,7 +212,8 @@ body {
 .island__title {
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: -.012em;
+  letter-spacing: -.016em;
+  font-variant-numeric: tabular-nums;
   line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
@@ -219,8 +222,9 @@ body {
 .island__sub {
   font-size: 11px;
   font-weight: 500;
+  letter-spacing: -.004em;
   color: var(--dim);
-  line-height: 1.25;
+  line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -324,12 +328,16 @@ body {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: var(--well);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .04));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
   color: #d1d1d6;
   cursor: pointer;
-  transition: background .16s, color .16s, transform .18s var(--spring);
+  transition: background .18s, color .18s, transform .18s var(--spring);
 }
-.island__btn:hover { background: var(--well-hi); color: var(--ink); }
+.island__btn:hover {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .13), rgba(255, 255, 255, .075));
+  color: var(--ink);
+}
 .island__btn:active { transform: scale(.9); }
 .island__btn svg { width: 15px; height: 15px; }
 .island__btn[hidden] { display: none; }
@@ -343,18 +351,23 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 10px 0 8px;
+  padding: 0 11px 0 8px;
   border: 0;
   border-radius: 14px;
-  background: var(--well);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .04));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
   color: #d1d1d6;
   font: inherit;
   font-size: 11.5px;
   font-weight: 550;
+  letter-spacing: -.005em;
   cursor: pointer;
-  transition: background .16s, color .16s;
+  transition: background .18s, color .18s;
 }
-.island__perm:hover { background: var(--well-hi); color: var(--ink); }
+.island__perm:hover {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .13), rgba(255, 255, 255, .075));
+  color: var(--ink);
+}
 .island__perm svg { width: 14px; height: 14px; }
 .island__perm[hidden] { display: none; }
 .island__perm-label { line-height: 1; }
@@ -367,29 +380,43 @@ body {
 .island__panel {
   display: none;
   flex-direction: column;
-  gap: 10px;
-  padding: 2px 12px 12px;
+  gap: 11px;
+  padding: 2px 13px 13px;
 }
 .island[data-view="open"] .island__panel { display: flex; }
 
 /* --- empty --------------------------------------------------------------- */
 .island__empty { padding: 2px 4px 2px; }
 .island__empty[hidden] { display: none; }
-.island__empty-line { font-size: 12.5px; color: var(--dim); line-height: 1.5; }
+.island__empty-line {
+  font-size: 12.5px;
+  color: var(--dim);
+  line-height: 1.5;
+  letter-spacing: -.005em;
+}
 
-.island__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.island__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
 .island__chip {
-  border: 1px solid var(--line);
-  background: transparent;
-  color: #d1d1d6;
+  border: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .06), rgba(255, 255, 255, .028));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .055), inset 0 1px 0 rgba(255, 255, 255, .05);
+  color: #c7c7cc;
   font: inherit;
   font-size: 12px;
-  padding: 6px 11px;
+  font-weight: 500;
+  letter-spacing: -.005em;
+  padding: 7px 12px;
   border-radius: 999px;
   cursor: pointer;
-  transition: background .16s, border-color .16s, color .16s;
+  transition: background .18s var(--out), box-shadow .18s var(--out), color .18s, transform .2s var(--spring);
 }
-.island__chip:hover { background: var(--well); border-color: transparent; color: var(--ink); }
+.island__chip:hover {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .11), rgba(255, 255, 255, .06));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), inset 0 1px 0 rgba(255, 255, 255, .09);
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+.island__chip:active { transform: translateY(0) scale(.98); }
 
 /* --- thread -------------------------------------------------------------- */
 .island__thread {
@@ -415,9 +442,10 @@ body {
 }
 .island__msg--you {
   align-self: flex-end;
-  background: var(--well-hi);
-  padding: 7px 12px;
-  border-radius: 16px 16px 5px 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .13), rgba(255, 255, 255, .085));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+  padding: 8px 13px;
+  border-radius: 17px 17px 6px 17px;
 }
 .island__msg--pico {
   align-self: flex-start;
@@ -539,14 +567,18 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 38px;
-  padding: 0 4px 0 12px;
-  border-radius: 19px;
-  background: #000;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
-  transition: box-shadow .18s;
+  height: 40px;
+  padding: 0 4px 0 13px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, .3));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .13), inset 0 1px 0 rgba(255, 255, 255, .05);
+  transition: box-shadow .2s var(--out);
 }
-.island__answer:focus-within { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .28); }
+.island__answer:focus-within {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--kind) 55%, rgba(255, 255, 255, .2)),
+    0 0 0 3px color-mix(in oklab, var(--kind) 12%, transparent);
+}
 .island__answer-input {
   flex: 1;
   min-width: 0;
@@ -577,53 +609,191 @@ body {
 .island__decision[data-kind="question"] .island__decision-actions { justify-content: stretch; }
 
 .island__pill {
-  height: 32px;
-  padding: 0 15px;
+  height: 33px;
+  padding: 0 16px;
   border: 0;
-  border-radius: 16px;
-  background: var(--well-hi);
+  border-radius: 17px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .13), rgba(255, 255, 255, .075));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
   color: var(--ink);
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
+  letter-spacing: -.008em;
   cursor: pointer;
-  transition: background .16s, transform .18s var(--spring);
+  transition: background .18s, box-shadow .18s, transform .2s var(--spring);
 }
-.island__pill:hover { background: #3a3a3c; }
-.island__pill:active { transform: scale(.96); }
-.island__pill--primary { background: #f5f5f7; color: #000; }
-.island__pill--primary:hover { background: #fff; }
+.island__pill:hover { background: linear-gradient(180deg, rgba(255, 255, 255, .19), rgba(255, 255, 255, .12)); }
+.island__pill:active { transform: scale(.97); }
+.island__pill--primary {
+  background: linear-gradient(180deg, #ffffff, #dcdce1);
+  color: #000;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5), inset 0 -1px 0 rgba(0, 0, 0, .1);
+}
+.island__pill--primary:hover {
+  background: linear-gradient(180deg, #ffffff, #e9e9ee);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .55), inset 0 -1px 0 rgba(0, 0, 0, .1);
+}
+
+/* ==========================================================================
+   The dock — the line you type on, and the character standing on it
+   ========================================================================== */
+.island__dock {
+  position: relative;
+  /* Room above the box for the walker. It is not padding around content, it
+     is the shelf the character stands on. */
+  padding-top: 26px;
+}
+
+.island__rail {
+  position: absolute;
+  left: 13px;
+  right: 13px;
+  top: 0;
+  height: 26px;
+  pointer-events: none;
+}
+
+/* The line itself. Hairline, and fading out at both ends rather than
+   stopping, so it reads as a surface the character is standing on rather
+   than as a rule drawn under a heading. */
+.island__rail::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(255, 255, 255, .24) 12%,
+    rgba(255, 255, 255, .24) 88%,
+    transparent);
+}
+
+/* A hair of light spilling upward off the line, so the shelf has a thickness
+   rather than being a drawn rule. Two pixels at four percent — you would not
+   notice it if it were missing, which is the point of it. */
+.island__rail::before {
+  content: "";
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 1px;
+  height: 7px;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, .045));
+  pointer-events: none;
+}
+
+.island__walker {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: end center;
+  will-change: transform;
+  transition: transform 0ms linear;
+}
+
+/* Two marks it carries along the line.
+
+   The glow is the pool of light it stands in, and the stripe is the stretch
+   of line it is lighting up. Together they are what makes the walk read at a
+   glance: the eye follows a moving highlight far more readily than it follows
+   thirty pixels of dark blue, and the brightened line is what says the
+   character is standing ON something rather than floating over it. */
+.island__walker::before,
+.island__walker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  translate: -50% 0;
+  pointer-events: none;
+}
+.island__walker::before {
+  bottom: -5px;
+  width: 58px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side,
+    color-mix(in oklab, var(--accent) 52%, transparent),
+    transparent);
+  opacity: .7;
+}
+.island__walker::after {
+  bottom: 0;
+  width: 70px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    color-mix(in oklab, var(--accent) 85%, #ffffff),
+    transparent);
+}
+
+.island__walker .pet {
+  --pet-size: 30px;
+  /* It stands on the line, not above it: the rig's own viewBox has room under
+     the feet so the character can jump, and that room has to come out again
+     here or it hovers. */
+  margin-bottom: -4px;
+}
+
+/* No halo on the walker. The rings are how a mascot sitting in a row of
+   controls says "something is happening"; on a character standing on a line
+   they draw a bubble round it, and a character in a bubble is an avatar
+   rather than a thing on a shelf. */
+.island__walker .pet__halo { display: none; }
 
 /* --- composer ------------------------------------------------------------ */
 .island__composer[hidden] { display: none; }
 .island__composer {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 44px;
+  height: 46px;
   padding: 0 6px 0 7px;
-  border-radius: 22px;
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px transparent;
-  transition: box-shadow .18s;
+  border-radius: 23px;
+  /* Light from above, as everything in here is. Two inner shadows: a bright
+     hairline along the top edge where the light catches, and a dimmer one all
+     the way round to give the surface an edge at all. */
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, .075),
+    rgba(255, 255, 255, .038));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .07),
+    inset 0 0 0 1px rgba(255, 255, 255, .045);
+  transition: box-shadow .22s var(--out), background .22s var(--out);
 }
-.island__composer:focus-within { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16); }
+.island__composer:focus-within {
+  background: linear-gradient(180deg,
+    rgba(255, 255, 255, .095),
+    rgba(255, 255, 255, .05));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .1),
+    inset 0 0 0 1px color-mix(in oklab, var(--accent) 34%, rgba(255, 255, 255, .1)),
+    0 0 0 3px color-mix(in oklab, var(--accent) 9%, transparent);
+}
 
 .island__mode {
   flex: none;
-  height: 30px;
-  padding: 0 11px;
+  height: 32px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 15px;
-  background: var(--well-hi);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .085);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
   color: #d1d1d6;
   font: inherit;
   font-size: 12px;
   font-weight: 600;
+  letter-spacing: -.005em;
   cursor: pointer;
-  transition: background .16s, color .16s;
+  transition: background .18s, color .18s;
 }
-.island__mode:hover { background: #3a3a3c; color: var(--ink); }
+.island__mode:hover { background: rgba(255, 255, 255, .14); color: var(--ink); }
 .island__mode[data-mode="chat"]  { background: color-mix(in oklab, #64d2ff 20%, #000); color: #64d2ff; }
 .island__mode[data-mode="agent"] { background: color-mix(in oklab, #30d158 20%, #000); color: #4cd964; }
 
@@ -642,20 +812,29 @@ body {
 
 .island__send {
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: #f5f5f7;
+  background: linear-gradient(180deg, #ffffff, #dedee3);
   color: #000;
   cursor: pointer;
-  transition: background .16s, opacity .16s, transform .2s var(--spring);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .5), inset 0 -1px 0 rgba(0, 0, 0, .12);
+  transition: background .18s, box-shadow .18s, transform .22s var(--spring), color .18s;
 }
-.island__send svg { width: 16px; height: 16px; stroke-width: 2.4; }
-.island__send:not(:disabled):active { transform: scale(.88); }
-.island__send:disabled { background: var(--well-hi); color: var(--faint); cursor: default; }
+.island__send svg { width: 16px; height: 16px; stroke-width: 2.5; }
+.island__send:not(:disabled):hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .55), 0 0 18px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+.island__send:not(:disabled):active { transform: scale(.9); }
+.island__send:disabled {
+  background: rgba(255, 255, 255, .07);
+  color: var(--faint);
+  box-shadow: none;
+  cursor: default;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .island *, .island { animation-duration: .01ms !important; transition-duration: .01ms !important; }

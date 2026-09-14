@@ -257,9 +257,118 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   const sendBtn = iconButton('send', 'Send', 'island__send');
   composer.append(modeBtn, input, sendBtn);
 
-  panel.append(empty, thread, decision, composer);
+  /* --- the walker ----------------------------------------------------------
+     Pico stands on the line above the box you type into, and walks along it.
+
+     It is the one piece of the interface that exists for no reason except
+     that it should. But it does earn its place: it follows the end of what
+     you are typing, so the thing you are talking to is visibly attending to
+     the words as they arrive, and when there is nothing to attend to it
+     wanders off and looks around — which is how you can tell at a glance,
+     without reading anything, whether Pico is waiting on you or you on it.
+
+     A separate character from the one in the bar. They are the same Pico the
+     way a person in two photographs is the same person. */
+  const dock = el('div', 'island__dock');
+  const rail = el('div', 'island__rail');
+  const walker = el('div', 'island__walker');
+  const strider = new Mascot({ size: 30 });
+  walker.append(strider.el);
+  rail.append(walker);
+  dock.append(rail, composer);
+
+  panel.append(empty, thread, decision, dock);
   root.append(bar, panel);
   host.append(root);
+
+  /* --- how the walker walks ------------------------------------------------
+     Position is a transform with a duration set from the distance, so the
+     character covers ground at a constant speed rather than at a constant
+     duration — a long walk takes longer, which is the entire difference
+     between walking and sliding. */
+  const STROLL = 54;        // px per second, wandering
+  const FOLLOW = 190;       // px per second, keeping up with your typing
+  const WALKER_W = 30;
+
+  let strideX = -1;
+  let strideTimer = null;
+  let wanderTimer = null;
+  const gauge = document.createElement('canvas').getContext('2d');
+
+  /** The stretch of line the character can stand on, in unscaled pixels. */
+  function run() {
+    return Math.max(0, (rail.clientWidth || 0) - WALKER_W);
+  }
+
+  function walkTo(x, { speed = STROLL, curve = 'linear' } = {}) {
+    const limit = run();
+    if (limit <= 0) return;
+    const next = Math.max(0, Math.min(limit, x));
+    if (strideX < 0) {                       // first placement: just be there
+      strideX = next;
+      walker.style.transitionDuration = '0ms';
+      walker.style.transform = `translateX(${next}px)`;
+      return;
+    }
+    const dist = Math.abs(next - strideX);
+    if (dist < 1.5) return;
+
+    strider.setFacing(next >= strideX ? 1 : -1);
+    const ms = Math.max(110, Math.round((dist / speed) * 1000));
+    walker.style.transitionTimingFunction = curve;
+    walker.style.transitionDuration = `${ms}ms`;
+    walker.style.transform = `translateX(${next}px)`;
+    strideX = next;
+
+    // Legs only for a journey. A two-pixel correction while you type is a
+    // shuffle, and animating a full stride for it reads as a twitch.
+    if (dist > 7) strider.setActivity('walking');
+    clearTimeout(strideTimer);
+    strideTimer = setTimeout(settle, ms + 60);
+  }
+
+  /** What it does when it gets where it was going. */
+  function settle() {
+    strider.setActivity(input.value.trim() ? 'listening' : null);
+  }
+
+  /** Where the end of what you have typed is, along the rail. */
+  function caretEnd() {
+    const r = rail.getBoundingClientRect();
+    const i = input.getBoundingClientRect();
+    if (!r.width || !i.width) return null;
+    const cs = getComputedStyle(input);
+    gauge.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const text = gauge.measureText(input.value).width;
+    // Both rects are scaled by the island's own scale; the transform is not.
+    return ((i.left - r.left) / scale) + text - (WALKER_W / 2) + 6;
+  }
+
+  function follow() {
+    const end = caretEnd();
+    if (end == null) return;
+    strider.setActivity('listening');
+    walkTo(end, { speed: FOLLOW, curve: 'cubic-bezier(.22,.7,.3,1)' });
+  }
+
+  /* Wandering. Only when there is nothing to attend to: a character pacing
+     about while you are mid-sentence is a distraction, and one that stands
+     still while you type is not attending to anything. */
+  function wander() {
+    clearTimeout(wanderTimer);
+    wanderTimer = setTimeout(() => {
+      wander();
+      if (view !== 'open' || input.value.trim() || store.state.question) return;
+      if (!run()) return;
+      // Somewhere else, but not somewhere trivially close — a two-step walk
+      // looks like a stumble.
+      const limit = run();
+      let next = Math.random() * limit;
+      if (Math.abs(next - strideX) < limit * 0.22) next = limit - next;
+      walkTo(next);
+    }, 2800 + Math.random() * 4200);
+  }
+  wander();
 
   // --- behaviour -----------------------------------------------------------
   function showFlash(kind, value, ms = 3800) {
@@ -303,6 +412,11 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     bridge.send('submitTask', { text: t, mode: store.state.mode, id });
     input.value = '';
     syncSend();
+
+    // It saw the message go. A hop where it stood, then back to the start of
+    // the line for the next one.
+    strider.jump();
+    setTimeout(() => walkTo(0, { speed: 220, curve: 'cubic-bezier(.3,.8,.3,1)' }), 260);
   }
 
   const canSend = () => store.canSubmit;
@@ -330,7 +444,9 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     input.focus();
   });
 
-  input.addEventListener('input', syncSend);
+  input.addEventListener('input', () => { syncSend(); follow(); });
+  input.addEventListener('focus', () => { strider.setActivity('listening'); follow(); });
+  input.addEventListener('blur', () => settle());
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
   });
@@ -821,6 +937,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     }
     root.dataset.phase = s.phase;
     mascot.setPhase(s.phase);
+    strider.setPhase(s.phase);
 
     /* Inside a phase there are things Pico is doing that no phase describes.
        Writing a reply is the obvious one — the phase is still Idle, but Pico
@@ -897,7 +1014,11 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     get scale() { return scale; },
     destroy() {
       clearInterval(hopTimer);
+      clearTimeout(wanderTimer);
+      clearTimeout(strideTimer);
       mascot.destroy();
+      strider.destroy();
+      asker.destroy();
       root.remove();
     },
   };

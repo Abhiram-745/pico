@@ -229,6 +229,11 @@ const POSES = {
     eye: { w: 74, h: 48, r: 18, bt: 18, bb: 8, dy: 6 },
     ant: [-30, -30], arm: [-12, -12], lift: 5, tilt: 0, sx: 1.03, sy: 0.97,
   },
+  /* On the move. Upright, eyes forward, leaning very slightly into it. */
+  walk: {
+    eye: { w: 66, h: 68, r: 18, bt: 0, bb: 0, dy: 0 },
+    ant: [4, 4], arm: [6, 6], lift: -2, tilt: 0, sx: 1, sy: 1,
+  },
   /* Paused, or stopped. Eyes shut down to a pair of slits. */
   rest: {
     eye: { w: 78, h: 14, r: 7, bt: 0, bb: 0, dy: 6 },
@@ -398,6 +403,34 @@ const IDLES = {
     f.sy += 0.01 * a * wave(t, 1.24);
   },
 
+  /* A stroll.
+
+     The difference between this and `work` is the difference between going
+     somewhere and being busy: a longer stride, a deeper bob, arms swinging
+     opposite the legs the way they do when nobody is carrying anything. The
+     feet are two pairs and the pairs alternate — at this size four
+     independent legs read as a scribble, two pairs read as walking.
+
+     The antennae trail a beat behind the body. That lag is most of what makes
+     it look like one object moving rather than several moving together. */
+  stroll(t, a, f) {
+    const p = 0.72;                       // one full stride
+    const step = wave(t, p);
+    f.y += -4.5 * a * Math.abs(wave(t, p / 2));
+    f.sy += 0.016 * a * wave(t, p / 2, Math.PI);
+    f.rot += 1.4 * a * step;
+    for (let i = 0; i < 4; i++) {
+      const lead = i % 2 === 0 ? 0 : Math.PI;
+      f.feet[i].y += -13 * a * Math.max(0, wave(t, p, lead));
+      f.feet[i].rot += 5 * a * wave(t, p, lead);
+    }
+    f.armL.rot += 15 * a * step;
+    f.armR.rot += -15 * a * step;
+    f.antL.rot += 6 * a * wave(t, p, -0.9);
+    f.antR.rot += 6 * a * wave(t, p, -0.9);
+    f.gaze.x += 3 * a * step;
+  },
+
   /* Stopped, or paused. Barely moving — the point is that nothing is
      happening, so the idle has to look like nothing happening without
      looking like a frozen frame. */
@@ -513,6 +546,7 @@ const ACTIVITY = {
   writing:   { pose: 'write', idle: 'write' },
   waving:    { pose: 'ask',   idle: 'wave' },
   listening: { pose: 'watch', idle: 'perk' },
+  walking:   { pose: 'walk',  idle: 'stroll' },
 };
 
 const MORPH_MS = 420;
@@ -554,6 +588,15 @@ export class Mascot {
     this.ampMs = 0;
 
     this.idleKind = 'breathe';
+    /* Which way it is pointing, and the turn between the two.
+       A turn is played through zero rather than snapped: at the halfway point
+       the character is edge-on, which is what makes it read as turning round
+       rather than as being replaced by its own mirror image. */
+    this.facing = 1;
+    this.faceFrom = 1;
+    this.faceTo = 1;
+    this.faceStart = 0;
+    this.faceMs = 0;
     this.shots = [];
     this.blink = null;
     this.t0 = performance.now();
@@ -716,7 +759,12 @@ export class Mascot {
          whole empty state, mascot included, every time a section re-renders,
          and drops the previous one on the floor. The loop parks itself here;
          the observer below wakes it if the element is ever put back. */
-      if (!this.el.isConnected) { this._stop(); return; }
+      /* Off the page, or on it inside something hidden — a panel that is
+         display:none is every bit as invisible as a detached node, and the
+         island keeps its whole panel that way whenever it is not open. */
+      const seen = this.el.isConnected
+        && (typeof this.el.checkVisibility === 'function' ? this.el.checkVisibility() : true);
+      if (!seen) { this._stop(); return; }
       this.raf = requestAnimationFrame(tick);
       this.paint((now - this.t0) / 1000);
     };
@@ -765,6 +813,13 @@ export class Mascot {
     }
     const a = amp === undefined ? this.amp : amp;
 
+    // --- which way round it is
+    if (this.faceMs > 0) {
+      const p = Math.max(0, Math.min(1, (now - this.faceStart) / this.faceMs));
+      this.facing = lerp(this.faceFrom, this.faceTo, ease.inOutQuad(p));
+      if (p >= 1) { this.faceMs = 0; this.facing = this.faceTo; }
+    }
+
     // --- the frame every layer writes into
     const f = {
       x: 0, y: pose.lift, rot: pose.tilt, sx: pose.sx, sy: pose.sy,
@@ -808,8 +863,13 @@ export class Mascot {
   }
 
   _write(pose, f) {
+    /* Facing is a horizontal flip of the whole character about its own
+       centre line, so it composes with everything else rather than being a
+       separate concept any of the idles have to know about. A walk cycle
+       looks identical in both directions; only the direction changes. */
     this.world.setAttribute('transform', tf({
-      x: f.x, y: f.y, rot: f.rot, sx: f.sx, sy: f.sy,
+      x: f.x * this.facing, y: f.y, rot: f.rot * this.facing,
+      sx: f.sx * this.facing, sy: f.sy, px: MID_X, py: FOOT_Y,
     }));
 
     /* Lift becomes screen rotation here, and only here. On a left-hand limb
@@ -946,6 +1006,22 @@ export class Mascot {
       this.jump();
       this.blinkNow();
     }
+  }
+
+  /**
+   * Turn to face left (-1) or right (1).
+   *
+   * Instant on the first call, so a character placed facing left does not
+   * spin round on arrival; a turn after that is played through edge-on.
+   */
+  setFacing(dir) {
+    const next = dir < 0 ? -1 : 1;
+    if (next === this.faceTo) return;
+    this.faceFrom = this.faceMs > 0 ? this.facing : this.faceTo;
+    this.faceTo = next;
+    this.faceStart = performance.now();
+    this.faceMs = 190;
+    this._start();
   }
 
   /** A jump. Hopping on a loop while hovered is handled by the caller's
