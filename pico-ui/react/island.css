@@ -70,7 +70,13 @@ body {
 .h-island__lead { flex: none; display: grid; place-items: center; }
 
 .h-island__text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
-.h-island[data-view="compact"] .h-island__text { visibility: hidden; width: 0; }
+/* At rest the island says who it is and what it is doing. It used to hide
+   both, leaving a black bar with a mascot and a dot in it, which reads as
+   something broken rather than as Halo waiting. One line only: the bar is
+   36px tall. */
+.h-island[data-view="compact"] .h-island__text { visibility: visible; width: auto; }
+.h-island[data-view="compact"] .h-island__title { font-size: 12.5px; font-weight: 550; letter-spacing: -.01em; color: var(--h-dim); }
+.h-island[data-view="compact"] .h-island__sub { display: none; }
 
 .h-island__title {
   font-family: var(--h-display);

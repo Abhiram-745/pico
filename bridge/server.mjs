@@ -24,7 +24,7 @@ import { readFile, writeFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { networkInterfaces } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 
 import { upgrade } from './ws.mjs';
 import { encode, toTerminal, toSVG } from './qr.mjs';
@@ -60,11 +60,27 @@ const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
    is already going — see the EADDRINUSE handler below. */
 const OPEN_APP = process.argv.includes('--app');
 const appUrl = () => `http://localhost:${PORT}/pico-ui/app.html`;
+/* Halo's window runs in a profile of its own.
+
+   It used to open in the person's everyday Chrome. That makes it a browser
+   window wearing an app costume: their extensions load into it, it shares one
+   process with however many tabs they have open, and it lands in the same
+   taskbar group as the browser. Slow, and never quite an app.
+
+   Its own profile is a separate Chrome with no extensions, nothing else in it
+   and its own taskbar entry. Nothing is signed in there and nothing needs to
+   be: the only thing it ever loads is this bridge, on this computer. */
+const APP_PROFILE = join(process.env.LOCALAPPDATA || tmpdir(), 'Halo', 'app-profile');
+
 function openAppWindow(section = '') {
   const browser = findBrowser();
   const url = `${appUrl()}${/^[a-z]{2,20}$/.test(section) ? `#${section}` : ''}`;
   try {
-    spawn(browser || 'explorer.exe', browser ? [`--app=${url}`, '--window-size=1280,880'] : [url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    const args = browser
+      ? [`--app=${url}`, '--window-size=1280,880', `--user-data-dir=${APP_PROFILE}`,
+        '--no-first-run', '--no-default-browser-check', '--disable-extensions']
+      : [url];
+    spawn(browser || 'explorer.exe', args, { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } catch (err) {
     console.warn(`[bridge] could not open the app window (${err.message})`);
   }

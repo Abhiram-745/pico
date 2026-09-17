@@ -6,7 +6,7 @@
    top edge and settles back into it, and it has four sizes it moves between
    on its own:
 
-     compact  Halo at rest: its face, a status light, nothing else
+     compact  Halo at rest: its face, its name and status, a status light
      peek     the pointer is on it — a nameplate, bigger, and a hint
      live     something is happening: the step in hand and why, with the
               controls for it; or the reply Halo just wrote
@@ -316,6 +316,9 @@ function Island({ onMeasure }) {
       line = flash.kind === 'done' ? 'Done' : flash.kind === 'fail' ? SHORT.Failed : petName;
       mark = flash.kind === 'done' ? 'tick' : flash.kind === 'fail' ? 'cross' : 'dot';
     }
+  } else if (view === 'compact') {
+    // One line, because there is only room for one: "Halo · Ready".
+    head = `${petName} · ${guardian.canAct === false ? 'Chat only' : line}`;
   } else if (view === 'open') {
     line = running
       ? [total > 1 && step ? `Step ${plan.index + 1} of ${total}` : null, doing || SHORT[phase]].filter(Boolean).join(' · ')

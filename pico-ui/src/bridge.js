@@ -330,11 +330,32 @@ export class WebSocketTransport {
   }
 
   _scheduleReconnect() {
-    // capped exponential backoff, so a sleeping laptop doesn't spin the phone
+    /* Backoff, but a short one, and it never decides how long a window sits
+       there looking broken. Twenty seconds of waiting after a bridge restart
+       is a window that shows yesterday's screen and answers nothing, which
+       reads as the app being stuck rather than as it reconnecting. */
     this._retry = Math.min(this._retry + 1, 6);
-    const delay = Math.min(1000 * 2 ** (this._retry - 1), 20_000);
+    const delay = Math.min(400 * 2 ** (this._retry - 1), 4000);
     clearTimeout(this._timer);
     this._timer = setTimeout(() => this.connect(), delay);
+    this._watchWake();
+  }
+
+  /* Looking at the window is as good a reason to try again as a timer. A
+     laptop that slept wakes with a dead socket and a full backoff still to
+     run; the moment its window is in front, reconnect. */
+  _watchWake() {
+    if (this._wake) return;
+    this._wake = () => {
+      if (this._closed || this.paired) return;
+      if (document.visibilityState === 'hidden') return;
+      this._retry = 0;
+      clearTimeout(this._timer);
+      this.connect();
+    };
+    document.addEventListener('visibilitychange', this._wake);
+    addEventListener('focus', this._wake);
+    addEventListener('online', this._wake);
   }
 
   _status(s) { this.opts.onStatus?.(s); }
@@ -351,6 +372,12 @@ export class WebSocketTransport {
   disconnect() {
     this._closed = true;
     clearTimeout(this._timer);
+    if (this._wake) {
+      document.removeEventListener('visibilitychange', this._wake);
+      removeEventListener('focus', this._wake);
+      removeEventListener('online', this._wake);
+      this._wake = null;
+    }
     this.ws?.close();
     this._status('offline');
   }
