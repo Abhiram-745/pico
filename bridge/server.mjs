@@ -43,6 +43,7 @@ import { check as checkUpdate, install as installUpdate, localBuild } from './up
 import { chatArchive } from './chats.mjs';
 import { memory } from './memory.mjs';
 import { routines } from './routines.mjs';
+import { runbook } from './runbook.mjs';
 import { migrateFromPico, readJson, writeJson } from './home.mjs';
 import { findBrowser } from './notch-window.mjs';
 import { buildUI } from '../scripts/build-ui.mjs';
@@ -61,6 +62,12 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 /* What shape Halo was in last time, and whether the three chords have been
    practised. Kept next to the chats rather than in .env: it is state, not
    configuration, and it belongs to this computer. */
+/** What Halo has learnt about doing things on this computer, in numbers. */
+const runbookSummary = () => {
+  const all = runbook.list();
+  return { routes: all.length, apps: [...new Set(all.map((e) => e.app))].sort() };
+};
+
 const SHELL_FILE = 'shell.json';
 const shellState = () => ({ mode: 'island', onboarded: false, ...readJson(SHELL_FILE, {}) });
 function saveShellState(patch) {
@@ -120,6 +127,7 @@ const ALLOWED_COMMANDS = new Set([
   'setShell',        // { mode?: 'island'|'card', hidden?, guide? } — the shape
   'moveCard',        // { x, y } — the card has been dragged
   'onboarded',       // { done: true } — the three chords have been practised
+  'forgetRoutes',    // {} — throw away what Halo learnt about doing things here
 ]);
 
 const MAX_TASK_LENGTH = 2000;   // mirrors the desktop app's own task limit
@@ -342,6 +350,7 @@ class Bridge {
     send('plan', s.plan);
     send('runFinished', s.runFinished);
     send('shell', s.shell);
+    send('runbook', runbookSummary());
     // Not part of the snapshot, because it is not the agent's state — but it
     // has to be replayed for the same reason everything else here is: a page
     // that has just connected knows nothing until it is told.
@@ -619,6 +628,15 @@ class Bridge {
     if (command === 'moveCard') {
       if (!client.local) return;
       this.notch?.moveCard({ x: Number(payload.x), y: Number(payload.y) });
+      return;
+    }
+    /* What Halo worked out by doing the job is shown and thrown away like
+       anything else it keeps: it goes into prompts, so it is the person's to
+       see and to delete. */
+    if (command === 'forgetRoutes') {
+      if (!client.local) return;
+      runbook.clear();
+      this.broadcast({ type: 'runbook', payload: runbookSummary() });
       return;
     }
     if (command === 'onboarded') {

@@ -51,6 +51,7 @@ export const sel = {
   shell: (s) => s.shell,
   focusChatAt: (s) => s.focusChatAt,
   chord: (s) => s.chord,
+  runbook: (s) => s.runbook,
   cursor: (s) => s.cursor,
   notchOpen: (s) => s.notchOpen,
   notchHover: (s) => s.notchHover,

@@ -425,6 +425,7 @@ function DesktopView({ demo }) {
    -------------------------------------------------------------------------- */
 function SettingsView({ demo, petName, setPetName }) {
   const settings = useStore(sel.settings);
+  const learnt = useStore(sel.runbook);
   const [level, setLevel] = useState(permissions.level);
   const [name, setName] = useState(petName);
   const [startup, setStartup] = useState(null);
@@ -485,6 +486,24 @@ function SettingsView({ demo, petName, setPetName }) {
           <button type="button" className="h-toggle" role="switch" aria-checked={Boolean(startup?.enabled)}
             disabled={demo || busy || !startup?.supported} onClick={toggleStartup}><i /></button>
         </div>
+      </div>
+
+      <div className="h-card">
+        <div className="h-card__title">What Halo has worked out</div>
+        <div className="h-card__sub">
+          When a job works, Halo keeps the route it took — the steps, filed under the app they happened in — and
+          uses it as precedent next time rather than working the app out again from a screenshot. It never keeps
+          what you typed, and the screen in front of it always decides.
+        </div>
+        <div className="h-kv">
+          <span>Kept</span>
+          <span>{learnt.routes
+            ? `${learnt.routes} route${learnt.routes === 1 ? '' : 's'} in ${learnt.apps.join(', ')}`
+            : 'Nothing yet — it learns by finishing jobs'}</span>
+        </div>
+        {learnt.routes > 0 && (
+          <button type="button" className="h-link" onClick={() => bridge.send('forgetRoutes', {})}>Forget all of it</button>
+        )}
       </div>
 
       <div className="h-card">

@@ -40,6 +40,7 @@ export const HOST_EVENTS = [
   'shell',       // { mode: 'island'|'card', hidden, guide } — the shape Halo is in
   'focusChat',   // { at } — a chord asked for the box, focused and ready
   'chord',       // { id, at } — a global chord was pressed, whatever it was for
+  'runbook',     // { routes, apps } — what Halo has worked out by doing jobs here
 ];
 
 /** Commands the UI sends up to the host. */
@@ -61,6 +62,7 @@ export const UI_COMMANDS = [
   'setShell',     // { mode?, hidden?, guide?, toggle? } — island, card, hidden, guiding
   'moveCard',     // { x, y } — the floating card was dragged there
   'onboarded',    // {} — the chords have been practised; do not ask again
+  'forgetRoutes', // {} — throw away what it learnt about doing things here
   'openNotch',    // {} — raise the notch window on the real desktop
   'closeNotch',   // {}
   'newChat',      // {} — forget the thread, here and in the host
@@ -216,6 +218,10 @@ class Bridge {
       // for keys in its own window, so what it teaches is what really works.
       case 'chord':
         store.set({ chord: { id: payload.id, at: Number(payload.at) || Date.now() } }, { type: 'chord' });
+        break;
+
+      case 'runbook':
+        store.set({ runbook: { routes: Number(payload.routes) || 0, apps: payload.apps ?? [] } }, { type: 'runbook' });
         break;
 
       case 'question':

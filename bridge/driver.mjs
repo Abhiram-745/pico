@@ -75,6 +75,7 @@
 
 import { assess, describe, ACTION_PHASE, ALLOW } from './policy.mjs';
 import * as apps from './apps.mjs';
+import { runbook, appOf } from './runbook.mjs';
 import { isHaloWindow } from './apps.mjs';
 import { settle, fit } from './aim.mjs';
 import { scrollBy, regionChanged } from './scroll.mjs';
@@ -240,6 +241,8 @@ const PLAN_SYSTEM = (shot, facts, answered = null) => [
   facts.windows?.length ? `Open windows: ${facts.windows.join('; ')}.` : '',
   facts.apps?.length ? `Installed apps this may be about: ${facts.apps.join(', ')}.` : '',
   facts.whole && facts.whole !== facts.task ? `This is the rest of a longer request. The whole request was: "${facts.whole}".` : '',
+  facts.precedent ? `
+${facts.precedent}` : '',
   facts.note ? facts.note : '',
   facts.memory ? `\n${facts.memory}` : '',
   '',
@@ -659,6 +662,11 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     memory: context.memory || '',
     task,
     whole: context.whole || '',
+    /* What worked last time. Halo's own experience of this app, kept by
+       runbook.mjs — the single biggest thing it was missing was any memory
+       of how a job is actually done here, so every run re-derived it from a
+       screenshot and made the same wrong turns again. */
+    precedent: '',
   };
   try {
     const listed = (await sense?.windows()) ?? [];
@@ -673,6 +681,9 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     }
   } catch { /* the plan can do without */ }
   try { facts.apps = (await apps.mentionedApps(task)).map((a) => a.name); } catch { /* likewise */ }
+  try {
+    facts.precedent = runbook.forPrompt(context.whole || task, { app: appOf(workWindow ?? front) });
+  } catch { /* precedent is a bonus, never a requirement */ }
 
   /* --- decide, once ------------------------------------------------------ */
   onPhase('Thinking');
@@ -1496,7 +1507,19 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     metadata: { completed_actions: done.length, planned: steps.length, judged_by: verdict.by, replans, corrections },
   });
   onSummary(verdict.summary);
-  return { succeeded: verdict.succeeded, steps: steps.filter((s) => s.status === 'done').map((s) => s.do) };
+
+  /* What it took, kept for next time — only when it worked, and only the
+     steps that actually finished. A route from a run that failed is a way
+     of getting it wrong twice. */
+  const done_ = steps.filter((s) => s.status === 'done').map((s) => s.do);
+  if (verdict.succeeded) {
+    try {
+      const where = appOf(seenFront ?? workWindow ?? front);
+      const learnt = runbook.record({ app: where, task: context.whole || task, steps: done_ });
+      if (learnt) onAudit('runbook_kept', { metadata: { app: where, steps: learnt.steps.length } });
+    } catch { /* never let bookkeeping fail a run that worked */ }
+  }
+  return { succeeded: verdict.succeeded, steps: done_ };
 }
 
 /* --------------------------------------------------------------------------

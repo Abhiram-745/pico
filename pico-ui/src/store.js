@@ -137,6 +137,8 @@ const initial = () => ({
   focusChatAt: 0,
   /** The last global chord, so onboarding can wait for the real thing. */
   chord: null,
+  /** What Halo has worked out by doing jobs here: { routes, apps }. */
+  runbook: { routes: 0, apps: [] },
 
   turn: 0,
   timeline: [],
