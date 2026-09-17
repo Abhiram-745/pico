@@ -3,7 +3,7 @@
    The intent router's test suite.
 
    This is the one piece of logic where being wrong is visible and annoying:
-   misroute a greeting and Pico takes over the desktop to type "hello" into
+   misroute a greeting and Halo takes over the desktop to type "hello" into
    whatever happens to be focused. Every phrasing below is one that has to
    keep working, so a regex tweak that fixes one case cannot quietly break
    five others.
@@ -29,7 +29,7 @@ const CASES = [
   ['lol', 'chat'],
   ['bye', 'chat'],
 
-  // --- about Pico itself ---
+  // --- about Halo itself ---
   ['who are you', 'chat'],
   ['what can you do', 'chat'],
   ['what is your name', 'chat'],

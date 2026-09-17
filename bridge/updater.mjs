@@ -46,13 +46,13 @@ export async function check() {
   const current = await localBuild();
 
   const res = await fetch(RELEASE_API, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'pico-updater' },
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'halo-updater' },
     signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new Error(`Could not reach GitHub (HTTP ${res.status}).`);
   const rel = await res.json();
 
-  const zip = (rel.assets || []).find((a) => /^Pico-latest\.zip$/i.test(a.name));
+  const zip = (rel.assets || []).find((a) => /^Halo-latest\.zip$/i.test(a.name));
   if (!zip) throw new Error('That release has no downloadable build attached.');
 
   // The workflow stamps the short SHA into the release body.
@@ -96,13 +96,13 @@ export async function install(onProgress = () => {}) {
   const info = await check();
   if (!info.available) return { installed: false, reason: 'Already up to date.' };
 
-  const work = await mkdtemp(join(tmpdir(), 'pico-update-'));
+  const work = await mkdtemp(join(tmpdir(), 'halo-update-'));
   const zipPath = join(work, 'update.zip');
 
   try {
     onProgress('downloading', 0);
     const res = await fetch(info.url, {
-      headers: { 'User-Agent': 'pico-updater' },
+      headers: { 'User-Agent': 'halo-updater' },
       signal: AbortSignal.timeout(180_000),
     });
     if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}).`);
@@ -120,8 +120,8 @@ export async function install(onProgress = () => {}) {
     const staged = join(work, 'staged');
     await unzip(zipPath, staged);
 
-    // The zip contains a single top-level "Pico" folder.
-    let source = join(staged, 'Pico');
+    // The zip contains a single top-level "Halo" folder.
+    let source = join(staged, 'Halo');
     try { await stat(source); } catch { source = staged; }
 
     onProgress('installing');
@@ -137,11 +137,33 @@ export async function install(onProgress = () => {}) {
       },
     });
 
+    /* A build can need packages the last one did not — the interface moving
+       to React did — and copying files over does not install anything. An
+       update that restarts into a missing module is a Halo that will not
+       start, so the dependencies are brought up to date before it is called
+       installed. */
+    onProgress('dependencies');
+    await installDependencies();
+
     onProgress('done', 100);
     return { installed: true, from: info.current.sha, to: info.latest.sha };
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** `npm install --omit=dev` in the install folder. Rejects with npm's own words. */
+function installDependencies() {
+  return new Promise((resolve, reject) => {
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const p = spawn(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      cwd: ROOT, windowsHide: true, shell: process.platform === 'win32', stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let err = '';
+    p.stderr.on('data', (d) => { err += d; });
+    p.once('error', reject);
+    p.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`Installing packages failed: ${err.trim().split('\n').pop() || `npm exited ${code}`}`))));
+  });
 }
 
 /** Used by the dev flow to stamp a build locally. */

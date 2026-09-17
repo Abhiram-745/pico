@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — design tokens, glass surfaces, per-phase accents
+   Halo — design tokens, glass surfaces, per-phase accents
    Phase names mirror the C# AgentPhase/OverlayPhase enums exactly.
    ========================================================================== */
 
@@ -51,8 +51,8 @@
   --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
 
   /* --- Type -------------------------------------------------------------- */
-  --font: "Geist", ui-sans-serif, system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --font: "Inter", ui-sans-serif, system-ui, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-mono: "Roboto Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 
   /* --- Default accent (overridden per phase) ----------------------------- */
   --accent: #8b97a8;

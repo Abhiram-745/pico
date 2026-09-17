@@ -26,40 +26,105 @@ const ENV_PATH = fileURLToPath(new URL('../.env', import.meta.url));
 
 /* --------------------------------------------------------------------------
    Providers. Both speak the OpenAI Chat Completions shape, so they differ
-   only in host, key and model names.
+   only in host, key and model names — except that desktop turns go through
+   the Responses API where the provider has one (see respond()).
    -------------------------------------------------------------------------- */
 export const PROVIDERS = {
   openai: {
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     envKey: 'OPENAI_API_KEY',
-    // nano is the low-latency one; mini handles real writing.
-    // `see` drives the desktop and has to read a screenshot accurately, which
-    // nano does not do well enough to click with — it answers plausibly and
-    // misses the control.
-    // fast  chat, classification, and keyboard-only steps
-    // see    locating something on screen well enough to click it
-    // plan   deciding what the task actually requires, once per task
-    // hard   writing
+    // Tool calls go through the Responses API. Chat Completions refuses a
+    // reasoning effort alongside function tools for these models, and the
+    // old code quietly retried without one — so every step, every aim and
+    // every plan ran with no reasoning at all.
+    responses: true,
+    // fast  chat, classification
+    // see   operating the desktop: reading the screen, choosing and aiming
+    // plan  deciding what the task actually requires, once per task
+    // hard  writing
     tiers: {
       fast: 'gpt-5.4-nano',
       hard: 'gpt-5.4-mini',
       see: 'gpt-5.4-mini',
       plan: 'gpt-5.4',
     },
+    // Best first, and the first one the key can use wins. Measured on a page
+    // of 51 labelled targets, from a screenshot of a 2560x1440 display sent
+    // 1600 wide at full detail:
+    //
+    //   gpt-5.4-mini   80% of clicks inside the target, median 11.6px out
+    //   gpt-5.6-luna   94-98% inside, median 2px out, about as fast
+    //   gpt-5.6-terra  96% inside, 1.4px out, ten times the price
+    //
+    // For comparison, what Halo did before — mini, a 1024-wide picture, no
+    // reasoning — landed 36% of clicks on the thing it meant, 47px out.
+    prefer: {
+      see: ['gpt-5.6-luna', 'gpt-5.4-mini'],
+      plan: ['gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4'],
+    },
+  },
+  /* xkiro — free models behind one shared key, so Halo works for everyone
+     straight after install with nothing to paste. The key is deliberately
+     built in: the models on it are free, and the owner chose to share it.
+     A key of your own in .env (XKIRO_API_KEY) takes its place.
+
+     Only models marked free are used, picked per job:
+       see   the step-by-step desktop work: must read a screenshot and call a
+             tool, and must land clicks — Qwen's Plus line is the strongest
+             visual grounding on offer, and quick enough per step.
+       plan  once per task, judgement over speed, and it also reads the
+             screen — the largest Qwen with vision.
+       fast  chat and routing: no picture, lowest latency — MiniMax's
+             highspeed build.
+       hard  longer writing, no picture — the largest text model.
+     Each list is best first; check() takes the first this key can use. */
+  xkiro: {
+    label: 'xkiro (free models)',
+    baseUrl: 'https://api.xkiro.com/v1',
+    envKey: 'XKIRO_API_KEY',
+    defaultKey: 'sk-xt-e9d6403a000bc72438205fdfbc991fad628bc3471f58096f',
+    // Documented as Chat Completions; tool calls go that way.
+    responses: false,
+    tiers: {
+      fast: 'minimax/minimax-m2.7-highspeed:free',
+      hard: 'qwen/qwen3.7-max:free',
+      see: 'qwen/qwen3.7-plus:free',
+      plan: 'qwen/qwen3.8-max:free',
+    },
+    prefer: {
+      see: ['qwen/qwen3.7-plus:free', 'qwen/qwen3-vl-plus:free', 'qwen/qwen3.7-flash:free', 'minimax/minimax-m3:free'],
+      plan: ['qwen/qwen3.8-max:free', 'qwen/qwen3.7-plus:free', 'minimax/minimax-m3:free'],
+      fast: ['minimax/minimax-m2.7-highspeed:free', 'minimax/minimax-m2.5-highspeed:free', 'qwen/qwen3.7-flash:free'],
+      hard: ['qwen/qwen3.7-max:free', 'qwen/qwen3.8-max:free', 'minimax/minimax-m2.7:free'],
+    },
   },
   bazaarlink: {
     label: 'BazaarLink',
     baseUrl: 'https://api.bazaarlink.ai/v1',
     envKey: 'BAZAARLINK_API_KEY',
+    responses: false,
     tiers: {
       fast: 'auto:free',
       hard: 'deepseek/deepseek-v4-flash',
       see: 'deepseek/deepseek-v4-flash',
       plan: 'deepseek/deepseek-v4-flash',
     },
+    prefer: {},
   },
 };
+
+/** Chat Completions' tool shape, flattened for the Responses API. */
+const responsesTool = (t) => ({
+  type: 'function',
+  name: t.function.name,
+  description: t.function.description,
+  parameters: t.function.parameters,
+  strict: false,
+});
+
+/** A lower effort to try when a model refuses the one asked for. */
+const EFFORT_FALLBACK = { max: 'high', xhigh: 'high', high: 'medium', medium: 'low', low: 'minimal', minimal: 'none', none: null };
 
 /** Minimal .env parser — no dependency for something this small. */
 async function loadEnv() {
@@ -109,27 +174,31 @@ export function classify(task) {
 }
 
 export class LLM {
-  constructor({ apiKey, baseUrl, provider, tiers }) {
+  constructor({ apiKey, baseUrl, provider, tiers, pinned = {} }) {
     this.apiKey = apiKey;
     this.provider = provider;
     this.baseUrl = (baseUrl || '').replace(/\/+$/, '');
     this.tiers = tiers;
+    this.pinned = pinned;          // tiers set explicitly in .env, never replaced
     this.model = tiers.fast;
     this.onDowngrade = null;
     this._noReasoningEffort = false;
+    this._responses = PROVIDERS[provider]?.responses !== false;
+    this._effort = new Map();      // model -> the effort it last accepted
+    this._noOriginal = new Set();  // models that refuse full-detail pictures
   }
 
   static async fromEnv() {
     const env = { ...(await loadEnv()), ...process.env };
 
-    // Explicit choice wins; otherwise prefer whichever key is present, with
-    // OpenAI first because it is the faster of the two.
+    // Explicit choice wins. Otherwise the shared free models: they need no
+    // key from anyone, so every install works on its first start.
     const wanted = (env.PICO_PROVIDER || '').toLowerCase();
-    const order = wanted && PROVIDERS[wanted] ? [wanted] : ['openai', 'bazaarlink'];
+    const order = wanted && PROVIDERS[wanted] ? [wanted] : ['xkiro', 'openai', 'bazaarlink'];
 
     for (const name of order) {
       const p = PROVIDERS[name];
-      const apiKey = env[p.envKey];
+      const apiKey = env[p.envKey] || p.defaultKey;
       if (!apiKey) continue;
 
       return new LLM({
@@ -141,6 +210,12 @@ export class LLM {
           hard: env.PICO_MODEL_HARD || p.tiers.hard,
           see: env.PICO_MODEL_SEE || p.tiers.see,
           plan: env.PICO_MODEL_PLAN || p.tiers.plan,
+        },
+        pinned: {
+          fast: Boolean(env.PICO_MODEL_FAST),
+          hard: Boolean(env.PICO_MODEL_HARD),
+          see: Boolean(env.PICO_MODEL_SEE),
+          plan: Boolean(env.PICO_MODEL_PLAN),
         },
       });
     }
@@ -344,12 +419,130 @@ export class LLM {
     };
   }
 
+  /**
+   * One turn of the desktop loop, with reasoning: text and pictures in, a
+   * single tool call out.
+   *
+   * Through the Responses API, which is the only way these models take a
+   * reasoning effort and function tools in the same request. Falls back to
+   * Chat Completions (without the effort) for a provider that has no
+   * Responses API, so nothing that worked before stops working.
+   *
+   * @param {object} req
+   * @param {string} req.model
+   * @param {string} req.system
+   * @param {Array}  req.content  [{type:'text', text} | {type:'image', b64, mime, detail}]
+   * @param {Array}  req.tools    function tools, in the Chat Completions shape
+   * @param {string} [req.effort] reasoning effort
+   * @returns {Promise<{call:{name,args}|null, text:string, usage:object|null}>}
+   */
+  async respond({ model, system, content, tools, effort = 'low', maxTokens = 3000, signal }) {
+    const useModel = model || this.tiers.see;
+
+    if (!this._responses) {
+      return this.toolCall([
+        { role: 'system', content: system },
+        {
+          role: 'user',
+          content: content.map((c) => (c.type === 'image'
+            ? { type: 'image_url', image_url: { url: `data:${c.mime};base64,${c.b64}`, detail: c.detail === 'original' ? 'high' : (c.detail || 'high') } }
+            : { type: 'text', text: c.text })),
+        },
+      ], { model: useModel, tools, maxTokens, signal, effort: 'none' });
+    }
+
+    // A model that turned an effort down before is asked for what it took.
+    const asked = this._effort.has(useModel) ? this._effort.get(useModel) : effort;
+    // Full-detail pictures are what make clicks land, but only newer models
+    // take them; an older one is sent the most it will accept instead.
+    const detailFor = (d) => (d === 'original' && this._noOriginal.has(useModel) ? 'high' : (d || 'high'));
+
+    const body = {
+      model: useModel,
+      instructions: system,
+      input: [{
+        role: 'user',
+        content: content.map((c) => (c.type === 'image'
+          ? { type: 'input_image', image_url: `data:${c.mime};base64,${c.b64}`, detail: detailFor(c.detail) }
+          : { type: 'input_text', text: c.text })),
+      }],
+      tools: tools.map(responsesTool),
+      tool_choice: 'required',
+      parallel_tool_calls: false,
+      max_output_tokens: maxTokens,
+      store: false,
+    };
+    if (asked) body.reasoning = { effort: asked };
+
+    let res;
+    try {
+      res = await fetch(`${this.baseUrl}/responses`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: signal ?? AbortSignal.timeout(90_000),
+      });
+    } catch (err) {
+      throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
+    }
+
+    const raw = await res.text();
+    let json = null;
+    try { json = JSON.parse(raw); } catch { /* non-JSON */ }
+
+    if (!res.ok) {
+      const message = json?.error?.message || '';
+      // No Responses API behind this address: use the other one from now on.
+      if (res.status === 404 && !/model/i.test(message)) {
+        this._responses = false;
+        return this.respond({ model: useModel, system, content, tools, effort, maxTokens, signal });
+      }
+      // The effort was refused: step it down and remember what worked.
+      if (res.status === 400 && asked && /reasoning|effort/i.test(message)) {
+        this._effort.set(useModel, EFFORT_FALLBACK[asked] ?? null);
+        return this.respond({ model: useModel, system, content, tools, effort, maxTokens, signal });
+      }
+      // Full detail refused: this model gets high detail from now on.
+      if (res.status === 400 && /detail/i.test(message) && !this._noOriginal.has(useModel)
+        && content.some((c) => c.type === 'image' && c.detail === 'original')) {
+        this._noOriginal.add(useModel);
+        return this.respond({ model: useModel, system, content, tools, effort, maxTokens, signal });
+      }
+      throw this._error(res.status, json);
+    }
+
+    // Reasoning can use the whole budget and leave nothing for the answer.
+    // Once, with more room, rather than failing a step over it.
+    if (json?.status === 'incomplete' && json?.incomplete_details?.reason === 'max_output_tokens' && maxTokens < 12000) {
+      return this.respond({ model: useModel, system, content, tools, effort, maxTokens: maxTokens * 2, signal });
+    }
+
+    const output = Array.isArray(json?.output) ? json.output : [];
+    const text = output
+      .filter((o) => o.type === 'message')
+      .flatMap((o) => o.content || [])
+      .map((c) => c.text || '')
+      .join('')
+      .trim();
+    const usage = json?.usage ?? null;
+    const call = output.find((o) => o.type === 'function_call');
+    if (!call) return { call: null, text, usage };
+
+    let args = {};
+    try {
+      args = JSON.parse(call.arguments || '{}');
+    } catch {
+      return { call: null, text, usage };
+    }
+    return { call: { name: call.name, args, raw: call }, text, usage };
+  }
+
   /* ------------------------------------------------------------------------
      Talking
      ---------------------------------------------------------------------- */
 
   static CHAT_SYSTEM =
-    'You are Pico, a small agent that lives on the user\'s Windows desktop ' +
+    'You are Halo, a small agent that lives on the user\'s Windows desktop ' +
     'and can operate it for them. Right now you are talking, not working.\n\n' +
     'Be brief and plain — two or three sentences unless more is genuinely ' +
     'needed. No lists unless asked. Never claim to have done something on ' +
@@ -361,10 +554,14 @@ export class LLM {
    * A conversational reply, streamed so it appears as it is written.
    * @param {Array} history  prior turns as { role, content }
    */
-  async converse(history, { onDelta, signal, name = 'Pico' } = {}) {
-    const system = name && name !== 'Pico'
-      ? `${LLM.CHAT_SYSTEM}\n\nThe user has named you ${name}. Answer to it.`
-      : LLM.CHAT_SYSTEM;
+  async converse(history, { onDelta, signal, name = 'Halo', facts = '' } = {}) {
+    // What the person has told Halo to keep (memory.mjs) goes in with every
+    // reply, so "what's my brother called?" is answered rather than asked.
+    const system = [
+      LLM.CHAT_SYSTEM,
+      name && name !== 'Halo' ? `The user has named you ${name}. Answer to it.` : '',
+      facts,
+    ].filter(Boolean).join('\n\n');
 
     return this.stream(
       [{ role: 'system', content: system }, ...history],
@@ -438,7 +635,12 @@ export class LLM {
     );
   }
 
-  /** Cheap liveness probe used at start-up. */
+  /**
+   * Liveness probe used at start-up, which also picks the best model this
+   * key can use for each job. The list of models comes back with the probe
+   * anyway, and a key that can use a model measured to click more accurately
+   * should not be left on one that clicks less accurately.
+   */
   async check() {
     try {
       const res = await fetch(`${this.baseUrl}/models`, {
@@ -446,9 +648,25 @@ export class LLM {
         signal: AbortSignal.timeout(12_000),
       });
       if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+      try {
+        const body = await res.json();
+        this.adopt((body?.data || []).map((m) => m.id));
+      } catch { /* a probe that answers but lists nothing keeps the defaults */ }
       return { ok: true, provider: this.provider, tiers: this.tiers };
     } catch (err) {
       return { ok: false, reason: this.redact(err.message) };
+    }
+  }
+
+  /** Move each unpinned tier to the first preferred model on offer. */
+  adopt(available = []) {
+    const have = new Set(available);
+    if (!have.size) return;
+    const prefer = PROVIDERS[this.provider]?.prefer ?? {};
+    for (const [tier, list] of Object.entries(prefer)) {
+      if (this.pinned[tier]) continue;
+      const pick = list.find((m) => have.has(m));
+      if (pick) this.tiers[tier] = pick;
     }
   }
 }

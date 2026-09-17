@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — the floating companion
+   Halo — the floating companion
 
    In production this is the small always-on-top overlay. It stays visually
    simple on purpose: the character, a halo, and one line of status. Anything

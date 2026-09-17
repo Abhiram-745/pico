@@ -1,12 +1,12 @@
 /* ==========================================================================
-   Pico phone companion — service worker
+   Halo phone companion — service worker
 
    The shell is cached so the app opens instantly from the home screen even
    before the laptop answers. Live agent state is never cached: it arrives
    over the WebSocket, which the service worker does not touch.
    ========================================================================== */
 
-const VERSION = 'pico-phone-v1';
+const VERSION = 'halo-phone-v2';
 
 const SHELL = [
   './',

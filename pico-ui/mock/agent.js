@@ -1,12 +1,12 @@
 /* ==========================================================================
-   Pico — mock host
+   Halo — mock host
 
    Stands in for the C# side so the UI is fully exercisable in a browser.
    It speaks exactly the contract in src/bridge.js and nothing more, which is
    what keeps the UI honest: if it works here, it works against WebView2.
 
    Scenario timings and event shapes are taken from the real
-   AppData\Local\Pico\audit.jsonl (106 events across 9 sessions).
+   AppData\Local\Halo\audit.jsonl (106 events across 9 sessions).
    ========================================================================== */
 
 import { localRoute } from '../../bridge/intent.mjs';
@@ -46,7 +46,7 @@ export class MockAgent {
     this.paused = false;
     this.heldModifiers = [];
     this.phase = 'Idle';
-    this.petName = 'Pico';
+    this.petName = 'Halo';
     this.settings = {
       model: 'gpt-5.4-nano',
       pauseOnPhysicalInput: true,
@@ -61,6 +61,12 @@ export class MockAgent {
        there is no key and must never be one. */
     this.planner = null;
     this.summariser = null;
+
+    // The preview's stand-ins for what the bridge keeps on disk.
+    this.previewMemory = [];
+    this.previewRoutines = [];
+    this.previewSteering = [];
+    this.previewLastRun = null;
   }
 
   // --- plumbing ------------------------------------------------------------
@@ -105,6 +111,8 @@ export class MockAgent {
   start() {
     this.emit('guardian', { ready: true });
     this.emit('settings', this.settings);
+    this.emit('memory', { facts: this.previewMemory });
+    this.emit('routines', { items: this.previewRoutines });
     this.setPhase('Idle');
   }
 
@@ -116,7 +124,7 @@ export class MockAgent {
         break;
 
       case 'setName':
-        this.petName = String(payload.name || 'Pico').slice(0, 24);
+        this.petName = String(payload.name || 'Halo').slice(0, 24);
         break;
 
       case 'pause':
@@ -147,6 +155,67 @@ export class MockAgent {
 
       case 'takeoverDone':
         this._takeoverResolve?.();
+        break;
+
+      // --- while a run is going (the real ones are in bridge/agent.mjs) ----
+      case 'skipStep':
+        this.previewSteering.push({ type: 'skip' });
+        break;
+
+      case 'steer':
+        if (String(payload.text ?? '').trim()) {
+          this.emit('message', { id: `steer_${Date.now()}`, from: 'you', text: String(payload.text).trim(), done: true });
+          this.previewSteering.push({ type: 'correct', text: String(payload.text).trim() });
+        }
+        break;
+
+      case 'memoryAdd': {
+        const text = String(payload.text ?? '').trim();
+        if (text) this.previewMemory = [{ id: `mem_${Date.now()}`, text, source: 'added', created: Date.now() }, ...this.previewMemory];
+        this.emit('memory', { facts: this.previewMemory });
+        break;
+      }
+      case 'memoryRemove':
+        this.previewMemory = this.previewMemory.filter((f) => f.id !== payload.id);
+        this.emit('memory', { facts: this.previewMemory });
+        break;
+      case 'memoryClear':
+        this.previewMemory = [];
+        this.emit('memory', { facts: this.previewMemory });
+        break;
+
+      case 'routineSave': {
+        const run = this.previewLastRun;
+        const name = String(payload.name ?? '').trim();
+        if (!name || !(payload.task || run)) break;
+        this.previewRoutines = [
+          { id: `sc_${Date.now()}`, name, task: payload.task || run.task, steps: run?.steps ?? [], runs: 0, created: Date.now() },
+          ...this.previewRoutines.filter((r) => r.name.toLowerCase() !== name.toLowerCase()),
+        ];
+        this.emit('routines', { items: this.previewRoutines });
+        this.emit('message', { id: `sc_${Date.now()}`, from: 'event', text: `Saved as a shortcut: "${name}". Say its name to run it again.`, done: true });
+        break;
+      }
+      case 'routineRun': {
+        const item = this.previewRoutines.find((r) => r.id === payload.id);
+        if (item) {
+          this.emit('message', { id: `you_${Date.now()}`, from: 'you', text: item.name, done: true });
+          this.run(item.task, { mode: 'agent' });
+        }
+        break;
+      }
+      case 'routineRename':
+        this.previewRoutines = this.previewRoutines.map((r) => (r.id === payload.id ? { ...r, name: String(payload.name ?? r.name) } : r));
+        this.emit('routines', { items: this.previewRoutines });
+        break;
+      case 'routineRemove':
+        this.previewRoutines = this.previewRoutines.filter((r) => r.id !== payload.id);
+        this.emit('routines', { items: this.previewRoutines });
+        break;
+
+      case 'newChat':
+        this.cancelled = true;
+        this.emit('plan', null);
         break;
 
       case 'saveSettings':
@@ -224,6 +293,17 @@ export class MockAgent {
       why: opts.mode && opts.mode !== 'auto' ? 'you chose it' : decision.why,
       source: opts.mode && opts.mode !== 'auto' ? 'user' : 'rules',
     });
+    const told = String(text).match(/^(?:please\s+)?remember(?:\s+that)?\s+(.{3,})$/i);
+    if (told) {
+      const fact = { id: `mem_${Date.now()}`, text: told[1].replace(/\bmy\b/gi, 'your'), source: 'told', created: Date.now() };
+      this.previewMemory = [fact, ...this.previewMemory];
+      this.emit('memory', { facts: this.previewMemory });
+      this.emit('message', { id: `mem_note_${fact.id}`, from: 'event', text: `Remembered: ${fact.text}`, memoryId: fact.id, done: true });
+      this.emit('message', { id: `msg_${Date.now()}`, from: 'pico', text: 'Got it — I\'ll remember that.', done: true });
+      return;
+    }
+    const saved = this.previewRoutines.find((r) => r.name.toLowerCase() === String(text).trim().toLowerCase());
+    if (saved) return this.scenarioPlanned(saved.task);
     if (mode === 'chat') return this.scenarioChat(text);
 
     const t = text.toLowerCase();
@@ -242,6 +322,7 @@ export class MockAgent {
   }
 
   async scenarioHappy(task = '') {
+    if (!this.planner) return this.scenarioPlanned(task);
     if (!(await this._begin())) return;
     if (!(await this.step(600))) return;
 
@@ -288,6 +369,70 @@ export class MockAgent {
         .then((text) => { if (!this.cancelled) this.emit('summary', { text }); })
         .catch(() => { /* a missing summary must not fail a completed run */ });
     }
+  }
+
+  /**
+   * A run with a visible plan, as the real loop publishes one: each step
+   * marked as it goes, a skip or a correction honoured part way, and a
+   * finished task that can be kept as a shortcut.
+   */
+  async scenarioPlanned(task = '') {
+    this.previewSteering = [];
+    this.emit('plan', null);
+    if (!(await this._begin())) return;
+    if (!(await this.step(500))) return;
+    this.setPhase('Thinking');
+    if (!(await this.step(900))) return;
+
+    const t = String(task).toLowerCase();
+    const app = (t.match(/open\s+([a-z]+)/)?.[1] ?? 'notepad');
+    const name = app.charAt(0).toUpperCase() + app.slice(1);
+    const typed = String(task).match(/type\s+(.+)$/i)?.[1];
+    let steps = [
+      { do: `Open ${name}`, kind: 'open', status: 'pending', why: `Opening ${name}` },
+      { do: 'Click into the page', kind: 'pointer', status: 'pending', why: 'Putting the cursor where the text should go' },
+      { do: typed ? `Type ${typed}` : 'Type a short note', kind: 'keyboard', status: 'pending', why: 'Typing it in' },
+    ];
+    let index = 0;
+    const publish = (extra = {}) => this.emit('plan', { steps: steps.map(({ why, ...st }) => st), index, doneWhen: 'the text is on screen', ...extra });
+    publish();
+
+    while (index < steps.length) {
+      this.emit('step', { index, total: steps.length, text: steps[index].do });
+      this.setPhase('Thinking');
+      if (!(await this.step(900))) return;
+
+      const note = this.previewSteering.shift();
+      if (note?.type === 'skip') {
+        steps[index].status = 'skipped';
+        index += 1;
+        publish();
+        continue;
+      }
+      if (note?.type === 'correct') {
+        this.setPhase('Thinking');
+        steps[index].status = 'changed';
+        steps = [...steps.slice(0, index + 1), { do: `Do it the other way: ${note.text}`, kind: 'pointer', status: 'pending', why: 'Following your correction' }, ...steps.slice(index + 1)];
+        index += 1;
+        publish();
+        if (!(await this.step(700))) return;
+        continue;
+      }
+
+      this.setPhase('Acting');
+      if (!(await this.action(inferActionType(steps[index].do), { detail: steps[index].why }))) return;
+      if (!(await this.step(650))) return;
+      steps[index].status = 'done';
+      index += 1;
+      publish();
+    }
+
+    publish({ finished: true, succeeded: true });
+    this.setPhase('Completed');
+    this.audit('run_completed', { metadata: { completed_actions: steps.length } });
+    this.previewLastRun = { task, steps: steps.filter((st) => st.status === 'done').map((st) => st.do), succeeded: true };
+    this.emit('runFinished', this.previewLastRun);
+    this.emit('summary', { id: `sum_${Date.now()}`, text: `Opened ${name}${typed ? ` and typed "${typed}"` : ''}.` });
   }
 
   async scenarioApproval() {
@@ -365,7 +510,7 @@ export class MockAgent {
 
     this.emit('takeover', {
       id,
-      reason: 'A password field is focused. Pico never types credentials.',
+      reason: 'A password field is focused. Halo never types credentials.',
       appName: 'Microsoft Edge — account sign-in',
     });
 
@@ -428,7 +573,7 @@ export class MockAgent {
     this.audit('run_failed', { phase: 'Failed', metadata: { failure_class: 'local_validation' } });
     this.emit('error', {
       title: 'Local error',
-      message: 'The desktop call was not complete. Pico stopped without running its actions.',
+      message: 'The desktop call was not complete. Halo stopped without running its actions.',
       recoverable: true,
     });
   }

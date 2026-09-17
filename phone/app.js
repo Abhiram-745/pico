@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico phone companion
+   Halo phone companion
 
    Pairs with the laptop over the LAN and drives the same agent the desktop
    UI does, through the identical bridge contract.
@@ -13,8 +13,17 @@ import { bridge, WebSocketTransport } from '../pico-ui/src/bridge.js';
 import { Mascot } from '../pico-ui/src/mascot.js';
 import { renderApproval, renderTakeover, renderError } from '../pico-ui/src/cards.js';
 
-const TOKEN_KEY = 'pico.pair.token.v1';
-const HOST_KEY = 'pico.pair.host.v1';
+const TOKEN_KEY = 'halo.pair.token.v1';
+const HOST_KEY = 'halo.pair.host.v1';
+
+// Paired under Pico's name before the rename: carried across, so a phone that
+// was already paired does not have to scan the code again.
+for (const [from, to] of [['pico.pair.token.v1', TOKEN_KEY], ['pico.pair.host.v1', HOST_KEY]]) {
+  try {
+    if (localStorage.getItem(to) === null && localStorage.getItem(from) !== null) localStorage.setItem(to, localStorage.getItem(from));
+    localStorage.removeItem(from);
+  } catch { /* storage blocked: pairing again is the fallback */ }
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -162,7 +171,7 @@ function updateComposer() {
   let note = '';
   if (!connected) note = 'Waiting for your laptop…';
   else if (!s.guardian.ready) note = 'Safety guardian offline on the laptop.';
-  else if (busy) note = 'Pico is already working on a task.';
+  else if (busy) note = 'Halo is already working on a task.';
   els.note.textContent = note;
   els.note.hidden = !note;
 }
@@ -301,7 +310,7 @@ els.installBtn?.addEventListener('click', async () => {
 /* --------------------------------------------------------------------------
    Boot
    -------------------------------------------------------------------------- */
-els.name.textContent = read(HOST_KEY) || 'Pico';
+els.name.textContent = read(HOST_KEY) || 'Halo';
 showPairing(!(read(TOKEN_KEY) || pendingCode));
 setConn('connecting');
 connect();

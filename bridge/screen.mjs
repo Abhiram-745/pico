@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — seeing the screen.
+   Halo — seeing the screen.
 
    A desktop agent that cannot look at the desktop is not an agent, so this
    module has two independent ways to produce a picture of it and prefers
@@ -24,8 +24,9 @@
    Windows reports window geometry in DPI-virtualised units and captures in
    real pixels — on this display a 1.25x difference, which silently put every
    click a quarter of the screen away from its target. Everything here works
-   in physical pixels, and `toScreen()` is the single place that converts a
-   model's answer back into the space the mouse uses.
+   in physical pixels, and a shot's own conversions — toPhysical, toScreen,
+   physToScreen — are the only places a point changes from one space to
+   another.
    ========================================================================== */
 
 import { createRequire } from 'node:module';
@@ -35,6 +36,7 @@ const require = createRequire(import.meta.url);
 let Monitor = null;
 let Window = null;
 let Jimp = null;
+let jpeg = null;
 
 try {
   ({ Monitor, Window } = require('node-screenshots'));
@@ -42,12 +44,92 @@ try {
 } catch (err) {
   console.warn(`[bridge] screen capture unavailable (${err.message})`);
 }
+try {
+  // Jimp's own encoder, used directly: Jimp's wrapper around it, and its
+  // resize, were most of a second per screenshot — every turn.
+  jpeg = require('jpeg-js');
+} catch { /* the Jimp path below still works, just slower */ }
 
 /** Wrap a raw RGBA buffer as a Jimp image without re-encoding it. */
 function fromRaw(data, width, height) {
   return new Promise((resolve, reject) => {
     new Jimp({ data, width, height }, (err, img) => (err ? reject(err) : resolve(img)));
   });
+}
+
+/**
+ * Bilinear downscale of an RGBA buffer — the same filter the accuracy
+ * figures were measured with, in a tight loop over typed arrays instead of
+ * through Jimp, which took three times as long.
+ */
+function downscale(src, sw, sh, dw) {
+  const dh = Math.max(1, Math.round((sh * dw) / sw));
+  const out = Buffer.allocUnsafe(dw * dh * 4);
+  const fx = sw / dw;
+  const fy = sh / dh;
+
+  const x0s = new Int32Array(dw);
+  const x1s = new Int32Array(dw);
+  const wxs = new Uint16Array(dw);
+  for (let x = 0; x < dw; x++) {
+    const sx = Math.max(0, ((x + 0.5) * fx) - 0.5);
+    const x0 = Math.min(sw - 1, Math.floor(sx));
+    x0s[x] = x0 * 4;
+    x1s[x] = Math.min(sw - 1, x0 + 1) * 4;
+    wxs[x] = Math.round((sx - x0) * 256);
+  }
+
+  for (let y = 0; y < dh; y++) {
+    const sy = Math.max(0, ((y + 0.5) * fy) - 0.5);
+    const y0 = Math.min(sh - 1, Math.floor(sy));
+    const r0 = y0 * sw * 4;
+    const r1 = Math.min(sh - 1, y0 + 1) * sw * 4;
+    const wy = Math.round((sy - y0) * 256);
+    const iy = 256 - wy;
+    let o = y * dw * 4;
+    for (let x = 0; x < dw; x++) {
+      const a = x0s[x];
+      const b = x1s[x];
+      const wx = wxs[x];
+      const ix = 256 - wx;
+      for (let c = 0; c < 3; c++) {
+        const top = (src[r0 + a + c] * ix) + (src[r0 + b + c] * wx);
+        const bot = (src[r1 + a + c] * ix) + (src[r1 + b + c] * wx);
+        out[o + c] = ((top * iy) + (bot * wy)) >> 16;
+      }
+      out[o + 3] = 255;
+      o += 4;
+    }
+  }
+  return { data: out, width: dw, height: dh };
+}
+
+/** A 64-wide greyscale thumbnail, by averaging blocks of the frame. */
+function thumbnail(src, sw, sh, tw = 64) {
+  const th = Math.max(1, Math.round((sh * tw) / sw));
+  const grey = Buffer.alloc(tw * th);
+  const bx = sw / tw;
+  const by = sh / th;
+  for (let ty = 0; ty < th; ty++) {
+    const ya = Math.floor(ty * by);
+    const yb = Math.min(sh, Math.floor((ty + 1) * by));
+    for (let tx = 0; tx < tw; tx++) {
+      const xa = Math.floor(tx * bx);
+      const xb = Math.min(sw, Math.floor((tx + 1) * bx));
+      let sum = 0;
+      let n = 0;
+      // Every other pixel is plenty to average a block of a thousand.
+      for (let y = ya; y < yb; y += 2) {
+        let i = ((y * sw) + xa) * 4;
+        for (let x = xa; x < xb; x += 2, i += 8) {
+          sum += (src[i] * 77) + (src[i + 1] * 150) + (src[i + 2] * 29);
+          n += 1;
+        }
+      }
+      grey[(ty * tw) + tx] = n ? (sum / n) >> 8 : 0;
+    }
+  }
+  return grey;
 }
 
 /**
@@ -167,20 +249,57 @@ export class Screen {
   }
 
   /**
-   * A JPEG of the desktop, downscaled so one turn costs tens of KB rather
-   * than megabytes, plus the conversion from the model's coordinate space
-   * back to the one the mouse uses.
+   * How wide the picture sent to the model should be.
+   *
+   * This is most of click accuracy, and it was measured rather than chosen.
+   * On a 2560x1440 display at 125%, 51 labelled targets, the same model:
+   *
+   *   1024 wide  (what Halo sent)   36% of clicks landed on the target
+   *   1280 wide                     78%
+   *   1600 wide                     94-98%, median 2px from the centre
+   *   2048 wide                     96%, and 40% slower
+   *
+   * What matters is how big the screen's text ends up in the picture, which
+   * depends on the display's scaling as much as on its resolution — so the
+   * width follows the logical size (1600 for 2048 logical pixels), within
+   * limits, and never exceeds the screen itself.
    */
-  async capture({ width = 1024, quality = 70 } = {}) {
-    const desktop = await this.rawDesktop();
-    const img = await fromRaw(desktop.data, desktop.width, desktop.height);
+  static modelWidth(physicalWidth, scale = 1) {
+    const logical = physicalWidth / (scale || 1);
+    return Math.round(Math.min(physicalWidth, Math.max(1280, Math.min(2048, logical * 0.78125))));
+  }
 
-    const target = Math.min(width, desktop.width);
-    img.resize(target, Jimp.AUTO).quality(quality);
-    const buffer = await img.getBufferAsync('image/jpeg');
+  /**
+   * A JPEG of the desktop for the model, plus every conversion between the
+   * three spaces a point can be in: the picture, physical screen pixels
+   * (what UI Automation and the raw frame use), and the units the mouse
+   * takes. Keeps the raw frame, so a close-up or a scroll measurement works
+   * on exactly what the model saw.
+   */
+  async capture({ width = null, quality = 80, raw = null } = {}) {
+    const desktop = raw ?? await this.rawDesktop();
+    const target = Math.min(width ?? Screen.modelWidth(desktop.width, desktop.scale), desktop.width);
 
-    const shotW = img.bitmap.width;
-    const shotH = img.bitmap.height;
+    let buffer;
+    let shotW;
+    let shotH;
+    if (jpeg) {
+      // ~250ms, where the same through Jimp was ~900ms: every turn waits on it.
+      const small = target === desktop.width
+        ? { data: desktop.data, width: desktop.width, height: desktop.height }
+        : downscale(desktop.data, desktop.width, desktop.height, target);
+      buffer = jpeg.encode(small, quality).data;
+      shotW = small.width;
+      shotH = small.height;
+    } else {
+      // A copy: resizing must not disturb the frame kept for measuring.
+      const img = await fromRaw(Buffer.from(desktop.data), desktop.width, desktop.height);
+      if (target !== desktop.width) img.resize(target, Jimp.AUTO, Jimp.RESIZE_BILINEAR);
+      img.quality(quality);
+      buffer = await img.getBufferAsync('image/jpeg');
+      shotW = img.bitmap.width;
+      shotH = img.bitmap.height;
+    }
 
     /* A coarse thumbnail for answering "did anything actually happen?".
        An exact hash is useless here: a live desktop is never pixel-identical
@@ -188,12 +307,13 @@ export class Screen {
        "something moved" every single time, which is exactly as unhelpful as
        reporting nothing ever does.
 
-       64 columns rather than 32, because the comparison now also asks whether
+       64 columns rather than 32, because the comparison also asks whether
        any single cell changed a lot, and at 32 a cell is a large enough piece
-       of the desktop to average a pressed button back into the wallpaper. */
-    const thumb = img.clone().resize(64, Jimp.AUTO).greyscale();
-    const grey = Buffer.alloc(thumb.bitmap.width * thumb.bitmap.height);
-    for (let i = 0; i < grey.length; i++) grey[i] = thumb.bitmap.data[i * 4];
+       of the desktop to average a pressed button back into the wallpaper.
+       Each cell is the average of its block of the full frame, so a small
+       change counts for its real share of the cell rather than depending on
+       whether a resize happened to sample it. */
+    const grey = thumbnail(desktop.data, desktop.width, desktop.height, 64);
 
     // model space -> physical -> the virtual units SetCursorPos takes.
     //
@@ -211,6 +331,22 @@ export class Screen {
       y: Math.round(Math.max(0, Math.min(maxY, ((Number(y) + 0.5) * ky) - 0.5))),
     });
 
+    // The picture -> physical pixels, unrounded: the centre of the block of
+    // screen pixels a picture pixel stands for.
+    const px = desktop.width / shotW;
+    const py = desktop.height / shotH;
+    const toPhysical = (x, y) => ({
+      x: Math.max(0, Math.min(desktop.width - 1, ((Number(x) + 0.5) * px) - 0.5)),
+      y: Math.max(0, Math.min(desktop.height - 1, ((Number(y) + 0.5) * py) - 0.5)),
+    });
+    // Physical pixels -> the units the mouse takes. SetCursorPos in a process
+    // that is not DPI aware works in scaled units; one of those is 1.25
+    // physical pixels here, so this is as close as the mouse can be put.
+    const physToScreen = (x, y) => ({
+      x: Math.round(Math.max(0, Math.min(maxX, Number(x) / desktop.scale))),
+      y: Math.round(Math.max(0, Math.min(maxY, Number(y) / desktop.scale))),
+    });
+
     return {
       b64: buffer.toString('base64'),
       mime: 'image/jpeg',
@@ -220,68 +356,11 @@ export class Screen {
       height: shotH,
       mode: this.mode,
       scale: desktop.scale,
+      physical: { width: desktop.width, height: desktop.height },
+      raw: desktop,
       toScreen,
-
-      /**
-       * The same point in physical screen pixels.
-       *
-       * Two coordinate systems exist on a scaled display and things that look
-       * alike want different ones. The mouse, in a process that is not DPI
-       * aware, works in virtualised units; UI Automation reports and accepts
-       * real pixels — checked rather than assumed, on a machine where a
-       * taskbar button comes back at y=1380 on a display the same process
-       * believes is 1152 tall. Getting this backwards silently aims a quarter
-       * of a screen away, so neither conversion is left implicit.
-       */
-      toPhysical: (x, y) => ({
-        x: Math.round(Math.max(0, Math.min(desktop.width - 1, ((Number(x) + 0.5) * desktop.width) / shotW))),
-        y: Math.round(Math.max(0, Math.min(desktop.height - 1, ((Number(y) + 0.5) * desktop.height) / shotH))),
-      }),
-
-      /**
-       * A close-up of one part of the same frame, at full resolution.
-       *
-       * The screenshot a model plans from is a whole desktop squeezed into
-       * about a thousand pixels, so a button is a dozen pixels wide and being
-       * a few pixels out in that picture is being a couple of centimetres out
-       * on the screen. That is the entire reason clicks land "a bit off".
-       *
-       * This crops the frame that has already been taken — no second look at
-       * the screen, nothing has moved in between — around the point the model
-       * chose, at the display's own resolution. Aiming again inside that is
-       * aiming in screen pixels.
-       */
-      crop: async ({ x, y, half = 120, zoom = 2, quality = 84 } = {}) => {
-        const s2 = desktop.scale;
-        const pw = Math.min(desktop.width, Math.round(half * 2 * s2));
-        const ph = Math.min(desktop.height, Math.round(half * 2 * s2 * 0.7));
-        const px = Math.max(0, Math.min(desktop.width - pw, Math.round((x * s2) - (pw / 2))));
-        const py = Math.max(0, Math.min(desktop.height - ph, Math.round((y * s2) - (ph / 2))));
-
-        const near = await fromRaw(Buffer.from(desktop.data), desktop.width, desktop.height);
-        near.crop(px, py, pw, ph);
-
-        // Magnified, not merely cropped. A model asked for a coordinate is
-        // more accurate in a larger picture of the same thing — the answer
-        // comes back in units that are half a screen pixel each, so rounding
-        // in its answer costs half as much.
-        if (zoom !== 1) near.scale(zoom, Jimp.RESIZE_BICUBIC);
-        near.quality(quality);
-        const bytes = await near.getBufferAsync('image/jpeg');
-
-        return {
-          b64: bytes.toString('base64'),
-          mime: 'image/jpeg',
-          width: near.bitmap.width,
-          height: near.bitmap.height,
-          // Magnified crop pixels -> physical pixels -> the units the mouse
-          // works in, with the crop's own offset added back.
-          toScreen: (cx, cy) => ({
-            x: Math.round(Math.max(0, Math.min(maxX, (px + ((Number(cx) + 0.5) / zoom)) / s2))),
-            y: Math.round(Math.max(0, Math.min(maxY, (py + ((Number(cy) + 0.5) / zoom)) / s2))),
-          }),
-        };
-      },
+      toPhysical,
+      physToScreen,
     };
   }
 

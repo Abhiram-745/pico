@@ -1,9 +1,9 @@
-# Hosting this UI in Pico (C# / WPF / WebView2)
+# Hosting this UI in Halo (C# / WPF / WebView2)
 
 This front-end is transport-agnostic. It runs today against a mock host in a
-browser; to ship it, implement the message contract below in `Pico.Desktop`.
+browser; to ship it, implement the message contract below in `Halo.Desktop`.
 
-Nothing here changes the agent loop, the policy engine, or `Pico.Guardian.exe`.
+Nothing here changes the agent loop, the policy engine, or `Halo.Guardian.exe`.
 
 ---
 
@@ -35,7 +35,7 @@ to act on.
 
 > The overlay is excluded from screenshots. Coordinates are relative to the
 > complete captured Windows virtual desktop.
-> — Pico's own system prompt
+> — Halo's own system prompt
 
 `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` is already applied to
 the overlay. **It must also be applied to `PaletteWindow`**, and the existing
@@ -57,14 +57,14 @@ HWND.
 
 ## 3. Hotkey registration
 
-`Pico.Guardian.exe` owns the safety chords and must keep owning them:
+`Halo.Guardian.exe` owns the safety chords and must keep owning them:
 
 | Chord | Owner | Effect |
 | --- | --- | --- |
 | `Ctrl+Shift+Space` | Guardian | Pause / resume before the next action |
 | `Esc` | Guardian | Emergency stop |
 | `Ctrl+Shift+Backspace` | Guardian | Emergency stop |
-| `Ctrl+Shift+P` | **`Pico.Desktop` (new)** | Toggle the palette |
+| `Ctrl+Shift+P` | **`Halo.Desktop` (new)** | Toggle the palette |
 
 The palette chord is *not* a safety hotkey, so it is registered by the desktop
 process and its failure must not block task submission the way a missing
@@ -76,7 +76,7 @@ warning rather than refusing to start.
 
 The action injector already refuses to synthesize the Guardian chords. The
 palette chord must join them. Otherwise a model-requested `keypress` can summon
-Pico's own UI, and — combined with a screenshot — read state that is meant to be
+Halo's own UI, and — combined with a screenshot — read state that is meant to be
 outside the agent's view.
 
 This mirrors the existing `WINDOWS-TEST.md` case *"A model-generated protected
@@ -218,7 +218,7 @@ Two host-side changes make this fully correct:
 ```
 - [ ] The palette window is absent from screenshots (WDA_EXCLUDEFROMCAPTURE).
 - [ ] The palette does not appear in the Alt+Tab list or taskbar.
-- [ ] Ctrl+Shift+P opens and closes the palette when Pico is unfocused.
+- [ ] Ctrl+Shift+P opens and closes the palette when Halo is unfocused.
 - [ ] A model-generated Ctrl+Shift+P is rejected by the injector.
 - [ ] Esc during an active run emergency-stops and does NOT close the palette.
 - [ ] Esc with no run active closes the palette without stopping anything.
@@ -244,6 +244,6 @@ Two host-side changes make this fully correct:
 | `src/timeline.js` | Audit renderer + `assertSafeEvent` redaction guard |
 | `index.html`, `src/harness.css`, `mock/` | Development only — do not ship |
 
-`assets/pico.png` was extracted from `Pico.exe` at offset `10027263`
+`assets/pico.png` was extracted from `Halo.exe` at offset `10027263`
 (1254×1254 RGBA) so the harness runs standalone. Replace it with the project's
-own `src/Pico.Desktop/Assets/pico.png` when wiring this up.
+own `src/Halo.Desktop/Assets/pico.png` when wiring this up.

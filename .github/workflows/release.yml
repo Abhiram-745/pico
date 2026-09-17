@@ -29,37 +29,46 @@ jobs:
       - name: Install NSIS
         run: sudo apt-get update && sudo apt-get install -y nsis
 
+      # The interface is React, bundled by esbuild; the check builds it, and
+      # the package ships the bundle so a fresh install can show the island
+      # before anything has been built on the user's machine.
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
       # A broken build must not reach the download button.
       - name: Check
         run: node scripts/check.mjs
+
+      - name: Build the interface
+        run: node scripts/build-ui.mjs
 
       - name: Work out what we are publishing
         id: v
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             echo "tag=${{ github.ref_name }}"          >> "$GITHUB_OUTPUT"
-            echo "name=Pico ${{ github.ref_name }}"    >> "$GITHUB_OUTPUT"
+            echo "name=Halo ${{ github.ref_name }}"    >> "$GITHUB_OUTPUT"
             echo "prerelease=false"                    >> "$GITHUB_OUTPUT"
             echo "rolling=false"                       >> "$GITHUB_OUTPUT"
           else
             echo "tag=latest"                          >> "$GITHUB_OUTPUT"
-            echo "name=Pico (latest)"                  >> "$GITHUB_OUTPUT"
+            echo "name=Halo (latest)"                  >> "$GITHUB_OUTPUT"
             echo "prerelease=false"                    >> "$GITHUB_OUTPUT"
             echo "rolling=true"                        >> "$GITHUB_OUTPUT"
           fi
           echo "sha=$(git rev-parse --short HEAD)"     >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%d)"             >> "$GITHUB_OUTPUT"
 
-      # Everything needed to run Pico, minus the two large Windows binaries,
+      # Everything needed to run Halo, minus the two large Windows binaries,
       # which are attached separately because git cannot carry them.
       - name: Package
         run: |
           set -euo pipefail
-          STAGE=out/Pico
+          STAGE=out/Halo
           mkdir -p "$STAGE"
           cp -r pico-ui phone bridge "$STAGE"/
-          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 .env.example package.json "$STAGE"/
-          cp "Start Pico.cmd" "$STAGE"/
+          cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 .env.example package.json package-lock.json "$STAGE"/
+          cp "Start Halo.cmd" "$STAGE"/
           rm -rf "$STAGE"/pico-ui/mock/audit-sample.jsonl
 
           # The updater compares this against the SHA in the release body.
@@ -69,24 +78,24 @@ jobs:
             "${{ steps.v.outputs.tag }}" > "$STAGE"/build.json
 
           printf '%s\n' \
-            "Pico" \
+            "Halo" \
             "build ${{ steps.v.outputs.sha }} — ${{ steps.v.outputs.date }}" \
             "" \
             "1. Install Node.js (https://nodejs.org) if you have not already." \
-            "2. Double-click \"Start Pico.cmd\"." \
+            "2. Double-click \"Start Halo.cmd\"." \
             "3. Paste your OpenAI key into the .env file it opens, save, run it again." \
             > "$STAGE"/READ-ME-FIRST.txt
 
           cd out
-          zip -qr "Pico-latest.zip" Pico
+          zip -qr "Halo-latest.zip" Halo
           cd ..
 
           # The real download: a double-click Windows installer with a wizard,
           # not a script someone has to know how to run.
-          makensis -DSTAGEDIR="$PWD/$STAGE" -DOUTFILE="$PWD/out/Pico-Setup.exe" scripts/installer.nsi
+          makensis -DSTAGEDIR="$PWD/$STAGE" -DOUTFILE="$PWD/out/Halo-Setup.exe" scripts/installer.nsi
 
           cd out
-          sha256sum Pico-latest.zip Pico-Setup.exe > SHA256SUMS.txt
+          sha256sum Halo-latest.zip Halo-Setup.exe > SHA256SUMS.txt
           ls -la
 
       - name: Publish
@@ -105,25 +114,25 @@ jobs:
 
           NOTES="Build \`${{ steps.v.outputs.sha }}\` — ${{ steps.v.outputs.date }}
 
-          **Start here:** download \`Pico-Setup.exe\` and run it. It's a normal installer —
-          pick a folder, it installs, adds shortcuts, offers to launch Pico. Needs
+          **Start here:** download \`Halo-Setup.exe\` and run it. It's a normal installer —
+          pick a folder, it installs, adds shortcuts, offers to launch Halo. Needs
           [Node.js](https://nodejs.org) and an OpenAI API key.
 
-          \`Pico-latest.zip\` is the same app as a portable folder, for anyone who'd
+          \`Halo-latest.zip\` is the same app as a portable folder, for anyone who'd
           rather not install anything.
 
-          The Windows binaries (\`Pico.exe\`, \`Pico.Guardian.exe\`) are attached to the
+          The Windows binaries (\`Pico.exe\`, \`Pico.Guardian.exe\`, from before the rename) are attached to the
           numbered releases; they carry the older interface."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "${{ steps.v.outputs.name }}" --notes "$NOTES" --latest
-            gh release upload "$TAG" out/Pico-latest.zip out/Pico-Setup.exe out/SHA256SUMS.txt --clobber
+            gh release upload "$TAG" out/Halo-latest.zip out/Halo-Setup.exe out/SHA256SUMS.txt --clobber
           else
             gh release create "$TAG" \
               --title "${{ steps.v.outputs.name }}" \
               --notes "$NOTES" \
               --latest \
-              out/Pico-latest.zip out/Pico-Setup.exe out/SHA256SUMS.txt
+              out/Halo-latest.zip out/Halo-Setup.exe out/SHA256SUMS.txt
           fi
 
       - name: Summary

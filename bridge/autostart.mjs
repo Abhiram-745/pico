@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — starting with Windows.
+   Halo — starting with Windows.
 
    A shortcut in the user's Startup folder that runs the bridge, and nothing
    else. No window opens, no browser launches, no model is called: the bridge
@@ -7,7 +7,7 @@
    the app window appear when you actually use them.
 
    That is the whole point of doing it this way. "Start with Windows" should
-   not mean "have an app open all day"; it should mean Pico is there the
+   not mean "have an app open all day"; it should mean Halo is there the
    moment you want it and invisible until then.
 
    A shortcut rather than a registry Run entry, because a shortcut can carry
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SERVER = join(ROOT, 'bridge', 'server.mjs');
-const NAME = 'Pico.lnk';
+const NAME = 'Halo.lnk';
 
 function startupDir() {
   const appData = process.env.APPDATA;
@@ -71,7 +71,7 @@ export async function enable() {
     `$s.Arguments = '"' + ${q(SERVER)} + '"'`,
     `$s.WorkingDirectory = ${q(ROOT)}`,
     '$s.WindowStyle = 7',                      // minimised, so nothing pops up
-    "$s.Description = 'Pico — desktop agent (runs quietly until you use it)'",
+    "$s.Description = 'Halo — desktop agent (runs quietly until you use it)'",
     '$s.Save()',
   ].join('; '));
 

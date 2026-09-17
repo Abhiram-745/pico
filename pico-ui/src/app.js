@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — the full app window
+   Halo — the full app window
 
    The notch is the always-there control. This is the room you go into: chat,
    activity, cursors, updates and settings, in one window.
@@ -8,11 +8,11 @@
 import { store, PHASE_COPY, isActive } from './store.js';
 import { bridge } from './bridge.js';
 import { Mascot } from './mascot.js';
-import { renderApproval, renderTakeover, renderError } from './cards.js';
+import { renderApproval, renderTakeover, renderError, renderQuestion } from './cards.js';
 import { renderTimeline } from './timeline.js';
 import { permissions, LEVELS } from './permissions.js';
 
-const NAME_KEY = 'pico.pet.name.v1';
+const NAME_KEY = 'halo.pet.name.v1';
 
 const read = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } };
 const write = (k, v) => { try { localStorage.setItem(k, String(v)); } catch { /* private mode */ } };
@@ -90,10 +90,10 @@ function notice(title, body) {
 }
 
 const SECTIONS = [
-  { id: 'chat',     label: 'Chat',     icon: ICONS.chat,     title: 'Chat',     sub: 'Talk to Pico, or give it a job' },
+  { id: 'chat',     label: 'Chat',     icon: ICONS.chat,     title: 'Chat',     sub: 'Talk to Halo, or give it a job' },
   { id: 'activity', label: 'Activity', icon: ICONS.activity, title: 'Activity', sub: 'Every step, as it happens' },
   { id: 'desktop',  label: 'Desktop',  icon: ICONS.cursors,  title: 'Desktop',  sub: 'The notch, and where the pointer is' },
-  { id: 'updates',  label: 'Updates',  icon: ICONS.update,   title: 'Updates',  sub: 'Keep Pico current' },
+  { id: 'updates',  label: 'Updates',  icon: ICONS.update,   title: 'Updates',  sub: 'Keep Halo current' },
   { id: 'settings', label: 'Settings', icon: ICONS.gear,     title: 'Settings', sub: 'Model, permissions, name' },
 ];
 
@@ -103,7 +103,7 @@ const SECTIONS = [
  */
 export function mountApp(host = document.body, { demo = false } = {}) {
   let section = 'chat';
-  let petName = read(NAME_KEY, 'Pico');
+  let petName = read(NAME_KEY, 'Halo');
 
   // --- shell ---------------------------------------------------------------
   const root = el('div', 'app');
@@ -162,7 +162,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     ribbon.append(el('span', 'demo__dot'));
     ribbon.append(el('span', null,
       'Preview — the real interface, driven by a stand-in agent. Nothing on your computer is touched.'));
-    const cta = el('a', 'demo__cta', 'Get Pico');
+    const cta = el('a', 'demo__cta', 'Get Halo');
     cta.href = '/';
     ribbon.append(cta);
     main.prepend(ribbon);
@@ -175,7 +175,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
   const MODE_ORDER = ['auto', 'chat', 'agent'];
   const MODE_LABEL = { auto: 'Auto', chat: 'Chat', agent: 'Do it' };
   const MODE_HINT = {
-    auto: 'Pico decides whether to talk or to work',
+    auto: 'Halo decides whether to talk or to work',
     chat: 'Talk only — nothing on your computer is touched',
     agent: 'Always act on the desktop',
   };
@@ -215,7 +215,11 @@ export function mountApp(host = document.body, { demo = false } = {}) {
 
     // Decisions belong at the end of the thread, where the conversation is,
     // rather than pinned above everything that has been said since.
-    if (state.approval) list.append(renderApproval(state.approval));
+    if (state.question) {
+      list.append(renderQuestion(state.question, {
+        onAnswered: () => { store.setQuestion(null); render(store.state); },
+      }));
+    } else if (state.approval) list.append(renderApproval(state.approval));
     else if (state.takeover) list.append(renderTakeover(state.takeover));
     else if (state.error) list.append(renderError(state.error));
 
@@ -247,7 +251,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     send.disabled = true;
 
     // A pending question is answered mid-run, so it is not subject to the
-    // "is Pico free?" rule that gates starting a new task.
+    // "is Halo free?" rule that gates starting a new task.
     const canSend = () => Boolean(state.question) || store.canSubmit;
     const sync = () => { send.disabled = !input.value.trim() || !canSend(); };
     input.addEventListener('input', sync);
@@ -352,7 +356,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
       paintCursor(state);
     } else {
       ptr.append(el('p', 'panel__sub', state.guardian.reason
-        || 'Pico cannot reach the mouse on this machine, so there is nothing '
+        || 'Halo cannot reach the mouse on this machine, so there is nothing '
            + 'to show here yet.'));
     }
 
@@ -401,7 +405,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     const boot = el('div', 'panel');
     boot.append(el('div', 'panel__title', 'Start with Windows'));
     boot.append(el('p', 'panel__sub',
-      'Pico comes up when you sign in and then does nothing at all until you '
+      'Halo comes up when you sign in and then does nothing at all until you '
       + 'ask it to — no window, no model, no work. The notch and this window '
       + 'open when you use them.'));
 
@@ -426,7 +430,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     // --- permissions ---
     const perm = el('div', 'panel');
     perm.append(el('div', 'panel__title', 'Permissions'));
-    perm.append(el('p', 'panel__sub', 'How much Pico may do without asking you first.'));
+    perm.append(el('p', 'panel__sub', 'How much Halo may do without asking you first.'));
     for (const lv of Object.values(LEVELS)) {
       const row = el('div', 'row');
       const m = el('div', 'row__main');
@@ -494,7 +498,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     kmain.append(el('div', 'row__sub',
       store.state.settings.hasApiKey
         ? 'Configured in .env on this machine'
-        : 'Set OPENAI_API_KEY in the .env file next to Start Pico.cmd'));
+        : 'Set OPENAI_API_KEY in the .env file next to Start Halo.cmd'));
     krow.append(kmain);
     model.append(krow);
     wrap.append(model);
@@ -581,9 +585,9 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     if (demo) {
       wrap.append(emptyState({
         title: 'Updates live in the installed app',
-        sub: 'Pico checks for a new build on its own and installs it in place. '
+        sub: 'Halo checks for a new build on its own and installs it in place. '
            + 'There is nothing to update in a preview running in your browser.',
-        action: { label: 'Get Pico', run: () => { window.location.href = '/'; } },
+        action: { label: 'Get Halo', run: () => { window.location.href = '/'; } },
       }));
       return wrap;
     }
@@ -635,7 +639,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
       m.append(el('div', 'update__sub',
         `${updateInfo.latest.sha} · ${(updateInfo.size / 1048576).toFixed(1)} MB`));
     } else {
-      m.append(el('div', 'update__title', updateBusy ? 'Working…' : 'Pico is up to date'));
+      m.append(el('div', 'update__title', updateBusy ? 'Working…' : 'Halo is up to date'));
       m.append(el('div', 'update__sub', updateMsg || `Build ${updateInfo?.current?.sha ?? '—'}`));
     }
 
@@ -771,7 +775,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
         ? renderTimeline(state)
         : emptyState({
             title: 'Nothing has run yet',
-            sub: 'Every step Pico takes shows up here as it happens — what it looked at, what it clicked, and what it decided to ask you about.',
+            sub: 'Every step Halo takes shows up here as it happens — what it looked at, what it clicked, and what it decided to ask you about.',
             action: { label: 'Start a task', run: () => go('chat') },
           }))
         : section === 'desktop' ? renderDesktop(state)

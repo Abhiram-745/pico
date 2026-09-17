@@ -1,12 +1,12 @@
 /* ==========================================================================
-   Pico — what needs asking first.
+   Halo — what needs asking first.
 
    OpenAI's computer-use model ships its own safety checks, which is what the
    approval cards were originally wired to. That model is not available to
    every key — it is not available to this one — so the loop runs on an
    ordinary vision model, and the judgement has to live here instead.
 
-   The rule is about reversibility, not about danger in the abstract. Pico
+   The rule is about reversibility, not about danger in the abstract. Halo
    may click around, scroll, read and type all day. What it must not do
    silently is the small set of things that reach outside the machine or
    cannot be taken back: sending, publishing, buying, deleting, installing,
@@ -30,7 +30,7 @@ const DESTRUCTIVE = {
   categories: 'DataLoss',
   level: 'High',
   test: /\b(?:delete|deleting|remove|removing|erase|wipe|empty\s+(?:the\s+)?(?:bin|trash)|discard|clear\s+(?:all|history)|format|uninstall|overwrite|drop\s+table)\b/i,
-  reason: 'This removes something, and Pico cannot put it back.',
+  reason: 'This removes something, and Halo cannot put it back.',
 };
 
 /** Things that spend money. */
@@ -53,7 +53,7 @@ const SYSTEM = {
 const HUMAN_ONLY = {
   categories: 'Credentials',
   test: /\b(?:password|passphrase|passcode|pin\b|2fa|two-?factor|otp\b|one-?time\s+code|verification\s+code|captcha|recaptcha|credit\s+card|card\s+number|cvv|security\s+code|social\s+security|log\s+in|login|sign\s+in)\b/i,
-  reason: 'Pico never types a credential, and never answers a CAPTCHA.',
+  reason: 'Halo never types a credential, and never answers a CAPTCHA.',
 };
 
 const RULES = [EXTERNAL, DESTRUCTIVE, PURCHASE, SYSTEM];
@@ -75,8 +75,11 @@ export const ALLOW = {
  */
 export function assess(action = {}, windowTitle = '') {
   // The agent's own words carry the intent; the window says where it lands.
+  // What it is clicking ("the Send button") counts towards weighing a click,
+  // but not towards handing over: a "Sign in" button can be pressed by
+  // anyone, it is the password field that is the person's alone.
   const said = `${action.why ?? ''} ${action.text ?? ''} ${(action.keys ?? []).join(' ')}`;
-  const context = `${said} ${windowTitle}`;
+  const context = `${said} ${action.target ?? ''} ${windowTitle}`;
 
   // Credentials are never approvable — they are handed back, every time.
   // Checked against what the agent means to do, not the window title alone:

@@ -1,0 +1,418 @@
+/* ==========================================================================
+   Halo — the pieces both windows share: thread, decision, plan, composer.
+
+   Black glass, Inter set tight, and light used for exactly two things —
+   something happening, and something waiting on you. Everything else stays
+   quiet so those two are unmistakable.
+   ========================================================================== */
+
+:root {
+  --h-ink: #f4f4f6;
+  --h-dim: #9a9aa3;
+  --h-faint: #5f5f69;
+  --h-well: rgba(255, 255, 255, .05);
+  --h-well-hi: rgba(255, 255, 255, .09);
+  --h-line: rgba(255, 255, 255, .08);
+  --h-line-hi: rgba(255, 255, 255, .16);
+  --h-ask: #9d8cff;
+  --h-approve: #ffb257;
+  --h-hand: #62b6ff;
+  --h-good: #3ddc84;
+  --h-bad: #ff5d52;
+  --h-spring: cubic-bezier(.32, 1.25, .5, 1);
+  --h-out: cubic-bezier(.2, .8, .2, 1);
+  --h-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+.h-icon { flex: none; display: block; }
+
+/* --- effects' own boxes ---------------------------------------------------- */
+.h-orb { position: relative; display: inline-grid; place-items: center; flex: none; overflow: visible; }
+.h-orb__inner { display: grid; place-items: center; transform-origin: 50% 50%; flex: none; }
+.h-orb canvas { display: block; }
+
+.h-metal { flex: none; }
+.h-beam { min-width: 0; }
+
+/* --- buttons --------------------------------------------------------------- */
+/* Metal paints the fill itself — a dark liquid face inside the ring — and
+   clears the button's own background to do it, so the label is light. Where
+   WebGL is missing the button keeps this dark face and a hairline instead. */
+.h-mbtn {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+  color: #f7f7fa;
+  background: #16161a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, .5);
+  transition: transform .18s var(--h-spring), filter .18s, opacity .18s, color .18s;
+}
+.h-mbtn:not(:disabled):hover { filter: brightness(1.12); }
+.h-mbtn:not(:disabled):active { transform: scale(.94); }
+.h-mbtn:disabled { cursor: default; color: var(--h-faint); }
+.h-mbtn--circle { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; padding: 0; }
+
+.h-ibtn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--h-well);
+  color: #cfcfd6;
+  cursor: pointer;
+  transition: background .16s, color .16s, transform .18s var(--h-spring);
+}
+.h-ibtn:hover { background: var(--h-well-hi); color: var(--h-ink); }
+.h-ibtn:active { transform: scale(.9); }
+.h-ibtn--stop { background: color-mix(in oklab, var(--h-bad) 20%, #000); color: #ff7a71; }
+.h-ibtn--stop:hover { background: color-mix(in oklab, var(--h-bad) 32%, #000); color: #ffa29b; }
+
+.h-pill {
+  height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 17px;
+  background: var(--h-well-hi);
+  color: var(--h-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background .16s, transform .18s var(--h-spring);
+}
+.h-pill:hover { background: rgba(255, 255, 255, .14); }
+.h-pill:active { transform: scale(.96); }
+.h-pill--primary { padding: 0 18px; }
+.h-pill--danger { color: #ff8a82; }
+.h-pill--sm { height: 30px; padding: 0 14px; font-size: 12.5px; }
+
+.h-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--h-dim);
+  font: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--h-line-hi);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.h-link:hover { color: var(--h-ink); }
+
+.h-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.h-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--h-line);
+  border-radius: 15px;
+  background: transparent;
+  color: #d4d4db;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background .16s, border-color .16s, color .16s;
+}
+.h-chip:hover { background: var(--h-well); border-color: transparent; color: var(--h-ink); }
+.h-chip--metal { border: 0; height: 30px; padding: 0 13px; font-weight: 600; }
+.h-chip--save { color: var(--h-ink); border-color: var(--h-line-hi); }
+
+/* --- a field with a send button ------------------------------------------- */
+.h-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 42px;
+  padding: 0 4px 0 14px;
+  border-radius: 21px;
+  background: #000;
+  box-shadow: inset 0 0 0 1px var(--h-line-hi);
+  transition: box-shadow .18s;
+}
+.h-field:focus-within { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .32); }
+.h-field--inline { height: 38px; padding-left: 12px; }
+.h-field__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--h-ink);
+  font: inherit;
+  font-size: 14px;
+  user-select: text;
+}
+.h-field__input::placeholder { color: var(--h-faint); }
+
+/* --- the thread ------------------------------------------------------------ */
+.h-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  user-select: text;
+  scrollbar-width: none;
+}
+.h-thread::-webkit-scrollbar { display: none; }
+
+.h-msg {
+  max-width: 86%;
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -.006em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: h-rise .32s var(--h-out) both;
+}
+.h-msg--you {
+  align-self: flex-end;
+  padding: 8px 14px;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--h-well-hi);
+}
+.h-msg--pico { align-self: flex-start; color: #e8e8ee; padding: 2px 2px; }
+/* A reply still arriving: the tail of it glows, as if being written. */
+.h-msg--pico.is-streaming {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 1.4em), rgba(0, 0, 0, .6));
+  mask-image: linear-gradient(180deg, #000 calc(100% - 1.4em), rgba(0, 0, 0, .6));
+}
+.h-msg--waiting { display: inline-flex; align-items: center; gap: 9px; color: var(--h-dim); }
+.h-msg--event {
+  align-self: center;
+  max-width: 100%;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--h-dim);
+  text-align: center;
+}
+.h-msg__gone { color: var(--h-faint); font-style: italic; }
+
+.h-shimmer {
+  background: linear-gradient(90deg, var(--h-faint) 0%, var(--h-ink) 50%, var(--h-faint) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: h-shimmer 1.8s linear infinite;
+}
+
+@keyframes h-rise {
+  from { opacity: 0; transform: translateY(6px); filter: blur(3px); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+@keyframes h-shimmer { to { background-position: -200% 0; } }
+
+/* --- a decision ------------------------------------------------------------ */
+.h-decision-beam { display: block; border-radius: 22px; }
+.h-decision {
+  --tone: var(--h-ask);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 14px;
+  border-radius: 22px;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in oklab, var(--tone) 16%, transparent), transparent 60%),
+    #0b0b0e;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone) 38%, transparent);
+  animation: h-decision-in .5s var(--h-spring) both;
+}
+.h-decision--approval { --tone: var(--h-approve); }
+.h-decision--takeover { --tone: var(--h-hand); }
+
+@keyframes h-decision-in {
+  0%   { opacity: 0; transform: translateY(-8px) scale(.97); }
+  100% { opacity: 1; transform: none; }
+}
+
+.h-decision__flag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--tone);
+}
+.h-decision__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 currentColor;
+  animation: h-beat 1.2s ease-out infinite;
+}
+@keyframes h-beat {
+  0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--tone) 70%, transparent); }
+  100% { box-shadow: 0 0 0 9px transparent; }
+}
+
+.h-decision__main { display: flex; gap: 12px; align-items: flex-start; }
+.h-decision__icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--tone);
+  background: color-mix(in oklab, var(--tone) 18%, #000);
+}
+.h-decision__body { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-top: 2px; }
+.h-decision__title {
+  font-family: var(--h-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  line-height: 1.3;
+}
+.h-decision__reason { font-size: 13px; color: var(--h-dim); line-height: 1.5; }
+.h-decision__target { font-size: 12px; color: #c9c9d0; display: flex; gap: 8px; }
+.h-decision__target span { color: var(--h-faint); text-transform: uppercase; letter-spacing: .06em; font-size: 10.5px; padding-top: 1px; }
+
+.h-decision__answer { display: flex; flex-direction: column; gap: 8px; }
+.h-decision__choices { display: flex; gap: 8px; }
+.h-decision__choices > * { flex: 1 1 0; min-width: 0; }
+.h-decision__choices .h-metal, .h-decision__choices .h-metal .h-pill { width: 100%; }
+.h-decision__actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.h-decision__note { margin-right: auto; font-size: 11.5px; color: var(--h-faint); line-height: 1.4; }
+
+/* --- the plan -------------------------------------------------------------- */
+.h-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; counter-reset: step; }
+.h-steps__more { font-size: 11.5px; color: var(--h-faint); padding: 2px 0 4px 30px; }
+.h-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 4px 6px 4px 4px;
+  border-radius: 12px;
+  transition: background .25s, opacity .25s;
+}
+.h-step[data-status="current"] { background: var(--h-well); }
+.h-step[data-status="pending"] { opacity: .5; }
+.h-step__mark {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.h-step__mark i { width: 6px; height: 6px; border-radius: 50%; background: var(--h-faint); }
+.h-step[data-status="done"] .h-step__mark { background: color-mix(in oklab, var(--h-good) 22%, #000); color: var(--h-good); animation: h-pop .4s var(--h-spring) both; }
+.h-step[data-status="skipped"] .h-step__mark { background: var(--h-well-hi); color: var(--h-dim); }
+.h-step[data-status="failed"] .h-step__mark,
+.h-step[data-status="changed"] .h-step__mark { background: color-mix(in oklab, var(--h-bad) 16%, #000); color: #ff8a82; }
+.h-step__text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.h-step__do { font-size: 13.5px; letter-spacing: -.01em; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-step[data-status="current"] .h-step__do { font-weight: 600; }
+.h-step[data-status="skipped"] .h-step__do,
+.h-step[data-status="failed"] .h-step__do,
+.h-step[data-status="changed"] .h-step__do { text-decoration: line-through; text-decoration-color: var(--h-faint); color: var(--h-dim); }
+.h-step__why { font-size: 12px; color: var(--h-dim); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-step__skip {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--h-well-hi);
+  color: #d4d4db;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .16s, background .16s;
+}
+.h-step:hover .h-step__skip, .h-step__skip:focus-visible { opacity: 1; }
+.h-step__skip:hover { background: rgba(255, 255, 255, .16); }
+.h-steps.is-dense .h-step { min-height: 28px; }
+
+@keyframes h-pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+.h-controls { display: flex; align-items: center; gap: 6px; }
+
+/* --- the composer ---------------------------------------------------------- */
+.h-composer-beam { display: block; border-radius: 24px; }
+.h-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 7px 0 7px;
+  border-radius: 24px;
+  background: #0d0d10;
+  box-shadow: inset 0 0 0 1px var(--h-line);
+  transition: box-shadow .2s;
+}
+.h-composer:focus-within { box-shadow: inset 0 0 0 1px var(--h-line-hi), 0 0 0 4px rgba(255, 255, 255, .03); }
+.h-composer.is-big { height: 58px; border-radius: 29px; padding: 0 9px; }
+.h-composer.is-big .h-mbtn--circle { width: 40px; height: 40px; }
+.h-composer__mode, .h-composer__tag {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  background: var(--h-well-hi);
+  color: #d4d4db;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.h-composer__mode:hover { color: var(--h-ink); background: rgba(255, 255, 255, .14); }
+.h-composer__mode[data-mode="chat"] { color: #7fd6ff; background: color-mix(in oklab, #38bdf8 18%, #000); }
+.h-composer__mode[data-mode="agent"] { color: #6ee7a1; background: color-mix(in oklab, #34d399 18%, #000); }
+.h-composer__tag { cursor: default; color: #8fc7ff; background: color-mix(in oklab, #3b82f6 22%, #000); }
+.h-composer__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--h-ink);
+  font: inherit;
+  font-size: 14.5px;
+  letter-spacing: -.01em;
+  user-select: text;
+}
+.h-composer__input::placeholder { color: var(--h-faint); }
+.h-composer.is-big .h-composer__input { font-size: 16px; }
+
+/* --- the face: mascot at rest, orb at work --------------------------------- */
+.h-presence { position: relative; display: inline-grid; flex: none; }
+.h-presence > span { grid-area: 1 / 1; display: grid; place-items: center; transition: opacity .35s var(--h-out), transform .45s var(--h-spring), filter .35s; }
+.h-presence[data-busy="true"] .h-presence__rest { opacity: 0; transform: scale(.6); filter: blur(4px); }
+.h-presence[data-busy="false"] .h-presence__busy { opacity: 0; transform: scale(1.3); filter: blur(4px); }
+.h-mascot { display: grid; place-items: center; }
+.h-mascot .pet { --pet-size: inherit; }
+
+@media (prefers-reduced-motion: reduce) {
+  .h-msg, .h-decision, .h-step__mark, .h-presence > span { animation: none !important; transition: none !important; }
+  .h-shimmer { animation: none; color: var(--h-dim); }
+}
+
+/* The send arrow, a touch heavier than the other icons: it is the one you aim for. */
+.h-send .h-icon { stroke-width: 2.5; }

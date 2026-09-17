@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — host bridge
+   Halo — host bridge
 
    One transport-agnostic contract between the UI and whatever is driving it.
 
@@ -28,7 +28,15 @@ export const HOST_EVENTS = [
   'message',     // { id, text, done } — a chat reply, streamed
   'cursor',      // { x, y, done } — where the pointer actually is, live
   'notch',       // { open } — whether the notch window is up
-  'question',    // { id, text } | null — Pico needs one detail before starting
+  'question',    // { id, text } | null — Halo needs one detail before starting
+  'chatCleared', // {} — the thread was started over, here or on another device
+  'plan',        // { steps: [{ do, kind, status }], index, doneWhen, finished?, succeeded? } | null
+  'runFinished', // { task, steps, succeeded } — what "save as shortcut" would keep
+  'memory',      // { facts } — everything Halo has been told to keep
+  'routines',    // { items } — saved shortcuts
+  'chats',       // { list, current } — every conversation, newest first
+  'chatOpened',  // { id, messages } — an earlier chat, reopened in every window
+  'chatSearch',  // { q, results } — only to the window that searched
 ];
 
 /** Commands the UI sends up to the host. */
@@ -49,6 +57,22 @@ export const UI_COMMANDS = [
   'movePalette',  // { x, y }
   'openNotch',    // {} — raise the notch window on the real desktop
   'closeNotch',   // {}
+  'newChat',      // {} — forget the thread, here and in the host
+  'skipStep',     // { index } — leave the step in hand and move on
+  'steer',        // { text } — "no, the other one": a correction while it works
+  'memoryAdd',    // { text }
+  'memoryRemove', // { id }
+  'memoryClear',  // {}
+  'routineSave',  // { name, task? } — the last run, unless a task is given
+  'routineRun',   // { id }
+  'routineRename',// { id, name }
+  'routineRemove',// { id }
+  'openChat',     // { id }
+  'chatRename',   // { id, title }
+  'chatDelete',   // { id }
+  'chatSearch',   // { q }
+  'chatsImport',  // { chats } — history a window kept for itself before
+  'openApp',      // { section? } — the full window, from the island
 ];
 
 class Bridge {
@@ -105,7 +129,40 @@ class Bridge {
         break;
 
       case 'summary':
-        store.setSummary(payload.text);
+        store.setSummary(payload.text, payload.id);
+        break;
+
+      case 'plan':
+        store.setPlan(payload);
+        break;
+
+      case 'runFinished':
+        store.setLastRun(payload);
+        break;
+
+      case 'memory':
+        store.setMemory(payload.facts);
+        break;
+
+      case 'routines':
+        store.setRoutines(payload.items);
+        break;
+
+      case 'chats':
+        store.setChats(payload);
+        break;
+
+      case 'chatOpened':
+        store.setQuestion(null);
+        store.setApproval(null);
+        store.setTakeover(null);
+        store.setPlan(null);
+        store.loadMessages(payload.messages);
+        store.set({ chats: { ...store.state.chats, current: payload.id } }, { type: 'chats' });
+        break;
+
+      case 'chatSearch':
+        store.setChatSearch(payload);
         break;
 
       case 'auditEvent':
@@ -143,8 +200,19 @@ class Bridge {
         store.setQuestion(payload);
         break;
 
+      // Someone started a new chat — this window, the app window, or the
+      // phone. They all show the same thread, so they all start over.
+      case 'chatCleared':
+        store.clearMessages();
+        store.setPlan(null);
+        store.setLastRun(null);
+        store.setQuestion(null);
+        store.setApproval(null);
+        store.setTakeover(null);
+        break;
+
       default:
-        console.warn('[pico] unknown host event:', type);
+        console.warn('[halo] unknown host event:', type);
     }
   }
 
@@ -312,7 +380,7 @@ export const bridge = new Bridge();
 /**
  * Attach the right transport for wherever this page is running.
  *
- *   webview2 — hosted inside Pico.Desktop
+ *   webview2 — hosted inside Halo.Desktop
  *   bridge   — served by bridge/server.mjs, so the laptop's own UI shares
  *              live state with any paired phone
  *   mock     — opened from the standalone dev server
@@ -328,7 +396,7 @@ export function connect({ onStatus } = {}) {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocketTransport(`${proto}//${location.host}/ws`, {
       // Loopback clients are auto-paired by the bridge: anyone already on the
-      // machine can drive Pico directly anyway.
+      // machine can drive Halo directly anyway.
       token: () => null,
       code: () => null,
       onStatus,

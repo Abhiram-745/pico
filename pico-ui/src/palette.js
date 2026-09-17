@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — command palette  (Ctrl+Shift+P)
+   Halo — command palette  (Ctrl+Shift+P)
 
    The keyboard-first surface. This is a separate, activatable window in the
    host: the companion overlay is WS_EX_NOACTIVATE and can never take focus,
@@ -54,7 +54,7 @@ const COMMANDS = [
   },
   {
     id: 'tuck',
-    title: 'Tuck Pico away',
+    title: 'Tuck Halo away',
     hint: 'Hide the companion; restore from the tray',
     when: () => true,
     run: () => bridge.send('tuckAway'),
@@ -89,7 +89,7 @@ export function mountPalette(host) {
 
   const panel = el('div', 'palette glass glass-accent-edge');
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Pico command palette');
+  panel.setAttribute('aria-label', 'Halo command palette');
 
   panel.innerHTML = `
     <div class="palette__run" hidden>

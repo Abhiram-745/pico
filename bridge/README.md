@@ -1,6 +1,6 @@
-# Pico bridge
+# Halo bridge
 
-Lets a paired phone drive Pico on your laptop, over your own Wi-Fi.
+Lets a paired phone drive Halo on your laptop, over your own Wi-Fi.
 
 ```bash
 node bridge/server.mjs
@@ -11,7 +11,6 @@ A QR code and an 8-character pairing code appear in the terminal. Scan the code 
 | URL | What |
 | --- | --- |
 | `http://<your-lan-ip>:4177/` | Phone app |
-| `http://localhost:4177/pico-ui/desktop.html` | The laptop's own view, live-synced with the phone |
 
 Set `PICO_BRIDGE_PORT` to use a different port.
 
@@ -25,7 +24,7 @@ No dependencies. The WebSocket server and the QR encoder are both implemented he
 
 **Pairing.** A phone must present the pairing code shown on the laptop before it is issued a token. The code is regenerated every time the server starts, uses an alphabet with no ambiguous characters, and is compared in constant time. Wrong codes are rate limited: five failures from an address triggers a 60-second lockout. An unpaired socket is dropped after 30 seconds.
 
-**Loopback is auto-paired.** Anyone already on the laptop can drive Pico directly, so requiring a code from `127.0.0.1` would be theatre.
+**Loopback is auto-paired.** Anyone already on the laptop can drive Halo directly, so requiring a code from `127.0.0.1` would be theatre.
 
 **Commands are allowlisted.** Anything outside `ALLOWED_COMMANDS` is dropped and logged. Task text is length-capped. `approve`, `deny`, and `takeoverDone` must name the exact pending decision, so a phone that has been asleep cannot answer a question it never saw.
 
@@ -67,7 +66,7 @@ committed template. Never import `llm.mjs` from anything under `phone/` or
 BazaarLink does **not** support the Responses API `computer_use_preview` tool —
 verified, it returns `400 The model service rejected the request parameters`.
 That tool is what returns structured click/type/screenshot actions, and it is
-the thing Pico's desktop loop is built on. So BazaarLink can plan and summarise,
+the thing Halo's desktop loop is built on. So BazaarLink can plan and summarise,
 but it cannot drive the mouse and keyboard. Actually controlling the desktop
 still needs a model with the computer tool.
 
@@ -88,7 +87,7 @@ Identical to the one the WebView2 host implements — see [`pico-ui/INTEGRATION.
  laptop ──┘
 ```
 
-Today the host is the mock agent in `pico-ui/mock/agent.js`, which is what makes the whole thing runnable without the Windows app. Swapping in the real one means replacing that single import with a connection to `Pico.Desktop`.
+Today the host is the mock agent in `pico-ui/mock/agent.js`, which is what makes the whole thing runnable without the Windows app. Swapping in the real one means replacing that single import with a connection to `Halo.Desktop`.
 
 ---
 

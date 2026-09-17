@@ -9,6 +9,8 @@
         Twice.
      2. The app used CSS classes defined in a stylesheet it does not load, so
         a button rendered as a bare grey box.
+     3. The interface is bundled (scripts/build-ui.mjs); a source that does
+        not compile would leave Halo serving yesterday's island.
 
    Run with: node scripts/check.mjs
    ========================================================================== */
@@ -24,7 +26,8 @@ const fail = (msg) => failures.push(msg);
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (['node_modules', '.git', '.agents', 'out', 'dist'].includes(name)) continue;
+    // build/ is esbuild's minified output: generated, and checked by building it.
+    if (['node_modules', '.git', '.agents', 'out', 'dist', 'build'].includes(name)) continue;
     const full = join(dir, name);
     if (statSync(full).isDirectory()) walk(full, out);
     else out.push(full);
@@ -125,10 +128,24 @@ for (const f of scripts) {
    3. Every class a page uses is defined in a stylesheet that page loads
    -------------------------------------------------------------------------- */
 const PAGES = [
-  { html: 'pico-ui/app.html', js: ['pico-ui/src/app.js', 'pico-ui/src/setup.js'] },
-  { html: 'pico-ui/desktop.html', js: ['pico-ui/src/notch.js', 'pico-ui/src/cursors.js'] },
-  { html: 'pico-ui/notch.html', js: ['pico-ui/src/island.js'] },
+  { html: 'pico-ui/app.html', js: ['pico-ui/react/app.jsx', 'pico-ui/react/parts.jsx', 'pico-ui/react/fx.jsx', 'pico-ui/src/setup.js'] },
+  { html: 'pico-ui/notch.html', js: ['pico-ui/react/island.jsx', 'pico-ui/react/parts.jsx', 'pico-ui/react/fx.jsx'] },
 ];
+
+/* The classes a React component asks for: className="a b", and the fixed
+   words of className={`a ${b ? 'c' : ''}`}. Only the h- prefixed ones are
+   ours to check — the rest belong to the effect libraries, which bring their
+   own styles. */
+function jsxClasses(js) {
+  const out = new Set();
+  for (const m of js.matchAll(/className="([^"]+)"/g)) for (const c of m[1].split(/\s+/)) out.add(c);
+  for (const m of js.matchAll(/className=\{`([^`]+)`\}/g)) {
+    for (const c of m[1].replace(/\$\{[^}]*\}/g, ' ').split(/\s+/)) out.add(c);
+  }
+  for (const m of js.matchAll(/className: '([^']+)'/g)) for (const c of m[1].split(/\s+/)) out.add(c);
+  // A class ending in a dash is the fixed half of one built from a value.
+  return [...out].filter((c) => /^h-[a-z]/.test(c) && !/[^\w-]/.test(c) && !c.endsWith('-'));
+}
 
 for (const page of PAGES) {
   const html = readFileSync(join(ROOT, page.html), 'utf8');
@@ -151,6 +168,7 @@ for (const page of PAGES) {
     for (const m of js.matchAll(/el\(\s*['"`][a-z0-9]+['"`]\s*,\s*['"]([^'"$]+)['"]/g)) {
       for (const c of m[1].split(/\s+/)) if (c) used.add(c);
     }
+    if (jsPath.endsWith('.jsx')) for (const c of jsxClasses(js)) used.add(c);
     for (const c of used) {
       if (!defined.has(c)) {
         fail(`${jsPath}: uses ".${c}" but ${page.html} loads no stylesheet defining it`);
@@ -174,14 +192,24 @@ for (const f of files) {
    5. The intent router still routes every phrasing it is meant to
 
    This is the one behaviour where being wrong is immediately visible: a
-   misrouted greeting means Pico takes over the desktop to type "hello".
+   misrouted greeting means Halo takes over the desktop to type "hello".
    -------------------------------------------------------------------------- */
-for (const suite of ['test-intent.mjs', 'test-shortcuts.mjs']) {
+for (const suite of ['test-intent.mjs', 'test-shortcuts.mjs', 'test-aim.mjs', 'test-scroll.mjs', 'test-driver.mjs', 'test-memory.mjs']) {
   try {
     execFileSync(process.execPath, [join(ROOT, 'scripts', suite)], { stdio: 'pipe' });
   } catch (err) {
     fail(`${suite}:\n${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trimEnd());
   }
+}
+
+/* --------------------------------------------------------------------------
+   6. The interface compiles
+   -------------------------------------------------------------------------- */
+try {
+  const { buildUI } = await import('./build-ui.mjs');
+  await buildUI();
+} catch (err) {
+  fail(`the interface does not build:\n    ${String(err.message).split('\n').slice(0, 4).join('\n    ')}`);
 }
 
 /* -------------------------------------------------------------------------- */

@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico bridge — lets a paired phone drive the desktop agent over the LAN.
+   Halo bridge — lets a paired phone drive the desktop agent over the LAN.
 
    Security posture, deliberately conservative:
 
@@ -34,10 +34,41 @@ import { LLM, PROVIDERS } from './llm.mjs';
 import { NotchWindow } from './notch-window.mjs';
 import * as autostart from './autostart.mjs';
 import { IslandHost } from './island-host.mjs';
+import { Sense } from './sense.mjs';
 import { check as checkUpdate, install as installUpdate, localBuild } from './updater.mjs';
+import { chatArchive } from './chats.mjs';
+import { memory } from './memory.mjs';
+import { routines } from './routines.mjs';
+import { migrateFromPico } from './home.mjs';
+import { findBrowser } from './notch-window.mjs';
+import { buildUI } from '../scripts/build-ui.mjs';
+
+/* The HALO_ names are the ones to use now; the PICO_ ones still work, so
+   nobody's .env or shortcut breaks with the rename. Everything below reads
+   the old names, and this makes either spelling land there. */
+for (const [k, v] of Object.entries(process.env)) {
+  if (k.startsWith('HALO_') && k !== 'HALO_HOME' && process.env[`PICO_${k.slice(5)}`] === undefined) {
+    process.env[`PICO_${k.slice(5)}`] = v;
+  }
+}
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
+
+/* --app: open the full window as well as the island. It is what the
+   "Halo App" shortcut runs, so that one shortcut works whether or not Halo
+   is already going — see the EADDRINUSE handler below. */
+const OPEN_APP = process.argv.includes('--app');
+const appUrl = () => `http://localhost:${PORT}/pico-ui/app.html`;
+function openAppWindow(section = '') {
+  const browser = findBrowser();
+  const url = `${appUrl()}${/^[a-z]{2,20}$/.test(section) ? `#${section}` : ''}`;
+  try {
+    spawn(browser || 'explorer.exe', browser ? [`--app=${url}`, '--window-size=1280,880'] : [url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch (err) {
+    console.warn(`[bridge] could not open the app window (${err.message})`);
+  }
+}
 
 /* Commands a client may send. Must stay in sync with UI_COMMANDS in
    pico-ui/src/bridge.js — anything not listed here is dropped. */
@@ -46,7 +77,15 @@ const ALLOWED_COMMANDS = new Set([
   'approve', 'deny', 'takeoverDone',
   'saveSettings', 'setName', 'answerQuestion', 'tuckAway',
   'openPalette', 'closePalette', 'movePalette',
-  'openNotch', 'closeNotch',
+  'openNotch', 'closeNotch', 'newChat',
+  // while a task runs
+  'skipStep', 'steer',
+  // what Halo remembers, and saved shortcuts
+  'memoryAdd', 'memoryRemove', 'memoryClear',
+  'routineSave', 'routineRun', 'routineRename', 'routineRemove',
+  // chat history, shared by every window
+  'openChat', 'chatRename', 'chatDelete', 'chatSearch', 'chatsImport',
+  'openApp',
 ]);
 
 const MAX_TASK_LENGTH = 2000;   // mirrors the desktop app's own task limit
@@ -116,6 +155,8 @@ class Bridge {
       approval: null,
       takeover: null,
       question: null,
+      plan: null,
+      runFinished: null,
     };
 
     // The conversation so far, so a phone joining mid-thread sees it rather
@@ -127,8 +168,18 @@ class Bridge {
       onCommand: (handler) => { this._hostHandler = handler; },
     };
 
-    this.agent = new HostAgent(this.transport);
+    this.agent = new HostAgent(this.transport, { memory, routines });
     this.agent.start();
+
+    /* The chat that was open when Halo last stopped, back where it was: on
+       screen for every window that connects, and in the model's memory. */
+    this.messages = chatArchive.restore().slice(-40);
+    if (this.messages.length) {
+      this._hostHandler?.({ command: 'newChat', payload: { resume: this.messages } });
+    }
+    this._chatsTimer = null;
+    memory.subscribe((list) => this.broadcast({ type: 'memory', payload: { facts: list } }));
+    routines.subscribe((list) => this.broadcast({ type: 'routines', payload: { items: list } }));
     this.llm = null;
     this.screenSize = null;
     this.notch = null;        // set once the server knows its own address
@@ -164,7 +215,7 @@ class Bridge {
   }
 
   /**
-   * Say plainly whether Pico can actually work, and why not when it cannot.
+   * Say plainly whether Halo can actually work, and why not when it cannot.
    * The old build reported `guardian: ready` unconditionally and then ran a
    * scripted stand-in, so a machine with no key looked identical to a working
    * one right up until nothing happened.
@@ -186,19 +237,26 @@ class Bridge {
 
   /** Host -> every connected client. */
   _fromHost(type, payload) {
-    if (type in this.snapshot) this.snapshot[type] = payload;
-
-    if (type === 'message') {
-      // Streamed replies arrive many times under one id; keep the latest of
-      // each rather than a bubble per token.
-      const i = this.messages.findIndex((m) => m.id === payload.id);
-      if (i === -1) this.messages = [...this.messages, payload].slice(-40);
-      else this.messages[i] = payload;
+    /* A summary is a message too — it is what Halo said at the end of a run —
+       so it gets an id here, once, and every window files it under the same
+       one. Without an id each window made up its own, and a window that
+       reconnected showed the closing line twice. */
+    if (type === 'summary' && payload?.text && !payload.id) {
+      payload = { ...payload, id: `sum_${Date.now().toString(36)}` };
     }
 
-    if (type === 'phase') showCursorFor(payload.phase);
-    if (type === 'action' && /click/i.test(payload.type || '')) {
-      islandHost?.cursorState('clicking');
+    if (type in this.snapshot) this.snapshot[type] = payload;
+
+    if (type === 'message' || (type === 'summary' && payload?.text)) {
+      const entry = type === 'summary'
+        ? { id: payload.id, from: 'pico', text: payload.text, done: true }
+        : payload;
+      // Streamed replies arrive many times under one id; keep the latest of
+      // each rather than a bubble per token.
+      const i = this.messages.findIndex((m) => m.id === entry.id);
+      if (i === -1) this.messages = [...this.messages, entry].slice(-40);
+      else this.messages[i] = entry;
+      if (chatArchive.record(entry)) this.chatsChanged();
     }
 
     if (type === 'phase') {
@@ -209,11 +267,21 @@ class Bridge {
     this.broadcast({ type, payload });
   }
 
-  broadcast(msg) {
+  broadcast(msg, except = null) {
     const text = JSON.stringify(msg);
     for (const c of this.clients) {
+      if (c === except) continue;
       if (c.paired && c.conn.open) c.conn.send(text);
     }
+  }
+
+  /** The list of chats, told to everyone — gathered up, since a streamed reply
+      can change a title several times in a second. */
+  chatsChanged() {
+    clearTimeout(this._chatsTimer);
+    this._chatsTimer = setTimeout(() => {
+      this.broadcast({ type: 'chats', payload: { list: chatArchive.list(), current: chatArchive.currentId } });
+    }, 150);
   }
 
   replay(client) {
@@ -221,12 +289,17 @@ class Bridge {
     const send = (type, payload) => payload && client.conn.sendJSON({ type, payload });
     send('guardian', s.guardian);
     send('settings', s.settings);
+    send('chats', { list: chatArchive.list(), current: chatArchive.currentId });
+    send('memory', { facts: memory.list() });
+    send('routines', { items: routines.list() });
     for (const m of this.messages) send('message', m);
     send('phase', s.phase);
     send('pauseState', s.pauseState);
     send('approval', s.approval);
     send('takeover', s.takeover);
     send('question', s.question);
+    send('plan', s.plan);
+    send('runFinished', s.runFinished);
     // Not part of the snapshot, because it is not the agent's state — but it
     // has to be replayed for the same reason everything else here is: a page
     // that has just connected knows nothing until it is told.
@@ -341,9 +414,129 @@ class Bridge {
     if (command === 'answerQuestion') {
       const text = String(payload.text ?? '').slice(0, MAX_TASK_LENGTH).trim();
       if (!text) return;
+      // A tapped option names itself by id, so "the app" and "the website"
+      // do not depend on how their labels happen to be worded.
+      const options = this.snapshot.question?.options ?? [];
+      const choice = typeof payload.choice === 'string' && options.some((o) => o.id === payload.choice)
+        ? payload.choice
+        : null;
       // The thread entry is written by the agent once the answer has landed,
       // so that the question and the answer appear together and in order.
-      this._hostHandler?.({ command, payload: { text } });
+      this._hostHandler?.({ command, payload: { text, choice } });
+      return;
+    }
+
+    /* Start again with nothing remembered.
+
+       Three different things remember the conversation and all three have to
+       let go of it, or "new chat" is a lie told by the interface:
+
+         the replay buffer here, which is what a page is handed on connect —
+           leave it and the old thread reappears the moment anything reloads;
+         the agent's own history, which is what the model is actually shown —
+           leave it and the new chat answers out of the old one;
+         whatever was still pending — an unanswered question or an approval
+           nobody ever decided, which otherwise holds the island open
+           forever waiting on a conversation that no longer exists.
+
+       The last one is not housekeeping. A question with no answer pins the
+       island open and there is no way past it from the interface, so a chat
+       that ended mid-question left Halo stuck on screen for good. */
+    /* --- chat history ---------------------------------------------------- */
+    if (command === 'openChat') {
+      const messages = chatArchive.open(String(payload.id ?? ''));
+      if (!messages) return;
+      this.messages = messages.slice(-40);
+      this.snapshot.question = null;
+      this.snapshot.approval = null;
+      this.snapshot.takeover = null;
+      this.snapshot.plan = null;
+      this.snapshot.runFinished = null;
+      // Handed to the agent too, so Halo remembers the conversation you are
+      // looking at rather than only showing it.
+      this._hostHandler?.({ command: 'newChat', payload: { resume: messages.slice(-24) } });
+      // To everyone, sender included: every window shows the same thread, and
+      // the one that asked has not cleared itself — it waits for this.
+      this.broadcast({ type: 'chatOpened', payload: { id: chatArchive.currentId, messages } });
+      this.broadcast({ type: 'question', payload: null });
+      this.broadcast({ type: 'approval', payload: null });
+      this.broadcast({ type: 'takeover', payload: null });
+      this.chatsChanged();
+      return;
+    }
+    if (command === 'chatRename') {
+      if (chatArchive.rename(String(payload.id ?? ''), String(payload.title ?? ''))) this.chatsChanged();
+      return;
+    }
+    if (command === 'chatDelete') {
+      const wasCurrent = chatArchive.remove(String(payload.id ?? ''));
+      if (wasCurrent) {
+        this.messages = [];
+        this.snapshot.plan = null;
+        this._hostHandler?.({ command: 'newChat', payload: {} });
+        this.broadcast({ type: 'chatCleared', payload: {} });
+      }
+      this.chatsChanged();
+      return;
+    }
+    if (command === 'chatSearch') {
+      // Only to whoever asked: one window's search is nobody else's business.
+      client.conn.sendJSON({
+        type: 'chatSearch',
+        payload: { q: String(payload.q ?? ''), results: chatArchive.search(String(payload.q ?? '').slice(0, 200)) },
+      });
+      return;
+    }
+    if (command === 'chatsImport') {
+      // A window that kept its own history before the archive lived here.
+      // Local only: it writes files on this machine.
+      if (!client.local) return;
+      const added = chatArchive.importFrom(Array.isArray(payload.chats) ? payload.chats : []);
+      if (added) {
+        console.log(`[bridge] carried over ${added} chat${added === 1 ? '' : 's'} from a window's own storage`);
+        this.chatsChanged();
+      }
+      return;
+    }
+    if (command === 'openApp') {
+      if (!client.local) return;
+      this.onOpenApp?.(String(payload.section ?? ''));
+      return;
+    }
+
+    if (command === 'newChat') {
+      /* Reopening an older chat hands its thread back, so the model is not
+         the only one in the room who cannot remember the conversation on
+         screen. Clamped hard on the way in — it is the one place a client
+         writes directly into what the model will be shown, and a phone is
+         allowed to be wrong without being allowed to be enormous. */
+      const resume = Array.isArray(payload.resume) ? payload.resume.slice(-24) : [];
+      this.messages = [];
+      chatArchive.start();
+      this.snapshot.plan = null;
+      this.snapshot.runFinished = null;
+      this.chatsChanged();
+      this.snapshot.question = null;
+      this.snapshot.approval = null;
+      this.snapshot.takeover = null;
+      this.snapshot.summary = null;
+      this._hostHandler?.({ command, payload: { resume } });
+
+      /* Everyone but whoever asked.
+
+         The page that sends this has already cleared itself — it is the one
+         that decided to. Telling it again is not merely redundant: reopening
+         an older chat is "clear, then load what was saved", and the echo
+         arrived just after the load and wiped it. The chat opened, then
+         emptied itself, for no reason the user could see. */
+      this.broadcast({ type: 'chatCleared', payload: {} }, client);
+      // Said plainly rather than left implied: a client that missed the
+      // clear would otherwise keep showing a card for a decision that is no
+      // longer pending anywhere.
+      this.broadcast({ type: 'question', payload: null }, client);
+      this.broadcast({ type: 'approval', payload: null }, client);
+      this.broadcast({ type: 'takeover', payload: null }, client);
+      console.log(`[bridge] new chat from ${client.ip}`);
       return;
     }
 
@@ -391,7 +584,7 @@ async function saveKey(key) {
 
   const body = [
     ...lines,
-    '# Written by Pico setup. Keep this file private.',
+    '# Written by Halo setup. Keep this file private.',
     `OPENAI_API_KEY=${key}`,
     '',
   ].join('\n').replace(/^\s+/, '');
@@ -399,106 +592,11 @@ async function saveKey(key) {
   await writeFile(envPath, body, { encoding: 'utf8', mode: 0o600 });
 }
 
-/* Pico's cursor. Shown only while Pico is actually working — the rest of the
-   time there is nothing on screen and nothing running to draw it.
-
-   WHOSE POINTER MOVES
-   Ordinarily neither. A click now goes through the accessibility layer,
-   which presses the control itself — Pico's cursor walks over and presses
-   it, and the real pointer is not involved at all. A run made only of those
-   leaves the user's mouse exactly where it is, visible and usable, with
-   Pico's cursor working alongside it.
-
-   Some things have no such route: a drag, a right-click, an application that
-   exposes nothing. Windows has one pointer, so those borrow it — and only
-   then does the system cursor go invisible, at the moment it is first moved
-   rather than at the start of the run. It is put back where it was, and
-   touching the mouse mid-run takes it straight back: the helper notices the
-   pointer moving when nothing is driving it and returns it without being
-   asked. */
-const CURSOR_ART = join(ROOT, 'pico-ui', 'assets', 'pico.png');
-const WORKING = new Set([
-  'Starting', 'Observing', 'Thinking', 'Acting', 'Paused',
-  'AwaitingApproval', 'AwaitingTakeover',
-]);
 let islandHost = null;
-let cursorShown = false;
-let cursorOffTimer = null;
-let pointerTaken = false;      // the system pointer has been hidden this run
-let ghost = null;              // where Pico's own cursor is, when nothing real moves
-
-function showCursorFor(phase) {
-  if (!islandHost?.ready) return;
-  const working = WORKING.has(phase);
-
-  if (working && !cursorShown) {
-    clearTimeout(cursorOffTimer);
-    // Remember where the pointer is before anything moves it. The user's
-    // pointer is NOT hidden here: most of what Pico does now happens through
-    // the accessibility layer, where nothing of theirs is touched at all, and
-    // hiding a pointer nothing is going to move would be taking something for
-    // no reason. It goes only at the moment something really moves it — see
-    // onPointer below.
-    islandHost.cursorSave();
-    islandHost.cursorOn(CURSOR_ART);
-    cursorShown = true;
-    pointerTaken = false;
-    ghost = computer?.pointer ? { ...computer.pointer } : null;
-    if (ghost) islandHost.cursorAt(ghost.x, ghost.y);
-    if (process.env.PICO_DEBUG) console.log('[cursor] shown');
-  }
-  if (working) {
-    islandHost.cursorState(phase === 'Thinking' ? 'thinking' : 'moving');
-
-    // Nothing is being pointed at while Pico thinks, and thinking is most of
-    // a run. So the pointer goes home and waits there between actions — what
-    // crosses the screen in the meantime is Pico's cursor, and the user's is
-    // where they left it whenever they look. (Once they touch the mouse
-    // themselves the helper stops obeying this: it is their pointer again.)
-    //
-    // Only if it was ever taken. Putting a pointer "back" that never left
-    // means dragging it away from wherever the user has since moved it, which
-    // is the precise opposite of the point.
-    if (phase === 'Thinking' && pointerTaken) islandHost.cursorRestore();
-    return;
-  }
-  if (!cursorShown) return;
-
-  // Linger a moment on the result rather than blinking out mid-gesture.
-  islandHost.cursorState(phase === 'Completed' ? 'done' : 'moving');
-  clearTimeout(cursorOffTimer);
-  cursorOffTimer = setTimeout(() => {
-    // Order matters the other way round on the way out: the pointer goes
-    // back to where the user left it while it is still invisible, so they
-    // never see it travel there. Untouched pointers are left alone.
-    if (pointerTaken) islandHost?.cursorRestore();
-    islandHost?.cursorOff();
-    islandHost?.cursorShow();
-    cursorShown = false;
-    pointerTaken = false;
-    ghost = null;
-    if (process.env.PICO_DEBUG) console.log('[cursor] hidden');
-  }, 1400);
-}
-
-/* The pointer must never be left invisible because the bridge went away.
-   The helper restores it on stdin closing and again on a timer of its own,
-   but asking politely first is faster and covers Ctrl-C. */
-function releasePointer() {
-  try { islandHost?.cursorShow(); } catch { /* the helper is already gone */ }
-}
-process.once('exit', releasePointer);
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
-  process.once(sig, () => {
-    releasePointer();
-    try { islandHost?.stop(); } catch { /* already gone */ }
-    process.exit(0);
-  });
-}
 
 /* A bug anywhere must not take the bridge down with it. When it did, the
    interface and the paired phone both lost their connection and the only
-   symptom the user saw was that Pico stopped existing. Log it, keep
+   symptom the user saw was that Halo stopped existing. Log it, keep
    serving. */
 process.on('uncaughtException', (err) => {
   console.error('[bridge] uncaught:', err);
@@ -508,6 +606,23 @@ process.on('unhandledRejection', (err) => {
 });
 
 const BUILD = await localBuild();
+
+/* Anything the old name left in %LOCALAPPDATA%\Pico comes across first, so
+   the archive and memory below read what is already there. */
+{
+  const carried = migrateFromPico();
+  if (carried.length) console.log(`[bridge] carried over from Pico: ${carried.join(', ')}`);
+}
+
+/* The interface is React, bundled. Built here when its source is newer than
+   the bundle, so running from a checkout never serves yesterday's island. A
+   failed build keeps the last good bundle rather than taking Halo down. */
+try {
+  const built = await buildUI();
+  if (built.rebuilt) console.log(`[bridge] interface built in ${built.ms}ms`);
+} catch (err) {
+  console.warn(`[bridge] the interface could not be rebuilt (${String(err.message).split('\n')[0]}); serving the last build`);
+}
 const bridge = new Bridge();
 
 const server = createServer(async (req, res) => {
@@ -570,6 +685,7 @@ const server = createServer(async (req, res) => {
 
     const fresh = await LLM.fromEnv();
     if (fresh) {
+      await fresh.check();      // also picks the best models this key can use
       bridge.attachLLM(fresh);
       console.log('[bridge] key saved; model provider attached');
     }
@@ -797,93 +913,85 @@ server.on('upgrade', (req, socket, head) => {
 const host = lanAddress();
 const pairingUrl = () => `http://${host}:${PORT}/#p=${bridge.pairCode}`;
 
+/* ---------------------------------------------------------------------------
+   The port, opened first.
+
+   Everything below this line takes time: the accessibility helper starts, the
+   window helper is compiled from source on first run, the model provider is
+   checked over the network. And the island is a browser window pointed at
+   this very server.
+
+   Opening that window before the socket was listening meant Chrome asked a
+   port with nothing behind it for a page, got the refusal, and showed its own
+   "this site can't be reached" instead. That error page is not titled "Halo
+   Notch", so the window could never be found afterwards either, and so was
+   never pinned on top, never stripped of its frame, never placed against the
+   top edge. What was left on screen was an ordinary browser window, title bar
+   and all, sitting in the middle of the display showing an error. Starting
+   Halo looked exactly like Halo being broken.
+
+   So bind the port first, and only then open anything that has to talk to it.
+   -------------------------------------------------------------------------*/
+
+// Failing to bind is not a recoverable bug for the crash guard above to
+// swallow: without the port there is no bridge, and a process that stays
+// alive anyway just looks like Halo is running when it is not.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE' && OPEN_APP) {
+    // Halo is already running: the shortcut was only ever asking for its
+    // window, so open that and leave the running copy alone.
+    openAppWindow();
+    setTimeout(() => process.exit(0), 400);
+    return;
+  }
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  Port ${PORT} is already in use — Halo is probably already running.`);
+    console.error('  Close the other Halo window, or set PICO_BRIDGE_PORT to use another port.\n');
+  } else {
+    console.error('[bridge] server error:', err);
+  }
+  process.exit(1);
+});
+
+await new Promise((resolve) => {
+  server.listen(PORT, '0.0.0.0', () => {
+    const line = '─'.repeat(52);
+    console.log(`\n${line}`);
+    console.log(`  Halo bridge is running${BUILD.sha ? `  (build ${BUILD.sha})` : ''}`);
+    console.log(line);
+    console.log(`\n  Phone:   ${pairingUrl()}`);
+    console.log(`  Code:    ${bridge.pairCode}`);
+    console.log(`  Desktop: http://localhost:${PORT}/pico-ui/app.html\n`);
+    console.log(toTerminal(encode(pairingUrl())));
+    console.log('  Scan with your phone camera, on the same Wi-Fi.');
+    console.log('  Local network only — nothing is exposed to the internet.\n');
+    resolve();
+  });
+});
+
+
 // Real desktop control is optional: on a platform that cannot be driven, or
-// during local development, Pico still talks — it just says plainly that it
+// during local development, Halo still talks — it just says plainly that it
 // cannot work rather than running a stand-in that looks like success.
 //
-// Pointer positions are broadcast as they happen so the interface can draw
-// where Pico's cursor actually is. Windows has one system pointer and this
-// is it; there is nothing to interpolate or guess. Throttled to about 30 a
-// second, which is smooth to watch and cheap to send.
+// Halo works with the user's own pointer. There is no second cursor: the
+// positions broadcast here are that one pointer's, so the app's map of the
+// screen can show where it is. Throttled to about 30 a second.
+//
+// The accessibility helper is what lets a click land on the middle of the
+// control the model meant; without it clicks go where the model pointed.
+const sense = await Sense.start();
 let lastPointer = 0;
-let lastDrawn = 0;
 const computer = await loadComputer({
+  sense,
   onPointer: ({ x, y, done }) => {
     const now = Date.now();
-
-    // Something is really moving the pointer, so now it goes off screen —
-    // and not a moment before. A run made entirely of presses through the
-    // accessibility layer never reaches this line, and the user's cursor
-    // stays visible and theirs throughout while Pico's works alongside it.
-    if (cursorShown && !pointerTaken) {
-      pointerTaken = true;
-      islandHost?.cursorHide();
-      if (process.env.PICO_DEBUG) console.log('[cursor] taking the pointer');
-    }
-    ghost = { x, y };
-
-    // Two rates, because these two consumers want different things. The
-    // cursor drawn on screen is the one the user is watching, so it gets
-    // every frame it can use (~60 a second) — a cursor updated at 30Hz
-    // visibly steps. The remote clients are watching a diagram of where
-    // Pico is, and 30 a second is plenty for that and half the traffic.
-    if (done || now - lastDrawn >= 15) {
-      lastDrawn = now;
-      islandHost?.cursorAt(x, y);
-    }
     if (!done && now - lastPointer < 33) return;
     lastPointer = now;
     bridge.broadcast({ type: 'cursor', payload: { x, y, done } });
   },
 });
-/* Put the pointer back where the user left it. The driver calls this the
-   moment it has finished looking at the screen, so across a whole run the
-   pointer is only away from where they left it for the fraction of a second
-   an action takes — and it is invisible for that. */
-if (computer) computer.park = () => { if (pointerTaken) islandHost?.cursorRestore(); };
-
-/* Press a control without the pointer.
-   Answers false when it cannot, and the driver then uses the pointer — see
-   quietClick in island-host.mjs.
-
-   Pico's own cursor still walks over and presses it, because a thing that
-   happens with no visible cause is worse than one you can watch. That walk
-   moves nothing but the drawing: the user's pointer stays exactly where it
-   is, and for a run made only of these it is never even hidden. */
-if (computer) {
-  computer.quiet = async ({ x, y, vx, vy }) => {
-    if (!islandHost?.ready) return false;
-    await walkGhost(vx, vy);
-    islandHost.cursorState('clicking');
-    const pressed = await islandHost.quietClick(x, y);
-    islandHost.cursorState('moving');
-    return pressed;
-  };
-}
-
-/**
- * Walk Pico's drawn cursor to a point. Nothing real moves.
- *
- * Sampled by the clock rather than by step count, and short: this is the
- * gesture that says "it is doing that, there", not a journey to sit through.
- */
-async function walkGhost(x, y) {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-  const from = ghost ?? { x, y };
-  const dist = Math.hypot(x - from.x, y - from.y);
-  ghost = { x, y };
-  if (dist < 4) { islandHost?.cursorAt(x, y); return; }
-
-  const ms = Math.max(120, Math.min(340, 90 + (dist * 0.22)));
-  const t0 = Date.now();
-  for (;;) {
-    const t = Math.min(1, (Date.now() - t0) / ms);
-    const e = (t ** 3) * (10 - (15 * t) + (6 * t * t));   // minimum jerk, as a hand moves
-    islandHost?.cursorAt(from.x + ((x - from.x) * e), from.y + ((y - from.y) * e));
-    if (t >= 1) return;
-    await new Promise((r) => setTimeout(r, 16));
-  }
-}
+if (!computer) sense?.stop();
 if (computer) await bridge.attachComputer(computer);
 
 /* ---------------------------------------------------------------------------
@@ -901,23 +1009,27 @@ bridge.notch = new NotchWindow({
   host: islandHost,
 });
 
-/* An island can outlive the bridge that opened it — restarting the bridge
-   leaves the window on screen, reconnecting happily, but holding a token
-   this process has never heard of. Nothing it reports is believed after
-   that, so it is stuck at whatever size it happened to be and its content
-   is clipped against a frame that will not move again.
+/* The island, opened at startup.
 
-   Take it back at startup rather than waiting for the user to notice: the
-   island they already had stays where it was, driven by the bridge that is
-   actually running. */
-if (bridge.notch.findWindow()) {
-  try {
-    await bridge.notch.open();
-    watchIslandHover();
-    bridge.broadcast({ type: 'notch', payload: { open: true } });
-  } catch (err) {
-    console.warn(`[bridge] could not take back the island (${err.message})`);
-  }
+   It is the app, so it should be there the moment Halo is running rather
+   than waiting to be asked for. The launcher deliberately opens nothing:
+   a .cmd cannot reliably get a URL past a nested `cmd /c`, and the old one
+   handed Chrome --app=\"http://...\" with the backslash-quotes intact,
+   which is not an address — so Chrome searched the web for it and starting
+   Halo opened Google. From here the arguments go to Chrome directly, with
+   no second round of shell parsing to survive.
+
+   This also takes back an island that outlived a previous bridge. One left
+   on screen keeps reconnecting happily while holding a token this process
+   has never heard of, so nothing it reports is believed and it is stuck at
+   whatever size it happened to be, its content clipped against a frame that
+   will not move again. Opening it here adopts it instead. */
+try {
+  await bridge.notch.open();
+  watchIslandHover();
+  bridge.broadcast({ type: 'notch', payload: { open: true } });
+} catch (err) {
+  console.warn(`[bridge] the island could not be opened (${err.message})`);
 }
 
 /* The page is told whether the pointer is on it rather than working it out —
@@ -928,6 +1040,11 @@ function watchIslandHover() {
     bridge.broadcast({ type: 'notchHover', payload: { over } });
   });
 }
+
+/* The full window, opened from the island: chats, memory, shortcuts. An app
+   window in the person's own browser, pointed at this bridge. */
+bridge.onOpenApp = (section) => openAppWindow(section);
+if (OPEN_APP) openAppWindow();
 
 bridge.onNotchCommand = async (command) => {
   if (command === 'closeNotch') {
@@ -957,36 +1074,10 @@ if (llm) {
   if (status.ok) {
     bridge.attachLLM(llm);
     const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
-    console.log(`[bridge] ${label}: ${llm.tiers.fast} (fast) / ${llm.tiers.hard} (hard)`);
+    console.log(`[bridge] ${label}: plans with ${llm.tiers.plan}, works with ${llm.tiers.see}, chats with ${llm.tiers.fast}`);
   } else {
     console.warn(`[bridge] model provider unavailable (${status.reason}); using scripted scenarios`);
   }
 } else {
   console.log('[bridge] no API key in .env - add OPENAI_API_KEY to use a model; running scripted scenarios');
 }
-
-// Failing to bind is not a recoverable bug for the crash guard above to
-// swallow: without the port there is no bridge, and a process that stays
-// alive anyway just looks like Pico is running when it is not.
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`\n  Port ${PORT} is already in use — Pico is probably already running.`);
-    console.error('  Close the other Pico window, or set PICO_BRIDGE_PORT to use another port.\n');
-  } else {
-    console.error('[bridge] server error:', err);
-  }
-  process.exit(1);
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  const line = '─'.repeat(52);
-  console.log(`\n${line}`);
-  console.log(`  Pico bridge is running${BUILD.sha ? `  (build ${BUILD.sha})` : ''}`);
-  console.log(line);
-  console.log(`\n  Phone:   ${pairingUrl()}`);
-  console.log(`  Code:    ${bridge.pairCode}`);
-  console.log(`  Desktop: http://localhost:${PORT}/pico-ui/app.html\n`);
-  console.log(toTerminal(encode(pairingUrl())));
-  console.log('  Scan with your phone camera, on the same Wi-Fi.');
-  console.log('  Local network only — nothing is exposed to the internet.\n');
-});

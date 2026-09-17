@@ -1,6 +1,6 @@
-# Pico UI
+# Halo UI
 
-A redesign of Pico's interface: a glass command palette on `Ctrl+Shift+P`, an
+A redesign of Halo's interface: a glass command palette on `Ctrl+Shift+P`, an
 expressive animated companion, and real approval / takeover / activity surfaces.
 
 Framework-free ES modules and CSS. No build step, no dependencies.
@@ -87,5 +87,5 @@ so no phase becomes ambiguous.
 `mock/audit-sample.jsonl` is a copy of a real 106-event log with session,
 response and call identifiers replaced by stable pseudonyms.
 
-`assets/pico.png` was extracted from `Pico.exe` so this runs standalone; replace
+`assets/pico.png` was extracted from `Halo.exe` so this runs standalone; replace
 it with the project's own asset when integrating.

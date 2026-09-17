@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — mascot rig
+   Halo — mascot rig
 
    The shipped pico.png draws a navy body with a *glowing screen* for a face.
    That screen is the whole opportunity: we repaint it with our own SVG, so

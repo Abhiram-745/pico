@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — activity timeline
+   Halo — activity timeline
 
    Renders live audit events using the real audit.jsonl schema:
      { timestamp, event_type, phase, action_type?, risk?, session_id?,
@@ -55,7 +55,7 @@ export function renderTimeline(state) {
   const root = el('div', 'timeline panel-in');
 
   if (!state.timeline.length) {
-    root.append(el('div', 'palette__empty', 'No activity yet. Run a task to see what Pico does, step by step.'));
+    root.append(el('div', 'palette__empty', 'No activity yet. Run a task to see what Halo does, step by step.'));
     return root;
   }
 

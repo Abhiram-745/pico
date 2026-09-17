@@ -1,14 +1,14 @@
 /* ==========================================================================
-   Pico — intent router: is this a message, or a job?
+   Halo — intent router: is this a message, or a job?
 
    "hello" must not open Notepad and type "hello". Before this file, every
-   line typed into Pico was treated as a task to perform on the desktop,
+   line typed into Halo was treated as a task to perform on the desktop,
    which made small talk indistinguishable from an instruction.
 
    Two stages, in this order:
 
      1. Local rules. Free and instant, and they settle the overwhelming
-        majority: greetings and questions about Pico itself are chat;
+        majority: greetings and questions about Halo itself are chat;
         an imperative aimed at an app or the screen is a job.
      2. The model, only for what the rules genuinely cannot call. One nano
         request, constrained to a single word.
@@ -35,7 +35,7 @@ const PLEASANTRY = /^(?:hi|hii+|hey+|hello|yo|sup|hiya|howdy|greetings|good\s+(?
  */
 const WANTS_PROSE = /\b(?:write|draft|compose|make\s+up|come\s+up\s+with|think\s+of|give|tell|suggest)\s+(?:me|us)?\s*(?:a|an|some|the)?\s*(?:poem|story|joke|jokes|song|essay|haiku|limerick|rap|riddle|quote|caption|tagline|slogan|name|names|idea|ideas|summary|explanation|example|examples|recipe|list\s+of)\b/i;
 
-/** Asking Pico about itself, rather than telling it to do something. */
+/** Asking Halo about itself, rather than telling it to do something. */
 const ABOUT_PICO = [
   /\b(?:who|what)\s+(?:are|r)\s+(?:you|u)\b/i,
   /\bwhat(?:.s| is)?\s+your\s+name\b/i,
@@ -100,7 +100,7 @@ export function localRoute(text) {
   if (PLEASANTRY.test(t)) return { mode: 'chat', why: 'a greeting', certain: true };
 
   if (ABOUT_PICO.some((re) => re.test(t))) {
-    return { mode: 'chat', why: 'a question about Pico', certain: true };
+    return { mode: 'chat', why: 'a question about Halo', certain: true };
   }
 
   const surface = APP_OR_SURFACE.test(t);

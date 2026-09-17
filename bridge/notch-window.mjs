@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — the island, as a real window on the real desktop.
+   Halo — the island, as a real window on the real desktop.
 
    A black rounded rectangle hanging from the top centre of the primary
    display, like the MacBook notch and the iPhone's Dynamic Island. It
@@ -28,7 +28,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -36,7 +36,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 /** Title marker, so the window can be found among a few hundred others. */
-export const NOTCH_TITLE = 'Pico Notch';
+export const NOTCH_TITLE = 'Halo Notch';
 
 /** Chrome on Windows 11 at 125%, measured. Replaced by the page's own report. */
 const DEFAULT_FRAME = { side: 7, top: 30, bottom: 7 };
@@ -82,7 +82,7 @@ export class NotchWindow {
     this.screenWidth = screenWidth;
     this.proc = null;
     this.hwnd = null;
-    this.profile = join(tmpdir(), 'pico-notch-profile');
+    this.profile = NotchWindow.profileDir();
     this.frame = { ...DEFAULT_FRAME };
     // Only the window this bridge opened may report its frame or ask to be
     // resized. Without this, any other tab left open on notch.html reports
@@ -99,6 +99,25 @@ export class NotchWindow {
     this.over = false;
     this.hoverTimer = null;
     this.run = 0;
+  }
+
+  /**
+   * The island's private browser profile, renamed with the app.
+   *
+   * The profile is where the island kept its chats, its name and its
+   * permission level before any of that lived with the bridge, so it is
+   * moved rather than abandoned: the first chats window to connect sends
+   * those old chats across (see chats.js). A profile still held open by an
+   * island from before the rename cannot be moved; that one is used as it is
+   * and moved next time.
+   */
+  static profileDir() {
+    const fresh = join(tmpdir(), 'halo-notch-profile');
+    const old = join(tmpdir(), 'pico-notch-profile');
+    if (!existsSync(fresh) && existsSync(old)) {
+      try { renameSync(old, fresh); } catch { return old; }
+    }
+    return fresh;
   }
 
   get isOpen() { return Boolean(this.proc && this.proc.exitCode === null); }
@@ -158,7 +177,7 @@ export class NotchWindow {
     }
 
     // Left over from an earlier run of the bridge. It looks alive — its page
-    // reconnects on its own and still shows what Pico is doing — but it is
+    // reconnects on its own and still shows what Halo is doing — but it is
     // carrying that run's token, so every size it reports is refused and it
     // can never change shape again. The island then lays its content out at
     // a size the window is not, and the text is clipped against a frame that
@@ -177,6 +196,35 @@ export class NotchWindow {
     const browser = findBrowser();
     if (!browser) return { ok: false, error: 'No Chrome or Edge found to open the notch in.' };
 
+    /* Twice, if need be.
+
+       The window is found by its title, and its title is the page's title, so
+       a window that never loaded the page is a window this can never find:
+       not pinned, not stripped of its frame, not placed. It does not go away
+       on its own either — it sits in the middle of the screen, titled with
+       whatever went wrong, and the next launch walks straight past it because
+       it is not called "Halo Notch".
+
+       So a launch that produced nothing findable is cleaned up rather than
+       left, and tried once more. `close` matches on the island's own profile
+       directory, so it only ever reaches the island's own window. */
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const found = await this.spawnWindow(browser);
+      if (found) {
+        this.host?.pin(found);
+        this.host?.trim(found);
+        this.apply(this.rectFor(this.size));
+        return { ok: true, placed: true };
+      }
+      console.warn(`[bridge] the island window did not appear${attempt === 0 ? ' — clearing it and trying once more' : ''}`);
+      await this.close();
+      for (let i = 0; i < 20 && this.findWindow(); i++) await sleep(100);
+    }
+    return { ok: true, placed: false };
+  }
+
+  /** One launch. Resolves to the window handle, or null if it never showed. */
+  async spawnWindow(browser) {
     const r = this.rectFor(COMPACT);
     this.proc = spawn(browser, [
       `--app=${this.url}?k=${this.token}`,
@@ -192,13 +240,7 @@ export class NotchWindow {
     this.proc.on('exit', () => { this.proc = null; this.hwnd = null; this.placed = null; });
     this.proc.unref();
 
-    const found = await this.waitForWindow(8000);
-    if (found) {
-      this.host?.pin(found);
-      this.host?.trim(found);
-      this.apply(this.rectFor(this.size));
-    }
-    return { ok: true, placed: Boolean(found) };
+    return this.waitForWindow(8000);
   }
 
   async waitForWindow(timeout) {

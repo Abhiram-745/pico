@@ -20,6 +20,7 @@
 import { cp, mkdir, rm, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildUI } from './build-ui.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(ROOT, 'dist');
@@ -43,6 +44,10 @@ async function copyDir(from, to, { skip = new Set() } = {}) {
     else await cp(src, dst);
   }
 }
+
+// The island and the app window are bundled React; the preview needs the
+// bundle as much as the installed app does.
+await buildUI({ force: true });
 
 await rm(DIST, { recursive: true, force: true });
 await mkdir(DIST, { recursive: true });
@@ -87,7 +92,8 @@ const required = [
   'phone.html',
   'site.css',
   'pico-ui/app.html',
-  'pico-ui/src/app.js',
+  'pico-ui/build/app.js',
+  'pico-ui/build/island.js',
   'pico-ui/src/theme.css',
   'pico-ui/assets/pico.png',
   'pico-ui/mock/agent.js',

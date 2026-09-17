@@ -1,12 +1,12 @@
 /* ==========================================================================
-   Pico — the island
+   Halo — the island
 
    The notch as its own window: a black rounded rectangle hanging from the
    top edge of the screen, the way the MacBook notch and the iPhone's Dynamic
    Island work. It has three sizes and moves between them on its own:
 
      compact  the pet on the left, a status glyph on the right, nothing else
-     live     wider — what Pico is doing right now, or the reply it just wrote
+     live     wider — what Halo is doing right now, or the reply it just wrote
      open     tall — the conversation, any decision, and a box to type in
 
    HOW THE SIZE CHANGES
@@ -26,8 +26,9 @@ import { store, PHASE_COPY, isActive } from './store.js';
 import { bridge } from './bridge.js';
 import { Mascot } from './mascot.js';
 import { permissions, LEVELS } from './permissions.js';
+import { chats } from './chats.js';
 
-const NAME_KEY = 'pico.pet.name.v1';
+const NAME_KEY = 'halo.pet.name.v1';
 
 /**
  * Content width for each size. Height is whatever the content needs.
@@ -54,7 +55,7 @@ const SHORT = {
 const MODE_ORDER = ['auto', 'chat', 'agent'];
 const MODE_LABEL = { auto: 'Auto', chat: 'Chat', agent: 'Do it' };
 const MODE_HINT = {
-  auto: 'Pico decides whether to talk or to work',
+  auto: 'Halo decides whether to talk or to work',
   chat: 'Talk only — nothing on your computer is touched',
   agent: 'Always act on the desktop',
 };
@@ -68,6 +69,7 @@ const ICON = {
   check: 'M20 6 9 17l-5-5',
   x: 'M18 6 6 18 M6 6l12 12',
   chevron: 'm18 15-6-6-6 6',
+  plus: 'M12 5v14 M5 12h14',
   shield: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z M9 12l2 2 4-4',
   alert: 'm21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01',
   ask: 'M12 17h.01 M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3 M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z',
@@ -112,7 +114,7 @@ function iconButton(name, label, cls = 'island__btn') {
  * @param {(size:{width:number,height:number,view:string})=>void} opts.onMeasure
  */
 export function mountIsland(host = document.body, { onMeasure } = {}) {
-  let petName = (() => { try { return localStorage.getItem(NAME_KEY) || 'Pico'; } catch { return 'Pico'; } })();
+  let petName = (() => { try { return localStorage.getItem(NAME_KEY) || 'Halo'; } catch { return 'Halo'; } })();
 
   let pinned = false;        // opened by the user, stays open until dismissed
   let hover = false;
@@ -122,6 +124,16 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   let view = 'compact';
   let renderedCount = 0;     // messages already in the thread DOM
   const autoApproved = new Set();
+
+  /* A question Halo asked that the user put away rather than answered.
+
+     An unanswered question holds the island open, which is right while it is
+     live and a trap once the conversation has moved on: a chat that ended
+     mid-question left the island pinned open over the desktop with nothing
+     that would close it. The question is still pending — it is not cancelled
+     by being dismissed, and answering it still works — but it stops being a
+     reason the island cannot be put away. */
+  let dismissedQuestion = null;
 
   // --- skeleton ------------------------------------------------------------
   const root = el('div', 'island');
@@ -141,6 +153,12 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
 
   const trail = el('div', 'island__trail');
 
+  /* A hairline between the name and the status light. They are different
+     kinds of information — what this is, and how it is doing — and without
+     something between them the eye reads the dot as punctuation on the end
+     of the sentence. Hidden in compact, where there is no text to divide. */
+  const rule = el('div', 'island__rule');
+
   const glyph = el('div', 'island__glyph');
   const dot = el('span', 'island__dot');
   const bars = el('span', 'island__bars');
@@ -156,8 +174,9 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   permBtn.type = 'button';
   permBtn.append(icon('shield'), el('span', 'island__perm-label'));
   const collapseBtn = iconButton('chevron', 'Collapse');
+  const newChatBtn = iconButton('plus', 'New chat');
 
-  trail.append(glyph, stopBtn, permBtn, collapseBtn);
+  trail.append(rule, glyph, stopBtn, permBtn, newChatBtn, collapseBtn);
   bar.append(lead, text, trail);
 
   // --- panel ---------------------------------------------------------------
@@ -173,7 +192,19 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     c.addEventListener('click', () => submit(s));
     chips.append(c);
   }
-  empty.append(emptyLine, chips);
+  /* Everything said before now, on this machine.
+
+     Kept out of the bar on purpose. A list of past conversations is not
+     something you need while you are having one, and the island has room for
+     exactly one idea at a time — so it lives in the space the thread will
+     occupy, which is empty precisely when looking for an older chat is the
+     only thing you could want. */
+  const history = el('div', 'island__history');
+  const historyLabel = el('div', 'island__history-label', 'Earlier');
+  const historyList = el('div', 'island__history-list');
+  history.append(historyLabel, historyList);
+
+  empty.append(emptyLine, chips, history);
 
   const decision = el('div', 'island__decision');
   decision.hidden = true;      // nothing to decide until one arrives
@@ -201,7 +232,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   }
 
   function decide(s) {
-    if (s.question) return 'open';
+    if (s.question && s.question.id !== dismissedQuestion) return 'open';
     if (s.approval && !autoApproved.has(s.approval.id)) return 'open';
     if (s.takeover) return 'open';
     if (pinned) return 'open';
@@ -220,8 +251,64 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
 
   function collapse() {
     pinned = false;
+    // Putting the island away is allowed to mean it, even with a question
+    // still open. See dismissedQuestion.
+    dismissedQuestion = store.state.question?.id ?? dismissedQuestion;
     input.blur();
     update();
+  }
+
+  /* --- starting over -------------------------------------------------------
+     The thread is remembered in three places and all three have to let go of
+     it, or the new chat is only new on screen: this page, the bridge's replay
+     buffer, and the model's own history. `newChat` on the wire does the far
+     two; everything before it does this one.
+
+     What is kept is the chat being left — written down first, so it can be
+     opened again from the list below. */
+  function newChat() {
+    chats.start(store.state.messages);
+    store.clearMessages();
+    store.setQuestion(null);
+    store.setApproval(null);
+    store.setTakeover(null);
+    autoApproved.clear();
+    dismissedQuestion = null;
+    decisionKey = null;
+    decision.replaceChildren();
+    decision.hidden = true;
+    bridge.send('newChat');
+    input.value = '';
+    pinned = true;
+    update();
+    requestAnimationFrame(() => input.focus({ preventScroll: true }));
+  }
+
+  /** Reopen an earlier chat, putting the current one away first. */
+  function openChat(id) {
+    const messages = chats.open(id, store.state.messages);
+    if (!messages) return;
+    store.setQuestion(null);
+    store.setApproval(null);
+    store.setTakeover(null);
+    autoApproved.clear();
+    dismissedQuestion = null;
+    decisionKey = null;
+    decision.replaceChildren();
+    decision.hidden = true;
+    /* The bridge is told as well. Its replay buffer still holds the chat
+       being left, and it is handed to every page that connects — so without
+       this, reopening an old chat and then reloading would staple the new
+       thread onto the end of the old one. */
+    /* Handed back with it, so Halo remembers the conversation you are
+       looking at. Without this the thread reappears and the model does not
+       know any of it happened — you pick up where you left off and it does
+       not. */
+    bridge.send('newChat', { resume: messages.map((m) => ({ from: m.from, text: m.text })) });
+    store.loadMessages(messages);
+    pinned = true;
+    update();
+    requestAnimationFrame(() => input.focus({ preventScroll: true }));
   }
 
   function submit(value) {
@@ -249,6 +336,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   });
 
   collapseBtn.addEventListener('click', collapse);
+  newChatBtn.addEventListener('click', newChat);
   stopBtn.addEventListener('click', () => bridge.send('stop'));
 
   permBtn.addEventListener('click', () => {
@@ -268,7 +356,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   });
   sendBtn.addEventListener('click', () => submit());
 
-  // Esc keeps its meaning everywhere in Pico: during a run it is the stop
+  // Esc keeps its meaning everywhere in Halo: during a run it is the stop
   // button, otherwise it puts the island away.
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -398,11 +486,11 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
   }
 
   // --- decisions -----------------------------------------------------------
-  /* Anything Pico cannot get on with until the person says something.
+  /* Anything Halo cannot get on with until the person says something.
      A question before it starts, an approval mid-run, a handover.
 
      A question used to be answered in the same box a task is typed into,
-     which meant the one moment Pico is actually waiting on you looked exactly
+     which meant the one moment Halo is actually waiting on you looked exactly
      like the moment it is waiting for you to think of something to do. Now it
      has a card of its own, with its own field, under a dot that will not stop
      blinking until it is dealt with. */
@@ -445,14 +533,33 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     const actions = el('div', 'island__decision-actions');
 
     if (q) {
+      // Set answers, when the question has them, as buttons: "the app, or
+      // the website?" is a tap, not something to type. The id goes with the
+      // label so the bridge never has to guess which one was meant.
+      const options = Array.isArray(q.options) ? q.options.filter((o) => o && o.id && o.label) : [];
+      if (options.length) {
+        const choices = el('div', 'island__choices');
+        options.forEach((o, i) => {
+          const b = el('button', `island__pill${i === 0 ? ' island__pill--primary' : ''}`, o.label);
+          b.type = 'button';
+          b.title = o.label;
+          b.addEventListener('click', () => {
+            bridge.send('answerQuestion', { id: q.id, text: o.label, choice: o.id });
+            store.setQuestion(null);
+          });
+          choices.append(b);
+        });
+        actions.append(choices);
+      }
+
       // Its own field. Answering is not the same act as starting a job, and
-      // giving them the same box made a waiting Pico invisible.
+      // giving them the same box made a waiting Halo invisible.
       const row = el('div', 'island__answer');
       const field = el('input', 'island__answer-input');
       field.type = 'text';
       field.autocomplete = 'off';
       field.spellcheck = false;
-      field.placeholder = 'Type your answer…';
+      field.placeholder = options.length ? 'Or type something else…' : 'Type your answer…';
       field.setAttribute('aria-label', q.text);
       const go = iconButton('send', 'Answer', 'island__send');
       go.disabled = true;
@@ -474,7 +581,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
 
       row.append(field, go);
       actions.append(row);
-      requestAnimationFrame(() => field.focus({ preventScroll: true }));
+      if (!options.length) requestAnimationFrame(() => field.focus({ preventScroll: true }));
     } else if (a) {
       const deny = el('button', 'island__pill', 'Stop');
       const allow = el('button', 'island__pill island__pill--primary', 'Allow once');
@@ -503,7 +610,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     let line = SHORT[s.phase] || 'Ready';
     let mark = running ? 'bars' : 'dot';
 
-    /* What Pico is doing, said while it is doing it.
+    /* What Halo is doing, said while it is doing it.
        The bar used to show the last action it finished, which is the one
        thing that is definitely no longer happening: it sat on "clicked the
        address bar" through the three seconds of working out what to do next,
@@ -547,11 +654,43 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     stopBtn.hidden = !(running && view !== 'compact');
     permBtn.hidden = view !== 'open';
     collapseBtn.hidden = view !== 'open';
+    // Nothing to start over from when the thread is already empty, and a
+    // button that does nothing is worse than no button.
+    newChatBtn.hidden = view !== 'open' || !s.messages.length;
 
     const lvl = LEVELS[permissions.level];
     permBtn.dataset.level = permissions.level;
     permBtn.title = `Permissions: ${lvl.label} — ${lvl.hint}`;
     permBtn.querySelector('.island__perm-label').textContent = lvl.label;
+  }
+
+  /* --- the list of earlier chats ------------------------------------------
+     Redrawn only when it has actually changed. It sits inside the empty
+     state, which is measured on every update to decide how tall the window
+     should be, so rebuilding it needlessly means re-measuring needlessly. */
+  // Not '' — that is what an empty list hashes to, so starting there meant
+  // the very first sync decided nothing had changed and returned before it
+  // had hidden anything. The heading sat over an empty list until the first
+  // chat was saved.
+  let historyKey = null;
+
+  function syncHistory() {
+    const list = chats.list().filter((c) => c.id !== chats.currentId).slice(0, 5);
+    const key = list.map((c) => `${c.id}:${c.count}`).join('|');
+    if (key === historyKey) return;
+    historyKey = key;
+
+    history.hidden = !list.length;
+    historyList.replaceChildren();
+    for (const c of list) {
+      const b = el('button', 'island__history-item');
+      b.type = 'button';
+      b.title = c.title;
+      b.append(el('span', 'island__history-title', c.title));
+      b.append(el('span', 'island__history-count', String(c.count)));
+      b.addEventListener('click', () => openChat(c.id));
+      historyList.append(b);
+    }
   }
 
   function syncComposer(s) {
@@ -562,7 +701,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
       : s.mode === 'agent' ? `Tell ${petName} what to do…`
       : `Ask ${petName} anything, or give it a job…`;
     input.disabled = !s.guardian.ready;
-    // While Pico is waiting on an answer there is exactly one box to type in,
+    // While Halo is waiting on an answer there is exactly one box to type in,
     // and it is the one on the card. Two would be a puzzle.
     composer.hidden = Boolean(s.question);
     syncSend();
@@ -715,6 +854,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
       syncThread(s);
       syncDecision(s);
       syncComposer(s);
+      if (!empty.hidden) syncHistory();
     }
 
     requestAnimationFrame(() => postMeasure());
@@ -731,8 +871,36 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     bridge.send('approve', { id: a.id });
   }
 
+  /* The chat you were in, back where you left it.
+
+     Done before subscribing, so the first paint already has the thread in it
+     rather than flashing an empty island and then filling in. The bridge
+     replays its own buffer a moment later over the socket; messages upsert by
+     id, so anything in both lands once. */
+  const restored = chats.restore();
+  if (restored.length) store.loadMessages(restored);
+
+  /* The save is debounced, and closing the window does not wait for a timer.
+     Without this, the last thing said before the island is closed is the one
+     thing that is not there when it opens again — which reads as "it saves,
+     mostly", the worst kind of saving. pagehide fires on the paths beforeunload
+     misses, including the tab being discarded. */
+  addEventListener('pagehide', () => {
+    if (store.state.messages.length) chats.saveNow(store.state.messages);
+  });
+
   store.subscribe((s, meta) => {
     if (meta.type === 'cursor') return;               // thirty a second, nothing to redraw
+
+    /* Write the thread down as it changes.
+       `restored` is excluded: that message came *from* storage, and saving it
+       straight back would stamp the reopened chat's timestamp on every load,
+       quietly reordering the list by what you looked at rather than what you
+       said. */
+    if (meta.type === 'message' && !meta.restored) {
+      if (s.messages.length) chats.save(s.messages);
+      historyKey = null;                              // the list is now stale
+    }
 
     // The bridge, watching the real pointer against the real window. It
     // speaks only when the answer changes, so this is a few messages per
@@ -750,7 +918,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     if (meta.type === 'question' && s.question) pinned = true;
     if (meta.type === 'action') mascot.pulse();
 
-    // Sent as a job: get out of the way of the screen Pico is about to use.
+    // Sent as a job: get out of the way of the screen Halo is about to use.
     if (meta.type === 'routed' && s.routed?.mode === 'agent') pinned = false;
 
     if (meta.type === 'summary' && s.summary) showFlash('done', s.summary, 4200);
@@ -766,7 +934,7 @@ export function mountIsland(host = document.body, { onMeasure } = {}) {
     root,
     open,
     collapse,
-    setName(name) { petName = name || 'Pico'; update(); },
+    setName(name) { petName = name || 'Halo'; update(); },
     get view() { return view; },
   };
 }

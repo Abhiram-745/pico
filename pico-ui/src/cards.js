@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — decision cards
+   Halo — decision cards
 
    Approval and takeover are the two moments where the whole safety model
    depends on the user actually reading something. In the shipped build they
@@ -7,7 +7,7 @@
 
    All copy is the app's own wording. The policy's `reason` is rendered
    verbatim rather than paraphrased — it is the thing that explains *why*
-   Windows/Pico stopped, and rewording it would be a safety regression.
+   Windows/Halo stopped, and rewording it would be a safety regression.
    ========================================================================== */
 
 import { bridge } from './bridge.js';
@@ -34,7 +34,7 @@ export function renderApproval(approval) {
   const card = el('div', 'card card--approval card-attention panel-in');
 
   const head = el('div', 'card__head');
-  head.append(el('div', 'card__eyebrow', 'Review this action before Pico continues.'));
+  head.append(el('div', 'card__eyebrow', 'Review this action before Halo continues.'));
 
   const pills = el('div', 'card__pills');
   const risk = approval.risk || {};
@@ -75,6 +75,37 @@ export function renderApproval(approval) {
   return card;
 }
 
+/**
+ * A question Halo needs answered before it can carry on — "the WhatsApp app,
+ * or WhatsApp Web?" — with its set answers as buttons. Anything else can
+ * still be typed in the box below the thread.
+ */
+export function renderQuestion(question, { onAnswered = () => {} } = {}) {
+  const card = el('div', 'card card-attention panel-in');
+  const head = el('div', 'card__head');
+  head.append(el('div', 'card__eyebrow', 'Halo needs an answer to carry on.'));
+  card.append(head);
+  card.append(el('h2', 'card__summary', question.text));
+
+  const options = Array.isArray(question.options) ? question.options.filter((o) => o && o.id && o.label) : [];
+  if (options.length) {
+    const actions = el('div', 'card__actions');
+    options.forEach((o, i) => {
+      const b = el('button', i === 0 ? 'btn btn--primary' : 'btn', o.label);
+      b.type = 'button';
+      b.addEventListener('click', () => {
+        bridge.send('answerQuestion', { id: question.id, text: o.label, choice: o.id });
+        onAnswered();
+      });
+      actions.append(b);
+    });
+    card.append(actions);
+  } else {
+    card.append(el('p', 'card__note', 'Type your answer below.'));
+  }
+  return card;
+}
+
 export function renderTakeover(takeover) {
   const card = el('div', 'card card--takeover card-attention panel-in');
 
@@ -94,7 +125,7 @@ export function renderTakeover(takeover) {
   }
 
   card.append(el('p', 'card__note',
-    'Windows security and elevated prompts require direct human control. Pico will take a fresh look when you continue.'));
+    'Windows security and elevated prompts require direct human control. Halo will take a fresh look when you continue.'));
 
   const actions = el('div', 'card__actions');
   const done = el('button', 'btn btn--primary', 'I have done it — continue');

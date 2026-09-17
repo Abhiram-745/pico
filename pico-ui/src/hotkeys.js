@@ -1,19 +1,19 @@
 /* ==========================================================================
-   Pico — hotkeys
+   Halo — hotkeys
 
    In production these chords are registered by the *host*, not the page:
-     Ctrl+Shift+Space   pause / resume        (Pico.Guardian.exe)
-     Esc                emergency stop        (Pico.Guardian.exe)
-     Ctrl+Shift+Bksp    emergency stop        (Pico.Guardian.exe)
-     Ctrl+Shift+P       toggle palette        (Pico.Desktop, new)
+     Ctrl+Shift+Space   pause / resume        (Halo.Guardian.exe)
+     Esc                emergency stop        (Halo.Guardian.exe)
+     Ctrl+Shift+Bksp    emergency stop        (Halo.Guardian.exe)
+     Ctrl+Shift+P       toggle palette        (Halo.Desktop, new)
 
-   The three Guardian chords must keep working when Pico is unfocused, which
+   The three Guardian chords must keep working when Halo is unfocused, which
    is only possible from a process that owns a global RegisterHotKey. This
    module reproduces them in-page so the whole interaction is testable in a
    browser, and so the harness can demonstrate the held-modifier state.
 
    Ctrl+Shift+P must also be added to the injector's protected-chord list, so
-   the model cannot synthesize it and summon Pico's own UI. See INTEGRATION.md.
+   the model cannot synthesize it and summon Halo's own UI. See INTEGRATION.md.
    ========================================================================== */
 
 import { store, isActive } from './store.js';

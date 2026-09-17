@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — settings
+   Halo — settings
 
    Backed by the real settings.json shape:
      { installationId, model, pauseOnPhysicalInput, maximumComputerTurns,
@@ -89,7 +89,7 @@ export function renderSettings(state) {
 
   root.append(field(
     'Physical input',
-    'Recommended. Pico ignores its own synthetic events, so only genuine input pauses a run.',
+    'Recommended. Halo ignores its own synthetic events, so only genuine input pauses a run.',
     pauseWrap,
   ));
 
@@ -103,7 +103,7 @@ export function renderSettings(state) {
   autoApproveToggle.addEventListener('click', () => {
     const next = autoApproveToggle.getAttribute('aria-checked') !== 'true';
     if (next && !window.confirm(
-      'Pico will no longer stop to ask before sending, deleting, buying, installing, or ' +
+      'Halo will no longer stop to ask before sending, deleting, buying, installing, or ' +
       'anything else it would normally pause for. Every action still gets logged, but ' +
       'nothing waits for you to approve it first.\n\nTurn this on?',
     )) return;
@@ -113,7 +113,7 @@ export function renderSettings(state) {
 
   root.append(field(
     'Approvals',
-    'Off by default. On, Pico acts on every step without asking first — only for a machine and account you fully trust. Still logged, never asked.',
+    'Off by default. On, Halo acts on every step without asking first — only for a machine and account you fully trust. Still logged, never asked.',
     autoApproveWrap,
   ));
 
@@ -143,13 +143,13 @@ export function renderSettings(state) {
 
   root.append(field(
     'API key',
-    'Set OPENAI_API_KEY in the .env file next to Start Pico.cmd. It stays on this machine and is never sent to your phone or embedded in a page.',
+    'Set OPENAI_API_KEY in the .env file next to Start Halo.cmd. It stays on this machine and is never sent to your phone or embedded in a page.',
     keyWrap,
   ));
 
   // --- privacy note -------------------------------------------------------
   const note = el('div', 'settings__note');
-  note.append(el('strong', null, 'During a task, Pico sends full-desktop screenshots to OpenAI.'));
+  note.append(el('strong', null, 'During a task, Halo sends full-desktop screenshots to OpenAI.'));
   note.append(el('span', null,
     ' Responses API state may be retained per your organisation’s data controls. Screenshots are never written to the local audit log.'));
   root.append(note);

@@ -31,7 +31,7 @@ export async function needsSetup() {
   }
 }
 
-export function mountSetup(host, { onDone, petName = 'Pico' } = {}) {
+export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
   const root = el('div', 'setup');
 
   const card = el('div', 'setup__card');
@@ -84,7 +84,7 @@ export function mountSetup(host, { onDone, petName = 'Pico' } = {}) {
   step.append(row, error, go, link);
 
   const foot = el('p', 'setup__foot',
-    'During a task Pico sends screenshots of your desktop to OpenAI. ' +
+    'During a task Halo sends screenshots of your desktop to OpenAI. ' +
     'Passwords and CAPTCHAs always come back to you.');
 
   card.append(pet, title, lede, step, foot);
@@ -127,7 +127,7 @@ export function mountSetup(host, { onDone, petName = 'Pico' } = {}) {
       root.classList.add('is-done');
       setTimeout(() => { root.remove(); onDone?.(); }, 420);
     } catch (err) {
-      error.textContent = `Could not reach Pico: ${err.message}`;
+      error.textContent = `Could not reach Halo: ${err.message}`;
     } finally {
       busy = false;
       go.textContent = 'Continue';

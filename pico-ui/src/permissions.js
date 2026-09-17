@@ -1,7 +1,7 @@
 /* ==========================================================================
    Permissions
 
-   Approving every action by hand is the main reason Pico feels slow to use,
+   Approving every action by hand is the main reason Halo feels slow to use,
    so this makes approval a policy you set once instead of a prompt you answer
    every time.
 
@@ -15,14 +15,22 @@
    Two rules hold at every level, because they are not preferences:
 
      * Takeover is never auto-answered. Passwords, CAPTCHAs and UAC are not a
-       permission Pico can grant itself — it cannot type a credential at all,
+       permission Halo can grant itself — it cannot type a credential at all,
        so "accept" would be meaningless.
      * "all" is session-scoped and never persisted. A blanket yes should not
        outlive the session that gave it, and should never be something you
        forgot you turned on last week.
    ========================================================================== */
 
-const LEVEL_KEY = 'pico.permissions.v1';
+const LEVEL_KEY = 'halo.permissions.v1';
+
+// Kept under Pico's name before the rename; moved across once.
+try {
+  if (localStorage.getItem(LEVEL_KEY) === null && localStorage.getItem('pico.permissions.v1') !== null) {
+    localStorage.setItem(LEVEL_KEY, localStorage.getItem('pico.permissions.v1'));
+  }
+  localStorage.removeItem('pico.permissions.v1');
+} catch { /* storage blocked */ }
 
 export const LEVELS = {
   ask: {
@@ -121,7 +129,7 @@ class Permissions {
   decideTakeover() {
     return {
       auto: false,
-      why: 'Pico cannot type a credential, so this always needs you',
+      why: 'Halo cannot type a credential, so this always needs you',
     };
   }
 }

@@ -1,7 +1,7 @@
 /* ==========================================================================
-   Pico — UI state store
+   Halo — UI state store
    Mirrors the C# AgentPhase / OverlayPhase state machine. All user-facing
-   copy below is the app's own wording, recovered from Pico.exe, so the
+   copy below is the app's own wording, recovered from Halo.exe, so the
    redesign does not silently change any safety-critical language.
    ========================================================================== */
 
@@ -46,8 +46,23 @@ export const ACTIVE_PHASES = new Set([
 
 export const isActive = (phase) => ACTIVE_PHASES.has(phase);
 
-const RECENTS_KEY = 'pico.recents.v1';
+const RECENTS_KEY = 'halo.recents.v1';
 const MAX_RECENTS = 8;
+
+/**
+ * Move a value stored under Pico's name to Halo's, once. Kept here because
+ * every page loads the store, so the first page to open after the rename
+ * does it for all of them.
+ */
+export function migrateKey(from, to) {
+  try {
+    if (localStorage.getItem(to) === null && localStorage.getItem(from) !== null) {
+      localStorage.setItem(to, localStorage.getItem(from));
+    }
+    localStorage.removeItem(from);
+  } catch { /* storage blocked: nothing to carry, nothing lost */ }
+}
+migrateKey('pico.recents.v1', RECENTS_KEY);
 
 function loadRecents() {
   try {
@@ -95,7 +110,19 @@ const initial = () => ({
   question: null,          // { id, text } — asked before starting, answered in the composer
   mode: 'auto',            // what the composer is set to: auto | chat | agent
 
-  // Where the real pointer is while Pico drives it. Drawn rather than
+  // The plan of the run in hand, as it changes: { steps: [{ do, kind, status }],
+  // index, doneWhen, finished?, succeeded? }. Kept after the run so the last
+  // one can still be read, and cleared when the next begins.
+  plan: null,
+  // The last finished task, for "save as shortcut": { task, steps, succeeded }.
+  lastRun: null,
+
+  memory: [],              // [{ id, text, source, created }] — what Halo keeps
+  routines: [],            // [{ id, name, task, steps, runs, lastRun }] — saved shortcuts
+  chats: { list: [], current: null, loaded: false },   // every conversation, newest first
+  chatSearch: null,        // { q, results } — the last search this window asked for
+
+  // Where the real pointer is while Halo drives it. Drawn rather than
   // guessed: Windows has one system cursor and this is its live position.
   cursor: { x: 0, y: 0, visible: false },
   notchOpen: false,
@@ -147,11 +174,11 @@ class Store {
       this.state.turn = 0;
       this.state.error = null;
     }
-    if (phase === 'Starting') this.state.summary = null;
+    if (phase === 'Starting') { this.state.summary = null; this.state.lastRun = null; }
     this.emit({ type: 'phase', phase, previous, ...meta });
   }
 
-  /** Which step of the plan Pico is on, so the island can say so. */
+  /** Which step of the plan Halo is on, so the island can say so. */
   setStep(step) {
     this.state.step = step && step.text ? step : null;
     this.emit({ type: 'step', step: this.state.step });
@@ -174,16 +201,54 @@ class Store {
     this.emit({ type: 'takeover', takeover });
   }
 
-  setSummary(text) {
+  /** The closing line of a run. Filed under the bridge's id, so a window
+      that reconnects does not show it twice. */
+  setSummary(text, id) {
     this.state.summary = text || null;
-    if (text) this.addMessage({ from: 'pico', text, done: true });
+    if (text) {
+      if (id && this.state.messages.some((m) => m.id === id)) this.setMessage({ id, from: 'pico', text, done: true });
+      else this.addMessage({ id, from: 'pico', text, done: true });
+    }
     this.emit({ type: 'summary', summary: this.state.summary });
+  }
+
+  // --- the run in hand -----------------------------------------------------
+  setPlan(plan) {
+    this.state.plan = plan && Array.isArray(plan.steps) ? plan : null;
+    this.emit({ type: 'plan', plan: this.state.plan });
+  }
+
+  setLastRun(run) {
+    this.state.lastRun = run && run.task ? run : null;
+    this.emit({ type: 'lastRun', lastRun: this.state.lastRun });
+  }
+
+  // --- what Halo keeps -----------------------------------------------------
+  setMemory(facts) {
+    this.state.memory = Array.isArray(facts) ? facts : [];
+    this.emit({ type: 'memory', memory: this.state.memory });
+  }
+
+  setRoutines(items) {
+    this.state.routines = Array.isArray(items) ? items : [];
+    this.emit({ type: 'routines', routines: this.state.routines });
+  }
+
+  setChats({ list, current }) {
+    this.state.chats = { list: Array.isArray(list) ? list : [], current: current ?? null, loaded: true };
+    this.emit({ type: 'chats', chats: this.state.chats });
+  }
+
+  setChatSearch(result) {
+    this.state.chatSearch = result;
+    this.emit({ type: 'chatSearch', chatSearch: result });
   }
 
   // --- conversation --------------------------------------------------------
   /** Append a finished message. Returns it, so the caller can keep the id. */
-  addMessage({ id, from, text, done = true }) {
+  addMessage({ id, from, text, done = true, memoryId }) {
     const entry = { id: id ?? `m_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`, from, text, done };
+    if (memoryId) entry.memoryId = memoryId;
     this.state.messages = [...this.state.messages, entry].slice(-120);
     this.emit({ type: 'message', message: entry });
     return entry;
@@ -194,11 +259,11 @@ class Store {
    * longer `text` each time, so this replaces in place rather than appending
    * — otherwise one sentence becomes forty bubbles.
    */
-  setMessage({ id, from = 'pico', text, done }) {
+  setMessage({ id, from = 'pico', text, done, memoryId }) {
     const list = this.state.messages;
     const i = list.findIndex((m) => m.id === id);
     if (i === -1) {
-      this.addMessage({ id, from, text, done: Boolean(done) });
+      this.addMessage({ id, from, text, done: Boolean(done), memoryId });
       return;
     }
     const next = [...list];
@@ -212,7 +277,21 @@ class Store {
     this.emit({ type: 'message', cleared: true });
   }
 
-  /** Pico needs one detail before it starts. The next thing you type answers it. */
+  /**
+   * Adopt a whole thread at once — a chat reopened from this machine's own
+   * history, replacing whatever was on screen.
+   *
+   * Marked `restored` so the thing that saves chats can tell this apart from
+   * a message arriving. Without that, loading a chat immediately saves it
+   * back over itself, which is harmless right up until you load an old chat
+   * and it takes the current one's place in the list.
+   */
+  loadMessages(list) {
+    this.state.messages = (Array.isArray(list) ? list : []).slice(-120);
+    this.emit({ type: 'message', restored: true });
+  }
+
+  /** Halo needs one detail before it starts. The next thing you type answers it. */
   setQuestion(question) {
     this.state.question = question && question.text ? question : null;
     this.emit({ type: 'question', question: this.state.question });
@@ -318,10 +397,16 @@ class Store {
     return this.state.guardian.ready && !isActive(this.state.phase);
   }
 
+  /** A run is going, so what is typed steers it rather than starting another. */
+  get canSteer() {
+    const plan = this.state.plan;
+    return isActive(this.state.phase) && Boolean(plan && !plan.finished);
+  }
+
   /** Why submission is blocked, in the app's own words. */
   get submitBlockedReason() {
-    if (!this.state.guardian.ready) return 'Safety guardian offline — restart Pico before running a task.';
-    if (isActive(this.state.phase)) return 'Pico is already working on a task.';
+    if (!this.state.guardian.ready) return 'Safety guardian offline — restart Halo before running a task.';
+    if (isActive(this.state.phase)) return 'Halo is already working on a task.';
     return null;
   }
 }

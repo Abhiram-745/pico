@@ -11,6 +11,7 @@
      node scripts/smoke.mjs "hello"
      node scripts/smoke.mjs --mode=agent "open notepad"
      node scripts/smoke.mjs --wait=90 "search the web for otters"
+     node scripts/smoke.mjs --mode=agent --answer=app "open whatsapp"
    ========================================================================== */
 
 const args = process.argv.slice(2);
@@ -25,6 +26,8 @@ const waitMs = Number(opt('wait', '25')) * 1000;
 const port = Number(opt('port', '4177'));
 // --send=openNotch sends a bare command instead of a message.
 const command = opt('send', null);
+// --answer=app answers a question by tapping that option (or typing the text).
+const answer = opt('answer', null);
 
 const t0 = Date.now();
 const at = () => `${String((Date.now() - t0) / 1000).padStart(6)}s`;
@@ -96,6 +99,22 @@ ws.addEventListener('message', (e) => {
     case 'takeover':
       console.log(`${at()}  HANDOVER: ${payload.reason}`);
       break;
+
+    case 'question': {
+      if (!payload) break;
+      const options = payload.options ?? [];
+      console.log(`${at()}  QUESTION: ${payload.text}${options.length ? `  ${options.map((o) => `[${o.id}: ${o.label}]`).join(' ')}` : ''}`);
+      // --answer=app taps the option with that id; any other text is typed.
+      if (answer !== null) {
+        const tapped = options.find((o) => o.id === answer);
+        console.log(`${at()}            -> ${tapped ? `tapping "${tapped.label}"` : `typing "${answer}"`}`);
+        ws.send(JSON.stringify({
+          command: 'answerQuestion',
+          payload: { id: payload.id, text: tapped ? tapped.label : answer, choice: tapped ? tapped.id : undefined },
+        }));
+      }
+      break;
+    }
 
     case 'summary':
       console.log(`${at()}  summary: ${payload.text}`);

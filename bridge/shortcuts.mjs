@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Pico — fast paths for simple jobs.
+   Halo — fast paths for simple jobs.
 
    "Open Notepad" does not need a vision model to look at the screen, think,
    press a key, look again and think again. It needs three keystrokes. Sending
