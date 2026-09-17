@@ -62,12 +62,9 @@ Section "Install" SEC_INSTALL
   WriteRegStr HKCU "Software\Halo" "InstallDir" "$INSTDIR"
 
   CreateDirectory "$SMPROGRAMS\Halo"
-  CreateShortCut "$SMPROGRAMS\Halo\Halo.lnk" "$INSTDIR\Start Halo.cmd" "" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
-  ; The full window. Runs the launcher with --app, so it works whether or not
-  ; Halo is already running.
-  CreateShortCut "$SMPROGRAMS\Halo\Halo App.lnk" "$INSTDIR\Start Halo.cmd" "--app" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
+  CreateShortCut "$SMPROGRAMS\Halo\Halo.lnk" "$INSTDIR\Start Halo.cmd" "--app" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
   CreateShortCut "$SMPROGRAMS\Halo\Uninstall Halo.lnk" "$INSTDIR\Uninstall.exe"
-  CreateShortCut "$DESKTOP\Halo.lnk" "$INSTDIR\Start Halo.cmd" "" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
+  CreateShortCut "$DESKTOP\Halo.lnk" "$INSTDIR\Start Halo.cmd" "--app" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "DisplayName" "Halo"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "UninstallString" '"$INSTDIR\Uninstall.exe"'

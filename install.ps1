@@ -42,6 +42,9 @@ if ((Test-Path (Join-Path $oldRoot ".env")) -and -not (Test-Path (Join-Path $ins
 foreach ($old in @(
     (Join-Path $startMenu "Programs\Pico.lnk"),
     (Join-Path $startMenu "Programs\Pico Settings.lnk"),
+    (Join-Path $startMenu "Programs\Pico\Pico.lnk"),
+    (Join-Path $startMenu "Programs\Halo Settings.lnk"),
+    (Join-Path $startMenu "Programs\Halo App.lnk"),
     (Join-Path $desktop "Pico.lnk"),
     (Join-Path ([Environment]::GetFolderPath("Startup")) "Pico.lnk")
 )) {
@@ -55,6 +58,7 @@ if (-not (Test-Path $launcherPath)) {
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $launcherPath
+$shortcut.Arguments = "--app"
 $shortcut.WorkingDirectory = $installRoot
 $shortcut.Description = "Halo desktop agent"
 $shortcut.WindowStyle = 7
@@ -63,26 +67,17 @@ $shortcut.Save()
 
 $desktopShortcut = $shell.CreateShortcut($desktopShortcutPath)
 $desktopShortcut.TargetPath = $launcherPath
+$desktopShortcut.Arguments = "--app"
 $desktopShortcut.WorkingDirectory = $installRoot
 $desktopShortcut.Description = "Halo desktop agent"
 $desktopShortcut.WindowStyle = 7
 if (Test-Path $iconPath) { $desktopShortcut.IconLocation = "$iconPath,0" }
 $desktopShortcut.Save()
 
-# "Halo App": the full window — chats, memory, shortcuts, settings. It runs
-# the launcher with --app rather than pointing a browser at the address, so it
-# works whether Halo is running or not; it used to be called "Halo Settings"
-# and showed an error page unless Halo had been started first.
-$oldSettings = Join-Path $startMenu "Programs\Halo Settings.lnk"
-if (Test-Path $oldSettings) { Remove-Item -LiteralPath $oldSettings -Force }
-$appShortcut = $shell.CreateShortcut((Join-Path $startMenu "Programs\Halo App.lnk"))
-$appShortcut.TargetPath = $launcherPath
-$appShortcut.Arguments = "--app"
-$appShortcut.WorkingDirectory = $installRoot
-$appShortcut.Description = "Open Halo's window - chats, memory, shortcuts and settings"
-$appShortcut.WindowStyle = 7
-if (Test-Path $iconPath) { $appShortcut.IconLocation = "$iconPath,0" }
-$appShortcut.Save()
+# One shortcut, "Halo". It runs the launcher with --app: that starts Halo if it
+# is not running and opens its window either way, so it never lands on an
+# error page at a localhost address. "Halo Settings" and "Halo App" were
+# the old names for that window and are removed above.
 
 if ($StartAtLogin) {
     $startup = [Environment]::GetFolderPath("Startup")
