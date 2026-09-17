@@ -1,6 +1,8 @@
 /* ==========================================================================
    Pico — motion system
-   Every phase gets a distinct body loop, halo behaviour and face expression.
+
+   The mascot's own motion lives in src/mascot.js; what remains here is the
+   halo around it and the transitions the interface's panels and rows use.
    Timings are deliberately slow: this thing sits on the desktop all day.
    ========================================================================== */
 
@@ -11,7 +13,53 @@
 }
 
 /* ==========================================================================
+   Phase accents — one source of truth. Every surface reads --accent.
+   Set data-phase on any container to re-tint everything inside it.
+
+   They live here rather than in theme.css because the mascot is their main
+   consumer and carries its own data-phase, so anywhere the character goes,
+   its colours go with it — including the website, which loads this file and
+   nothing else of the app's. Every page that loads theme.css loads this one
+   straight after, so nothing in the interface changed by moving them.
+   ========================================================================== */
+[data-phase="Idle"]              { --accent: #8b97a8; }
+[data-phase="Starting"]          { --accent: #38bdf8; }
+[data-phase="Observing"]         { --accent: #22d3ee; }
+[data-phase="Thinking"]          { --accent: #a78bfa; }
+[data-phase="Acting"]            { --accent: #34d399; }
+[data-phase="Paused"]            { --accent: #fbbf24; }
+[data-phase="AwaitingApproval"]  { --accent: #fb923c; }
+[data-phase="AwaitingTakeover"]  { --accent: #60a5fa; }
+[data-phase="Completed"]         { --accent: #4ade80; }
+[data-phase="Stopped"]           { --accent: #94a3b8; }
+[data-phase="Failed"]            { --accent: #f87171; }
+
+/* A fallback for a page that has no phase palette of its own — the site, for
+   instance, where `--accent` is its own brand colour and the mascot would
+   otherwise be painted in it whatever it was doing. */
+.pet { --accent: #8b97a8; }
+.pet[data-phase="Starting"]         { --accent: #38bdf8; }
+.pet[data-phase="Observing"]        { --accent: #22d3ee; }
+.pet[data-phase="Thinking"]         { --accent: #a78bfa; }
+.pet[data-phase="Acting"]           { --accent: #34d399; }
+.pet[data-phase="Paused"]           { --accent: #fbbf24; }
+.pet[data-phase="AwaitingApproval"] { --accent: #fb923c; }
+.pet[data-phase="AwaitingTakeover"] { --accent: #60a5fa; }
+.pet[data-phase="Completed"]        { --accent: #4ade80; }
+.pet[data-phase="Stopped"]          { --accent: #94a3b8; }
+.pet[data-phase="Failed"]           { --accent: #f87171; }
+
+/* ==========================================================================
    Companion shell
+
+   The rig itself is driven from JavaScript — see src/mascot.js. Poses,
+   breathing, blinking, the hop: all of it is computed per frame and written
+   as SVG transform attributes, because those are the only transforms that
+   compose predictably with the ones the artwork already carries.
+
+   What is left here is everything a stylesheet is genuinely better at: the
+   halo behind the character, the glow around it, and the two colours the
+   character is painted in.
    ========================================================================== */
 .pet {
   position: relative;
@@ -20,104 +68,98 @@
   flex: none;
   user-select: none;
   -webkit-user-drag: none;
-  transform-origin: 50% 88%;
+
+  /* The character's own palette, so a surface can retint it without the rig
+     knowing. The island leaves these alone; the setup screen could warm them
+     up, and a future accent-follows-phase would change only these. */
+  --pico-skin-hi: #5C9AFA;
+  --pico-skin:    #3B82F6;
+  --pico-skin-lo: #2A6AD8;
+  --pico-eye:     #0F172A;
 }
 
-/* The stack: halo rings behind, body png, face svg on top of the screen */
+/* Halo behind, character in front. */
 .pet__halo,
-.pet__body,
-.pet__face { position: absolute; pointer-events: none; }
+.pet__rig { position: absolute; pointer-events: none; }
 
 .pet__halo { inset: -18%; }
-.pet__body { inset: 0; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(var(--shadow-pet)); }
 
-.pet__face {
-  left: var(--pet-screen-left);
-  top: var(--pet-screen-top);
-  width: var(--pet-screen-width);
-  height: var(--pet-screen-height);
+.pet__rig { inset: 0; }
+
+/* overflow is visible on purpose: a jump leaves the box, and the viewBox has
+   room above the character precisely so that it can. */
+.pet__char {
+  width: 100%;
+  height: 100%;
   overflow: visible;
+  display: block;
+  /* The light is where the phase lives. The body shifts only slightly (see
+     the tints below) because Pico repainted is a different Pico; the glow
+     around it goes the whole way, and that is what you actually read from
+     across a room. */
+  filter:
+    drop-shadow(0 calc(var(--pet-size, 190px) * .035) calc(var(--pet-size, 190px) * .07) rgba(3, 6, 16, .55))
+    drop-shadow(0 0 calc(var(--pet-size, 190px) * .11) color-mix(in oklab, var(--accent) 55%, transparent));
+  transition: filter .5s var(--ease-out);
 }
 
-/* The body itself carries the per-phase loop */
-.pet__rig {
-  position: absolute;
-  inset: 0;
-  transform-origin: 50% 88%;
-  animation: pet-breathe 4.6s var(--ease-in-out) infinite;
+/* The gradient stops are CSS variables, so a phase change is a colour
+   transition rather than a swap — but only on the SVG's own paint, which
+   does not animate. The glow does, and carries the change. */
+.char__body, .char__arm path, .char__foot path, .ant__stem, .ant__tip, .char__dot {
+  transition: fill .55s var(--ease-out), stroke .55s var(--ease-out);
 }
 
-/* ==========================================================================
-   Body loops, one per phase
-   ========================================================================== */
-@keyframes pet-breathe {
-  0%, 100% { transform: translateY(0)      scale(1,     1);     }
-  50%      { transform: translateY(-2.5%)  scale(1.015, .985);  }
+/* The two phases that need a person burn a little brighter, so the character
+   is doing the same work as the status dot beside it. */
+.pet[data-phase="AwaitingApproval"] .pet__char,
+.pet[data-phase="AwaitingTakeover"] .pet__char {
+  filter:
+    drop-shadow(0 calc(var(--pet-size, 190px) * .035) calc(var(--pet-size, 190px) * .07) rgba(3, 6, 16, .55))
+    drop-shadow(0 0 calc(var(--pet-size, 190px) * .18) color-mix(in oklab, var(--accent) 80%, transparent));
 }
 
-/* Observing — leans in toward the desktop it is reading */
-@keyframes pet-lean {
-  0%, 100% { transform: translateY(-1%) rotate(-3.2deg) scale(1.02); }
-  50%      { transform: translateY(-3%) rotate(-1.4deg) scale(1.035); }
+/* --- the phase, in Pico's own colour ---------------------------------------
+   Pico is blue, and stays blue: the identity is the shape and the colour
+   together, and a mascot repainted green every time it does something is a
+   different mascot each time. So the phase accent is mixed in rather than
+   swapped for — strongest at the bottom of the body where the gradient is
+   already darkest, lighter at the top, and carried fully by the glow around
+   it. The character reads as lit by what it is doing.
+
+   `--accent` is set per phase in theme.css, one source of truth for the whole
+   interface; these three lines are the whole of the mascot's share of it. */
+.pet[data-phase] .pet__char {
+  --pico-skin-hi: color-mix(in oklab, var(--accent) 9%,  #5C9AFA);
+  --pico-skin:    color-mix(in oklab, var(--accent) 15%, #3B82F6);
+  --pico-skin-lo: color-mix(in oklab, var(--accent) 30%, #2A6AD8);
+}
+/* Idle has no phase to show, so it is simply Pico. */
+.pet[data-phase="Idle"] .pet__char {
+  --pico-skin-hi: #5C9AFA;
+  --pico-skin:    #3B82F6;
+  --pico-skin-lo: #2A6AD8;
 }
 
-/* Thinking — hovers, drifting side to side */
-@keyframes pet-ponder {
-  0%, 100% { transform: translate(-1.5%, -2%) rotate(-1.6deg); }
-  50%      { transform: translate( 1.5%, -4%) rotate( 1.6deg); }
+/* Paused and stopped drain the colour out rather than stopping the motion —
+   a still frame is indistinguishable from a hung interface. */
+.pet[data-phase="Paused"] .pet__char,
+.pet[data-phase="Stopped"] .pet__char { opacity: .62; }
+/* Failure is the one place the blue genuinely goes: it is the only state
+   where Pico is not working, and the colour draining out of it says so faster
+   than any wording on the card beside it. */
+.pet[data-phase="Failed"] .pet__char {
+  --pico-skin-hi: #8296b4;
+  --pico-skin: #5f7292;
+  --pico-skin-lo: #47587a;
 }
 
-/* Acting — small purposeful bob, quicker cadence */
-@keyframes pet-work {
-  0%, 100% { transform: translateY(0)    scale(1,    1);    }
-  40%      { transform: translateY(-4%)  scale(.985, 1.02); }
-  70%      { transform: translateY(.6%)  scale(1.02, .985); }
-}
+/* The eyes carry the whole expression, so give their shape change the same
+   spring the rest of the motion has. The `d` is rewritten every frame by the
+   rig, so this transition only smooths the parts CSS still owns. */
+.eye__spec { transition: opacity .3s var(--ease-out); }
 
-/* Approval — upright, then two sharp attention shakes */
-@keyframes pet-alert {
-  0%, 62%, 100% { transform: translateY(-3%) rotate(0deg) scale(1.05); }
-  68%  { transform: translateY(-3%) rotate(-6deg) scale(1.05); }
-  74%  { transform: translateY(-3%) rotate( 5deg) scale(1.05); }
-  80%  { transform: translateY(-3%) rotate(-3deg) scale(1.05); }
-  86%  { transform: translateY(-3%) rotate( 1.5deg) scale(1.05); }
-}
-
-/* Takeover — turns to face you and waits, patiently */
-@keyframes pet-turn {
-  0%, 100% { transform: translateY(-2%) scale(1.06, 1.04) rotate(0deg); }
-  50%      { transform: translateY(-3.4%) scale(1.075, 1.05) rotate(0deg); }
-}
-
-/* Completed — settle then a single satisfied bounce */
-@keyframes pet-cheer {
-  0%   { transform: translateY(0)    scale(1,     1);    }
-  22%  { transform: translateY(2%)   scale(1.08,  .92);  }
-  48%  { transform: translateY(-13%) scale(.94,  1.08);  }
-  72%  { transform: translateY(1.5%) scale(1.05,  .95);  }
-  100% { transform: translateY(0)    scale(1,     1);    }
-}
-
-/* Failed — slumps and stays down */
-@keyframes pet-slump {
-  0%   { transform: translateY(0)   rotate(0deg)   scale(1,     1);    }
-  100% { transform: translateY(3.5%) rotate(-5deg) scale(1.035, .955); }
-}
-
-.pet[data-phase="Idle"]             .pet__rig { animation: pet-breathe 4.6s var(--ease-in-out) infinite; }
-.pet[data-phase="Starting"]         .pet__rig { animation: pet-work    1.5s var(--ease-in-out) infinite; }
-.pet[data-phase="Observing"]        .pet__rig { animation: pet-lean    3.2s var(--ease-in-out) infinite; }
-.pet[data-phase="Thinking"]         .pet__rig { animation: pet-ponder  3.6s var(--ease-in-out) infinite; }
-.pet[data-phase="Acting"]           .pet__rig { animation: pet-work    1.15s var(--ease-in-out) infinite; }
-.pet[data-phase="AwaitingApproval"] .pet__rig { animation: pet-alert   3.4s var(--ease-in-out) infinite; }
-.pet[data-phase="AwaitingTakeover"] .pet__rig { animation: pet-turn    2.6s var(--ease-in-out) infinite; }
-.pet[data-phase="Completed"]        .pet__rig { animation: pet-cheer   1.1s var(--ease-spring) 1 both; }
-.pet[data-phase="Failed"]           .pet__rig { animation: pet-slump    .7s var(--ease-out) 1 both; }
-.pet[data-phase="Stopped"]          .pet__rig { animation: pet-slump    .6s var(--ease-out) 1 both; }
-
-/* Paused freezes the loop exactly where it stands — the strongest possible
-   signal that nothing is moving. */
-.pet[data-phase="Paused"] .pet__rig { animation-play-state: paused; }
+.char__dot { transition: none; }
 
 /* ==========================================================================
    Halo rings
@@ -129,15 +171,20 @@
   transition: stroke .5s var(--ease-out), opacity .5s var(--ease-out);
 }
 
-/* Base ring — always breathing gently */
+/* Base ring — always breathing gently.
+
+   Faint on purpose. It is there to give the sweep and the pulse something to
+   run along, not to draw a circle around the character: at the old opacity
+   the ring was the first thing the eye found, and Pico was the thing inside
+   the ring rather than the thing on the screen. */
 .halo__base {
   stroke-width: 1.5;
-  opacity: .3;
+  opacity: .16;
   animation: halo-breathe 4.6s var(--ease-in-out) infinite;
 }
 @keyframes halo-breathe {
-  0%, 100% { transform: scale(.96); opacity: .22; }
-  50%      { transform: scale(1.02); opacity: .42; }
+  0%, 100% { transform: scale(.96); opacity: .10; }
+  50%      { transform: scale(1.02); opacity: .24; }
 }
 
 /* Sweep arc — a rotating dash, used while the agent is doing something */
@@ -186,86 +233,6 @@
 
 /* Failure — the ring breaks open */
 .pet[data-phase="Failed"] .halo__base { opacity: .5; stroke-dasharray: 14 26; animation: none; }
-
-/* ==========================================================================
-   Face — the mascot's screen is repainted so it can carry colour + emotion
-   ========================================================================== */
-.face__screen {
-  fill: url(#faceGradient);
-  transition: opacity .4s var(--ease-out);
-}
-.face__glow { filter: blur(9px); opacity: .55; }
-
-.face__feature {
-  fill: #fdfff5;
-  transition:
-    d      .32s var(--ease-spring),
-    rx     .32s var(--ease-spring),
-    ry     .32s var(--ease-spring),
-    x      .32s var(--ease-spring),
-    y      .32s var(--ease-spring),
-    height .32s var(--ease-spring),
-    width  .32s var(--ease-spring),
-    opacity .2s linear;
-}
-
-/* Eyes track together via a group transform (look direction) */
-.face__eyes {
-  transition: transform .45s var(--ease-out);
-  transform-box: fill-box;
-}
-
-/* Blink is a fast scaleY on each eye, driven by a class toggle */
-.face__eye { transform-origin: center; transform-box: fill-box; }
-.face__eye.is-blinking { animation: eye-blink .16s ease-in-out 1; }
-@keyframes eye-blink {
-  0%, 100% { transform: scaleY(1); }
-  50%      { transform: scaleY(.06); }
-}
-
-/* Thinking — eyes drift left/right on their own */
-.pet[data-phase="Thinking"] .face__eyes { animation: eyes-drift 3.6s var(--ease-in-out) infinite; }
-@keyframes eyes-drift {
-  0%, 100% { transform: translateX(-7px); }
-  50%      { transform: translateX(7px); }
-}
-
-/* Observing — a scanline crosses the screen */
-.face__scan { opacity: 0; }
-.pet[data-phase="Observing"] .face__scan {
-  opacity: .5;
-  animation: face-scan 1.8s var(--ease-in-out) infinite;
-}
-@keyframes face-scan {
-  0%   { transform: translateY(-150px); opacity: 0; }
-  15%  { opacity: .55; }
-  85%  { opacity: .55; }
-  100% { transform: translateY(150px);  opacity: 0; }
-}
-
-/* Paused — the screen dims like a sleeping monitor */
-.pet[data-phase="Paused"] .face__screen { opacity: .55; }
-
-/* Forehead status dot picks up the accent and throbs when a human is needed */
-.pet__dot {
-  position: absolute;
-  left: 49.64%;
-  top: 32.06%;
-  width: 3.99%;
-  aspect-ratio: 1;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px 2px var(--accent-glow);
-  transition: background .5s var(--ease-out), box-shadow .5s var(--ease-out);
-  pointer-events: none;
-}
-.pet[data-phase="AwaitingApproval"] .pet__dot,
-.pet[data-phase="AwaitingTakeover"] .pet__dot { animation: dot-throb 1.5s var(--ease-in-out) infinite; }
-@keyframes dot-throb {
-  0%, 100% { transform: translate(-50%, -50%) scale(1);   box-shadow: 0 0 8px 2px var(--accent-glow); }
-  50%      { transform: translate(-50%, -50%) scale(1.5); box-shadow: 0 0 18px 6px var(--accent-glow); }
-}
 
 /* ==========================================================================
    Panels
@@ -337,7 +304,8 @@
     transition-duration: .001ms !important;
   }
   /* Phase must still be readable without motion, so hold the states that
-     normally rely on an animation loop. */
+     normally rely on an animation loop. The rig makes the same promise: it
+     stops its own loop and paints the pose once. */
   .pet[data-phase="AwaitingApproval"] .halo__base,
   .pet[data-phase="AwaitingTakeover"] .halo__base { opacity: .9; stroke-width: 3; }
   .halo__sweep { opacity: 0 !important; }

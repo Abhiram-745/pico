@@ -42,7 +42,7 @@ companion.html   palette.html   index.html (harness)
    src/bridge.js  ←──────────────→  mock/agent.js   (or WebView2 in production)
         │
    src/store.js          phase machine + the app's real copy
-        ├── mascot.js    SVG face rig over the shipped pico.png
+        ├── mascot.js    the character — drawn, posed and animated in SVG
         ├── companion.js overlay surface
         ├── palette.js   command palette
         ├── cards.js     approval / takeover / error
@@ -58,19 +58,46 @@ companion.html   palette.html   index.html (harness)
 ## Design notes
 
 **Phase is colour.** One `--accent` token per phase re-tints the halo, the
-mascot's face screen, the palette edge and the timeline dots together, so state
-is legible from peripheral vision. Idle slate → Observing cyan → Thinking violet
-→ Acting green → Paused amber → Approval orange → Takeover blue → Failed red.
+palette edge and the timeline dots together, so state is legible from
+peripheral vision. Idle slate → Observing cyan → Thinking violet → Acting green
+→ Paused amber → Approval orange → Takeover blue → Failed red.
 
-**The mascot's face is a screen, so we repaint it.** The shipped `pico.png`
-draws a glowing display for a face. `src/mascot.js` overlays an SVG at the
-measured screen rect (33.09% / 36.52% / 33.97% / 22.49% of the asset) and draws
-its own eyes and mouth, which means expression and colour are fully animatable
-without any new artwork. Eyes are rects so `width`/`height`/`rx` can be
-CSS-transitioned; the mouth is a single `Q` curve so its `d` can morph.
+**The mascot is generated, not loaded.** `src/mascot.js` draws Pico — body,
+antennae, arms, four feet, two eyes — from geometry rather than from artwork.
+Every solid part is emitted by one generator as eight cubic segments in a fixed
+order, so two poses of the same part differ only in their numbers and the way
+between them is a straight interpolation of those numbers. Nothing is ever
+polygon-sampled, which is what a morph library would do and what wrecks bezier
+curves and round corners halfway through a transition. The consequence worth
+knowing: a new expression is a row of numbers in `POSES`, not a new file.
 
-**Paused freezes the loop mid-pose** rather than swapping to a "paused" look —
-the strongest available signal that nothing is moving.
+**Only the eyes change shape.** They are the entire face, so they carry the
+expression: a bowed top and bottom edge turns a rounded box into a crescent for
+*done*, and the other way for *failed*. Everything else is rigid and moves by
+transform — antennae about their base, arms about the shoulder, feet about
+where they meet the body, the whole character about the point it stands on.
+Limbs that rotate about their own joint read as anatomy; the same limbs
+squashed by a whole-body scale read as jelly.
+
+**Two layers, and the idle layer never stops.** The morph layer is the change
+from one pose to the next. The idle layer is breathing, blinking, glancing
+about, the walk while it works, the typing while it writes, the wave while it
+waits on you. During a pose change the idle is turned down to a tenth over 40%
+of the transition and brought back over the last 40% — not killed, because a
+character that freezes for the length of every transition reads as a machine,
+and not left at full strength, because then it competes with the change it is
+supposed to be getting out of the way of.
+
+**Hovering Pico and hovering the thing Pico sits in are different gestures.**
+The island widens when the pointer is anywhere on it; the character hops only
+when the pointer is on the character. They used to be the same event, which
+meant crossing the island on the way somewhere else set it bouncing — and,
+because the hop was a CSS animation swapped in by the hovered state, arriving
+on the island stopped whatever Pico was in the middle of.
+
+**Paused drains the colour rather than stopping the motion.** A still frame is
+indistinguishable from a hung interface; a character that is plainly alive and
+plainly not working is not.
 
 **The timeline renders an allowlist**, never the raw event. Typed text,
 coordinates and screenshots cannot reach the DOM even if a host sends them;
@@ -87,5 +114,9 @@ so no phase becomes ambiguous.
 `mock/audit-sample.jsonl` is a copy of a real 106-event log with session,
 response and call identifiers replaced by stable pseudonyms.
 
-`assets/pico.png` was extracted from `Halo.exe` so this runs standalone; replace
-it with the project's own asset when integrating.
+`mascot.html` is a harness for the character rig: every pose, activity and
+one-shot, at every size the app renders the mascot at, against every background
+it has to read on.
+
+`assets/pico.png` is no longer the mascot — the rig draws it — and is kept only
+for anything still pointing at the old asset path.

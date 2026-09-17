@@ -277,6 +277,13 @@ const PLAN_SYSTEM = (shot, facts, answered = null) => [
   '',
   'If the screen already shows what was asked, say so with already_done.',
   '',
+  'MESSAGING AND MAIL NEED THE RIGHT CONVERSATION OPENED FIRST.',
+  'Sending a message to somebody is at least three steps, never one: open the',
+  'application, open that person or group\'s conversation, then type. Opening',
+  'the conversation is its own step — searching for them by name and clicking',
+  'the result is two more. Whatever conversation happens to be on screen is',
+  'not the right one unless it is the one named.',
+  '',
   ...(answered ? [
     '',
     'YOU HAVE ALREADY ASKED YOUR ONE QUESTION, AND IT WAS ANSWERED:',
@@ -496,6 +503,32 @@ const ACT_SYSTEM = (shot, front) => [
   'follow the whole run from those lines alone. Not the coordinates, and',
   'not the step read back to them.',
   '',
+  'Read the label. A list of rows — chats, mailboxes, folders, settings — is',
+  'the easiest thing on a screen to be one row out on, and one row out is a',
+  'different thing entirely. Before aiming at a row, read the text on it in',
+  'the image and check it is the one you were asked for. "Archived" is not',
+  '"Locked chats"; "Drafts" is not "Sent". If you cannot read it clearly,',
+  'scroll it into full view rather than aiming at where you think it is.',
+  '',
+  'MESSAGING AND MAIL: OPEN IT BEFORE YOU WRITE IN IT.',
+  'In WhatsApp, Messenger, Teams, Slack, Discord, Gmail, Outlook — anywhere a',
+  'message goes to somebody — the conversation that is open decides who',
+  'receives what you type. So before typing a message:',
+  '  - Read the header of the open conversation. It names who you are talking',
+  '    to. If it is not the person or group you were told to message, do not',
+  '    type. Find the right conversation first.',
+  '  - Use the search box to find them by name rather than hunting the list.',
+  '    Click search, type the name, then click the matching result — and read',
+  '    the result before clicking it.',
+  '  - A newly opened application shows whichever conversation was last open.',
+  '    That is not the one you want unless it happens to be.',
+  'The same goes for a reply in mail: check the subject and the recipient on',
+  'screen before typing into the box.',
+  '',
+  'Sending is the last action, never an incidental one. Type the message,',
+  'look at what is in the box and who it is addressed to, and only then press',
+  'Enter or click Send.',
+  '',
   'The black bar at the top centre of the screen is Halo itself. It is not',
   'part of any task — never click or type into it.',
   '',
@@ -659,7 +692,9 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     if (!(await gate())) return;
 
     const asked = String(plan?.question || '').trim();
-    if (!asked || attempt > 0) break;
+    // A question alongside a usable plan is a model hedging. Take the plan.
+    const hasSteps = Array.isArray(plan?.steps) && plan.steps.some((st) => st?.do);
+    if (!asked || attempt > 0 || hasSteps || plan?.already_done) break;
 
     const answer = await askPerson(asked);
     if (!(await gate())) return;
@@ -760,6 +795,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   let seenFront = front;      // what was in front when Halo last looked
   let lastActionType = null;
   let arrivalChecked = false; // a window that arrived after Halo looked, looked at once
+  let misfireStep = -1;       // the step a click was last refused on — once each
   const typed = [];           // every piece of text typed, for the verdict
   const pressed = [];         // every key chord, likewise
   const opened = [];          // everything opened, likewise
@@ -1268,9 +1304,21 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       // The same click, found stale once already, is clicked this time: a
       // video or an animation under the target is always "changing", and
       // must not make it unclickable.
-      result = await execute({ computer, sense, shot, action, openThing, trustStale: staleSignature === sig });
+      result = await execute({ computer, sense, shot, action, openThing, trustStale: staleSignature === sig, mayRefuse: misfireStep !== stepIndex });
     } catch (err) {
       return fail('action_failed', `That action did not go through: ${err.message}`);
+    }
+    /* Aimed at the wrong control, and told so by name. A second opinion, not
+       a veto with a loop in it: once per step, then the click goes through
+       and the screen decides. Not a miss either — nothing was tried. */
+    if (result?.refused) {
+      misfireStep = stepIndex;
+      feedback = result.said;
+      turnsOnStep -= 1;
+      lastSignature = null;
+      repeats = 0;
+      onAudit('action_skipped', { metadata: { reason: 'aimed at the wrong control' } });
+      continue;
     }
     if (result?.stale) {
       staleSignature = sig;
@@ -1429,6 +1477,48 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
    Carrying out one action
    -------------------------------------------------------------------------- */
 
+/**
+ * What an action says it is aiming at, with the verb taken off the front.
+ * "Click the Send button" describes the target well enough; the verb is noise.
+ */
+function targetPhrase(action) {
+  return String(action.why || '')
+    .replace(/^(?:click(?:ing)?|press(?:ing)?|tap(?:ping)?|select(?:ing)?|open(?:ing)?|choose|choosing)\s+(?:on\s+)?(?:the\s+)?/i, '')
+    .trim();
+}
+
+/* Words that say nothing about which control this is. Two labels sharing only
+   these are not in agreement about anything. */
+const EMPTY_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'button', 'icon', 'menu', 'item',
+  'tab', 'option', 'list', 'row', 'entry', 'field', 'box', 'link', 'control',
+  'click', 'open', 'select', 'press', 'chat', 'chats', 'window', 'panel', 'bar',
+  'left', 'right', 'top', 'bottom', 'side', 'sidebar', 'blue', 'grey', 'gray', 'green', 'red',
+]);
+
+const labelWords = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ')
+  .filter((w) => w.length > 2 && !EMPTY_WORDS.has(w));
+
+/**
+ * Does the name of the thing under the pointer contradict what was aimed at?
+ *
+ * Deliberately reluctant: true only when both sides have real words and share
+ * none of them. "Send" against "Send message" agrees, "Locked chats" against
+ * "Archived" does not, and anything unnamed is no opinion rather than a veto.
+ * A false positive costs a turn; too eager, and Halo stops clicking things.
+ */
+export function contradicts(want, found) {
+  const w = labelWords(want);
+  const f = labelWords(found);
+  if (!w.length || !f.length) return false;
+  for (const a of w) {
+    for (const b of f) {
+      if (a === b || a.includes(b) || b.includes(a)) return false;
+    }
+  }
+  return true;
+}
+
 /** "Button 'Send'", or where it was, for the model and the log. */
 const named = (landed, fallback) => {
   if (!landed) return fallback;
@@ -1461,7 +1551,7 @@ async function changedUnder(computer, shot, point, half = 60) {
 /**
  * @returns {Promise<{said:string, ok?:boolean, moved?:number, frame?:object, stop?:boolean, stale?:boolean}>}
  */
-async function execute({ computer, sense, shot, action, openThing, trustStale = false }) {
+async function execute({ computer, sense, shot, action, openThing, trustStale = false, mayRefuse = false }) {
   const type = action.type;
   const hasPoint = Number.isFinite(action.x) && Number.isFinite(action.y);
 
@@ -1497,6 +1587,20 @@ async function execute({ computer, sense, shot, action, openThing, trustStale = 
       const aim = await aimAt();
       if (isHaloWindow(aim.window?.title)) {
         return { said: 'nothing was clicked: that point is on Halo\'s own bar, not the app behind it' };
+      }
+      /* Ask what is actually under there before pressing it. Refused at most
+         once per step, and only when the application's own name for the
+         control shares no word with what the step was aiming for — see
+         contradicts(). Told to open Locked chats, Halo once pressed Archived,
+         the row above it, and nothing in the run noticed. */
+      const want = String(action.target || '') || targetPhrase(action);
+      if (mayRefuse && type === 'click' && aim.landed?.name && want && contradicts(want, aim.landed.name)) {
+        return {
+          said: `nothing was clicked: the thing under that point is called "${String(aim.landed.name).slice(0, 80)}", `
+            + `which is not "${want.slice(0, 80)}". Find it properly in the image and aim at its centre, or scroll `
+            + 'to bring it into view',
+          refused: true,
+        };
       }
       // Said out loud when what was under the point is plainly not what the
       // model described — the cheapest way for it to notice a misclick is to

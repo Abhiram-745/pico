@@ -4,6 +4,13 @@
    Pure black, so it reads as part of the bezel rather than as a panel laid
    on top of the screen. Every edge you see is the window's own; the page
    paints nothing outside the island, because there is nothing outside it.
+
+   There is no border anywhere in this file, and that is deliberate: a
+   hairline around a notch is the one thing that gives away that it is a
+   window sitting on the screen rather than a hole cut in it. The grey line
+   that used to ring the island was the window's own frame, not this page —
+   see Trim() in bridge/native/island-host.cs, which now paints the frame
+   black rather than hoping the system will agree to draw none.
    ========================================================================== */
 
 html, body {
@@ -11,7 +18,9 @@ html, body {
   height: 100%;
   background: #000;
   overflow: hidden;
+  border: 0;
 }
+:focus-visible { outline: none; }
 
 body {
   font-family: var(--font);
@@ -36,7 +45,23 @@ body {
   position: absolute;
   top: 0;
   left: 50%;
+
+  /* --- one number sizes the island --------------------------------------
+     The island is laid out once, at 1x, in the pixel sizes written
+     throughout this file — and then the whole thing is scaled. Type, gaps,
+     rounding, the mascot and the hit targets all grow together and keep
+     their proportions exactly, which is what you want and what you do not
+     get from changing a dozen font sizes by hand.
+
+     Scaling about the top centre, after the -50% that centres it, keeps the
+     island hanging from the middle of the top edge at every size.
+     island.js multiplies the size it reports to the bridge by the same
+     number, so the window frame arrives at the size the content is actually
+     drawn at. See SCALE_KEY in island.js. */
   translate: -50% 0;
+  scale: var(--island-scale, 1);
+  transform-origin: 50% 0;
+
   width: var(--w);
   display: flex;
   flex-direction: column;
@@ -57,8 +82,11 @@ body {
    inside a black rectangle is just a small window, which is the one thing
    this is not. See postMeasure in island.js. */
 .island.is-capped {
-  width: min(var(--w), 100vw);
-  max-height: 100vh;
+  /* The viewport is in window pixels and the island is laid out before the
+     scale is applied, so the room it actually has is the viewport divided by
+     the scale. */
+  width: min(var(--w), calc(100vw / var(--island-scale, 1)));
+  max-height: calc(100vh / var(--island-scale, 1));
   overflow: hidden;
 }
 .island.is-capped .island__panel,
@@ -69,10 +97,14 @@ body {
   flex: 1 1 auto;
 }
 
-.island[data-view="compact"] { --w: 232px; }
-.island[data-view="peek"]    { --w: 392px; }
-.island[data-view="live"]    { --w: 440px; }
-.island[data-view="open"]    { --w: 600px; }
+/* The four widths are written onto the element by island.js from its own
+   WIDTHS table, so there is one place to change them and no way for the
+   width the island is drawn at to drift from the width it asks the window
+   to be. The fallbacks are what this file would have used on its own. */
+.island[data-view="compact"] { --w: var(--w-compact, 232px); }
+.island[data-view="peek"]    { --w: var(--w-peek, 392px); }
+.island[data-view="live"]    { --w: var(--w-live, 440px); }
+.island[data-view="open"]    { --w: var(--w-open, 600px); }
 
 /* The phase colour, riding the bottom edge. Off when idle, so the island is
    inert black until something is actually happening. */
@@ -91,16 +123,38 @@ body {
 }
 .island:not([data-phase="Idle"])::after { opacity: .9; }
 
-/* The frame is springing to a new size; bring the content in with it. */
+/* Waiting on a person is the one state worth interrupting for, so the island
+   itself carries it: the accent line runs the full width instead of fading
+   out at the ends, and breathes. Everything else Pico does is reported; this
+   is the only thing it asks. */
+.island[data-phase="AwaitingApproval"]::after,
+.island[data-phase="AwaitingTakeover"]::after {
+  left: 8%;
+  right: 8%;
+  height: 2.5px;
+  animation: island-await 1.6s var(--out) infinite;
+}
+@keyframes island-await {
+  0%, 100% { opacity: .45; }
+  50%      { opacity: 1; }
+}
+
+/* The frame is springing to a new size; bring the content in with it.
+
+   Short, and shorter than the window morph rather than longer. The island's
+   whole trick is that the content is already in place while the frame
+   catches up; a slow content entrance inverts that — the frame arrives first
+   and you watch the text fade in inside an empty black box, which reads as
+   the island being slow even when the window got there quickly. */
 .island.is-morphing .island__text,
 .island.is-morphing .island__trail,
 .island.is-morphing .island__panel {
-  animation: island-in .34s var(--out) both;
+  animation: island-in .2s var(--out) both;
 }
-.island.is-morphing .island__panel { animation-delay: .05s; }
+.island.is-morphing .island__panel { animation-delay: .03s; }
 
 @keyframes island-in {
-  from { opacity: 0; transform: translateY(-4px) scale(.985); filter: blur(5px); }
+  from { opacity: 0; transform: translateY(-3px) scale(.99); filter: blur(3px); }
   to   { opacity: 1; transform: none; filter: none; }
 }
 
@@ -118,47 +172,27 @@ body {
   padding: 0 12px 0 10px;
   cursor: pointer;
 }
-/* Peek is the state the whole design is drawn from: at rest, under the
-   pointer, nothing happening. It should read as a nameplate rather than a
-   toolbar, which is mostly a matter of room — a wider gap after the mascot,
-   larger type for the name, and air at both ends rather than controls
-   crowded to the edges. */
-.island[data-view="peek"] .island__bar {
-  min-height: 70px;
-  padding: 10px 24px 10px 18px;
-  gap: 19px;
-}
-.island[data-view="peek"] .island__title {
-  font-size: 16px;
-  letter-spacing: -.015em;
-}
-.island[data-view="peek"] .island__sub { font-size: 12px; }
-.island[data-view="peek"] .island__trail { gap: 22px; }
-
-/* The hairline before the status light. Sized off the bar rather than the
-   text, so it stays where it is as the name changes length, and gone in
-   compact, where the middle is deliberately empty. */
-.island__rule {
-  flex: none;
-  width: 1px;
-  height: 30px;
-  border-radius: 1px;
-  background: var(--line);
-}
-.island[data-view="compact"] .island__rule { display: none; }
+.island[data-view="peek"] .island__bar { min-height: 54px; padding: 7px 12px 7px 12px; }
 .island[data-view="live"] .island__bar { min-height: 52px; padding: 7px 10px 7px 12px; }
 .island[data-view="open"] .island__bar { min-height: 56px; padding: 8px 12px 8px 14px; }
 
+/* The mascot's slot. It gets a little bigger as the island opens, and that
+   is the whole of what this stylesheet does to it — everything the character
+   itself does is computed per frame in src/mascot.js. It has to be that way
+   round: a CSS animation on this element is a property the rig cannot see,
+   so the two fight, and swapping one in on hover is what used to stop Pico
+   mid-gesture the moment the pointer arrived. */
 .island__lead {
   flex: none;
   width: 26px;
   height: 26px;
   display: grid;
   place-items: center;
-  transition: transform .4s var(--spring);
+  transition: transform .28s var(--spring);
 }
-.island[data-view="compact"] .island__lead { transform: scale(.86); }
-.island[data-view="peek"] .island__lead { transform: scale(1.42); }
+.island[data-view="compact"] .island__lead { transform: scale(.88); }
+.island[data-view="peek"] .island__lead { transform: scale(1.16); }
+.island[data-view="live"] .island__lead { transform: scale(1.1); }
 .island[data-view="open"] .island__lead { transform: scale(1.14); }
 
 .island__text {
@@ -172,52 +206,6 @@ body {
 /* Compact is the notch itself: pet on one side, status on the other, and the
    middle left empty like the camera housing it imitates. */
 .island[data-view="compact"] .island__text { visibility: hidden; }
-
-/* ==========================================================================
-   The mascot, alive
-
-   At rest it breathes. Hovered it hops, because the island reacting to the
-   pointer before you click is most of what makes it feel like a thing rather
-   than a bar. While Pico is working it bobs on a quicker beat.
-   ========================================================================== */
-.island__lead {
-  animation: pet-float 3.6s ease-in-out infinite;
-  transform-origin: 50% 100%;
-}
-.island[data-view="peek"] .island__lead { animation: pet-hop .62s cubic-bezier(.28,.84,.42,1) infinite; }
-.island[data-phase="Acting"] .island__lead,
-.island[data-phase="Starting"] .island__lead { animation: pet-bob .82s ease-in-out infinite; }
-.island[data-phase="Completed"] .island__lead { animation: pet-cheer .7s cubic-bezier(.2,1.5,.4,1) 1 both; }
-.island[data-phase="Failed"] .island__lead,
-.island[data-phase="Stopped"] .island__lead { animation: pet-sink .5s ease-out 1 both; }
-
-@keyframes pet-float {
-  0%, 100% { translate: 0 0; }
-  50%      { translate: 0 -1.5px; }
-}
-@keyframes pet-hop {
-  0%    { translate: 0 0;     scale: 1 1; }
-  22%   { translate: 0 0;     scale: 1.12 .88; }
-  48%   { translate: 0 -9px;  scale: .92 1.1; }
-  74%   { translate: 0 0;     scale: 1.14 .86; }
-  100%  { translate: 0 0;     scale: 1 1; }
-}
-@keyframes pet-bob {
-  0%, 100% { translate: 0 0; }
-  50%      { translate: 0 -4px; }
-}
-@keyframes pet-cheer {
-  0%   { translate: 0 0;    scale: 1 1; }
-  40%  { translate: 0 -11px; scale: .9 1.12; }
-  100% { translate: 0 0;    scale: 1 1; }
-}
-@keyframes pet-sink {
-  to { translate: 0 2px; scale: 1.06 .94; opacity: .75; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .island__lead { animation: none !important; }
-}
 
 .island__title {
   font-size: 13px;
@@ -250,38 +238,6 @@ body {
   line-height: 1.35;
 }
 
-/* The same argument, for the line underneath.
-
-   That line is where Pico says what it is doing and why, and it says it in
-   a sentence now rather than a caption — at eleven pixels an ellipsis was
-   taking most of it, so the one part of a run that explains itself was the
-   part nobody could read. Two lines, wrapped on words, and the frame grows
-   to hold them.
-
-   Held to two so the bar stays a bar: a third line is the point at which it
-   stops reading as a status and starts reading as a paragraph that happens
-   to be hanging off the top of the screen. */
-.island[data-view="live"] .island__sub,
-.island[data-view="open"] .island__sub {
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  line-height: 1.35;
-  overflow-wrap: break-word;
-}
-
-/* Open, the headline is the job in hand rather than a phase word, and it is
-   a whole sentence often enough to be worth the second line too. */
-.island[data-view="open"] .island__title {
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  line-height: 1.3;
-  overflow-wrap: break-word;
-}
-
 .island__trail {
   flex: none;
   display: flex;
@@ -310,10 +266,9 @@ body {
   box-shadow: 0 0 10px color-mix(in oklab, var(--accent) 70%, transparent);
 }
 .island[data-phase="Idle"] .island__dot {
-  background: #b3dcff;
-  box-shadow: 0 0 12px rgba(179, 220, 255, .6);
+  background: #30d158;
+  box-shadow: 0 0 10px rgba(48, 209, 88, .55);
 }
-.island[data-view="peek"] .island__dot { width: 9px; height: 9px; }
 .island[data-phase="AwaitingApproval"] .island__dot,
 .island[data-phase="AwaitingTakeover"] .island__dot { animation: island-beat 1.1s ease-in-out infinite; }
 
@@ -436,64 +391,6 @@ body {
 }
 .island__chip:hover { background: var(--well); border-color: transparent; color: var(--ink); }
 
-/* --- earlier chats -------------------------------------------------------
-   Under the suggestions, and quieter than them: the suggestions are an offer,
-   this is a filing cabinet. Only ever visible in an empty thread, where the
-   panel has the room to spare. */
-.island__history { margin-top: 14px; }
-.island__history[hidden] { display: none; }
-
-.island__history-label {
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--dim);
-  opacity: .75;
-  margin-bottom: 6px;
-}
-
-.island__history-list { display: flex; flex-direction: column; gap: 2px; }
-
-.island__history-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: #d1d1d6;
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  padding: 6px 8px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background .16s, color .16s;
-}
-.island__history-item:hover { background: var(--well); color: var(--ink); }
-
-/* One line, ellipsised. A chat is titled with the first thing you said to it,
-   and people say long things — wrapping them would let the history push the
-   composer off the bottom of an island that cannot scroll. */
-.island__history-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.island__history-count {
-  flex: none;
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--dim);
-  background: var(--well);
-  padding: 1px 6px;
-  border-radius: 999px;
-}
-
 /* --- thread -------------------------------------------------------------- */
 .island__thread {
   display: flex;
@@ -556,30 +453,60 @@ body {
   30%           { opacity: 1;  transform: translateY(-3px); }
 }
 
-/* --- a decision ---------------------------------------------------------- */
+/* --- a decision -----------------------------------------------------------
+   The one moment Pico is stopped and waiting on a person.
+
+   It is built to be the least dialog-like thing in the interface, because a
+   dialog is a thing people dismiss without reading and this is the thing they
+   must not. The character is in the card, doing the asking; the kind of
+   asking is a small chip on its shoulder rather than a warning triangle
+   standing where a face should be; and the card carries a wash of the colour
+   its kind already uses everywhere else, so which of the three this is can be
+   told before a word of it is read. */
 .island__decision {
+  --kind: #ffb340;
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 4px 12px;
-  padding: 12px 12px 12px;
-  border-radius: 18px;
-  background: var(--well);
+  gap: 6px 13px;
+  padding: 13px 14px 14px;
+  border-radius: 20px;
+  background:
+    radial-gradient(120% 140% at 6% 0%, color-mix(in oklab, var(--kind) 15%, transparent), transparent 62%),
+    var(--well);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--kind) 22%, transparent);
   animation: island-msg .3s var(--out) both;
 }
 .island__decision[hidden] { display: none; }
+.island__decision[data-kind="approval"] { --kind: #ffb340; }
+.island__decision[data-kind="takeover"] { --kind: #5eb1ff; }
+.island__decision[data-kind="question"] { --kind: #d07ffb; }
 
+/* Pico, and the chip that says which kind of asking this is. */
 .island__decision-icon {
   grid-row: span 2;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  position: relative;
+  width: 46px;
+  height: 46px;
   display: grid;
   place-items: center;
+  align-self: start;
 }
-.island__decision-icon svg { width: 17px; height: 17px; }
-.island__decision[data-kind="approval"] .island__decision-icon { background: color-mix(in oklab, #ff9f0a 20%, #000); color: #ffb340; }
-.island__decision[data-kind="takeover"] .island__decision-icon { background: color-mix(in oklab, #0a84ff 22%, #000); color: #5eb1ff; }
-.island__decision[data-kind="question"] .island__decision-icon { background: color-mix(in oklab, #bf5af2 22%, #000); color: #d07ffb; }
+.island__asker { pointer-events: none; }
+
+.island__decision-chip {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--kind) 30%, #000);
+  box-shadow: 0 0 0 2.5px #000;
+  color: var(--kind);
+}
+.island__decision-chip svg { width: 11px; height: 11px; stroke-width: 2.4; }
 
 /* The one moment Pico is stopped and waiting on you. It says so, above the
    card, under a dot that keeps blinking until it is dealt with — because the
@@ -603,9 +530,7 @@ body {
   background: currentColor;
   animation: island-beat 1.1s ease-in-out infinite;
 }
-.island__decision[data-kind="approval"] .island__attention { color: #ffb340; }
-.island__decision[data-kind="takeover"] .island__attention { color: #5eb1ff; }
-.island__decision[data-kind="question"] .island__attention { color: #d07ffb; }
+.island__attention { color: var(--kind); }
 
 /* --- answering a question -------------------------------------------------
    Its own field, on the card, rather than the box a job is typed into. */
@@ -637,8 +562,8 @@ body {
 .island__answer .island__send { width: 30px; height: 30px; }
 .island__answer .island__send svg { width: 15px; height: 15px; }
 
-.island__decision-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; grid-row: span 2; align-self: center; }
-.island__decision-title { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+.island__decision-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; align-self: center; }
+.island__decision-title { font-size: 14px; font-weight: 600; letter-spacing: -.012em; line-height: 1.35; }
 .island__decision-reason { font-size: 12px; color: var(--dim); line-height: 1.45; }
 
 .island__decision-actions {
@@ -646,22 +571,10 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
-/* An answer field is not a row of buttons: it wants the whole width. When
-   the question has set answers — the app, or the website — they come first,
-   as buttons, with the field underneath for anything else. */
-.island__decision[data-kind="question"] .island__decision-actions { justify-content: stretch; flex-direction: column; }
-.island__decision[data-kind="question"] .island__answer { flex: none; }
-.island__choices { display: flex; gap: 8px; }
-.island__choices .island__pill {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 36px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
+/* An answer field is not a row of buttons: it wants the whole width. */
+.island__decision[data-kind="question"] .island__decision-actions { justify-content: stretch; }
 
 .island__pill {
   height: 32px;

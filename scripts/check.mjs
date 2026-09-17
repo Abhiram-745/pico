@@ -189,7 +189,7 @@ for (const f of files) {
 }
 
 /* --------------------------------------------------------------------------
-   5. The intent router still routes every phrasing it is meant to
+   5. The behaviours that have gone wrong in front of a user
 
    This is the one behaviour where being wrong is immediately visible: a
    misrouted greeting means Halo takes over the desktop to type "hello".

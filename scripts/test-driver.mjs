@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.HALO_HOME = mkdtempSync(join(tmpdir(), 'halo-test-'));
-const { runTask, readFacts } = await import('../bridge/driver.mjs');
+const { runTask, readFacts, contradicts } = await import('../bridge/driver.mjs');
 
 let failed = 0;
 const check = (label, ok, detail = '') => {
@@ -297,6 +297,56 @@ console.log('what an open window is showing');
   check('a blank one is showing nothing worth saying', apps.showing('Untitled - Notepad', 'Notepad') === null);
   check('an unsaved file, without its asterisk', apps.showing('*notes.txt - Notepad', 'Notepad') === 'notes.txt');
   check('a title that is only the app', apps.showing('Spotify Premium', 'Spotify') === null);
+}
+
+/* --- 9. the wrong row, refused by name ------------------------------------
+   Told to open Locked chats, Halo once pressed Archived: the row above it,
+   same shape, and nothing noticed. The accessibility layer knew the name the
+   whole time. contradicts() decides, and must be reluctant — too eager and
+   Halo stops clicking things at all. */
+console.log('the wrong row');
+{
+  const agrees = [
+    ['Locked chats', 'Locked chats'],
+    ['Send button', 'Send'],
+    ['Send', 'Send message'],
+    ['the address bar', 'Address and search bar'],
+    ['Compose', 'Compose '],
+    ['Locked chats', ''],
+    ['', 'Archived'],
+    ['it', 'Archived'],
+    ['the button', 'Archived'],
+    ['Locked chats', 'chat'],
+    ['the blue Send button at the bottom right of the chat', 'Send'],
+  ];
+  for (const [want, found] of agrees) check(`"${want}" vs "${found}" agrees`, !contradicts(want, found));
+  const contradict = [
+    ['Locked chats', 'Archived'],
+    ['Locked chats', 'Starred messages'],
+    ['Drafts', 'Sent'],
+    ['Reply', 'Forward'],
+    ['Mum', 'Football Lads 2024'],
+  ];
+  for (const [want, found] of contradict) check(`"${want}" vs "${found}" contradicts`, contradicts(want, found));
+
+  // In the loop: refused once with the real name said back, then allowed.
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  let clicks = 0;
+  computer.click = async () => { clicks += 1; computer.state.screen += 1; };
+  computer.sense.hit = async () => ({ found: true, at: { type: 'ListItem', name: 'Archived' }, layers: [], window: { title: 'WhatsApp' } });
+  const llm = scripted([
+    plan([{ do: 'Open Locked chats', kind: 'pointer' }]),
+    act({ action: 'click', x: 10, y: 40, target: 'Locked chats' }),
+    ({ req }) => {
+      check('the model is told what was really there', /called "Archived", which is not "Locked chats"/.test(req.content[0].text), req.content[0].text);
+      return act({ action: 'click', x: 10, y: 60, target: 'Locked chats' });
+    },
+    { name: 'report', args: { succeeded: true, summary: 'Opened Locked chats.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'show my locked chats in whatsapp' });
+  await done;
+  check('refused once, then the second click went through', clicks === 1, `clicks=${clicks}`);
+  check('and the run finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');
