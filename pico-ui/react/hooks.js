@@ -48,6 +48,10 @@ export const sel = {
   routed: (s) => s.routed,
   settings: (s) => s.settings,
   timeline: (s) => s.timeline,
+  shell: (s) => s.shell,
+  focusChatAt: (s) => s.focusChatAt,
+  chord: (s) => s.chord,
+  cursor: (s) => s.cursor,
   notchOpen: (s) => s.notchOpen,
   notchHover: (s) => s.notchHover,
 };

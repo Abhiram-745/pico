@@ -21,7 +21,8 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, stat } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { existsSync } from 'node:fs';
+import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
@@ -32,6 +33,9 @@ import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
 import { LLM, PROVIDERS } from './llm.mjs';
 import { NotchWindow } from './notch-window.mjs';
+/* The one list of chords, shared with the pages that teach and show them.
+   A .js module of plain data, imported by Node and the bundler alike. */
+import { TAUGHT as CHORDS } from '../pico-ui/src/keybinds.js';
 import * as autostart from './autostart.mjs';
 import { IslandHost } from './island-host.mjs';
 import { Sense } from './sense.mjs';
@@ -39,7 +43,7 @@ import { check as checkUpdate, install as installUpdate, localBuild } from './up
 import { chatArchive } from './chats.mjs';
 import { memory } from './memory.mjs';
 import { routines } from './routines.mjs';
-import { migrateFromPico } from './home.mjs';
+import { migrateFromPico, readJson, writeJson } from './home.mjs';
 import { findBrowser } from './notch-window.mjs';
 import { buildUI } from '../scripts/build-ui.mjs';
 
@@ -53,6 +57,17 @@ for (const [k, v] of Object.entries(process.env)) {
 }
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+/* What shape Halo was in last time, and whether the three chords have been
+   practised. Kept next to the chats rather than in .env: it is state, not
+   configuration, and it belongs to this computer. */
+const SHELL_FILE = 'shell.json';
+const shellState = () => ({ mode: 'island', onboarded: false, ...readJson(SHELL_FILE, {}) });
+function saveShellState(patch) {
+  const next = { ...shellState(), ...patch };
+  writeJson(SHELL_FILE, next);
+  return next;
+}
 const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
 
 /* --app: open the full window as well as the island. It is what the
@@ -102,6 +117,9 @@ const ALLOWED_COMMANDS = new Set([
   // chat history, shared by every window
   'openChat', 'chatRename', 'chatDelete', 'chatSearch', 'chatsImport',
   'openApp',
+  'setShell',        // { mode?: 'island'|'card', hidden?, guide? } — the shape
+  'moveCard',        // { x, y } — the card has been dragged
+  'onboarded',       // { done: true } — the three chords have been practised
 ]);
 
 const MAX_TASK_LENGTH = 2000;   // mirrors the desktop app's own task limit
@@ -173,6 +191,11 @@ class Bridge {
       question: null,
       plan: null,
       runFinished: null,
+      /* Which shape Halo is in, and whether it is guiding rather than
+         working. Part of the snapshot because a page that has just
+         connected — or reloaded mid-session — must come back as the shape
+         the person left it in, not as an island every time. */
+      shell: { mode: 'island', hidden: false, guide: false },
     };
 
     // The conversation so far, so a phone joining mid-thread sees it rather
@@ -318,10 +341,74 @@ class Bridge {
     send('question', s.question);
     send('plan', s.plan);
     send('runFinished', s.runFinished);
+    send('shell', s.shell);
     // Not part of the snapshot, because it is not the agent's state — but it
     // has to be replayed for the same reason everything else here is: a page
     // that has just connected knows nothing until it is told.
     if (this.notch?.hoverTimer) client.conn.sendJSON({ type: 'notchHover', payload: { over: this.notch.over } });
+  }
+
+  /**
+   * Change the shape, in one place.
+   *
+   * Every route in — a chord from Windows, a button in the island, the app
+   * window, a fresh page asking — ends up here, so the window and every open
+   * page agree about what Halo looks like right now.
+   *
+   * @param {{mode?: string, hidden?: boolean, guide?: boolean, toggle?: string}} want
+   */
+  setShell(want = {}) {
+    const now = { ...this.snapshot.shell };
+
+    if (want.toggle === 'hidden') now.hidden = !now.hidden;
+    else if (typeof want.hidden === 'boolean') now.hidden = want.hidden;
+
+    if (want.toggle === 'card') now.mode = now.mode === 'card' ? 'island' : 'card';
+    else if (want.mode === 'card' || want.mode === 'island') now.mode = want.mode;
+
+    if (want.toggle === 'guide') now.guide = !now.guide;
+    else if (typeof want.guide === 'boolean') now.guide = want.guide;
+
+    // Asking for the island back, or for the chat, means asking to see it.
+    if (want.show) now.hidden = false;
+
+    /* The app window handing back to the island asks for the chords to be
+       shown with it: the small Halo is the one you reach by keyboard, and
+       the moment you arrive at it is the moment that is worth knowing. */
+    if (want.keys) now.keysAt = Date.now();
+
+    if (this.notch) {
+      this.notch.setMode(now.mode);
+      this.notch.setHidden(now.hidden);
+    }
+    this.snapshot.shell = now;
+    saveShellState({ mode: now.mode });
+    this.broadcast({ type: 'shell', payload: now });
+    return now;
+  }
+
+  /** A chord pressed anywhere on the desktop. */
+  onChord(id) {
+    switch (id) {
+      case 'toggleHidden':
+        this.setShell({ toggle: 'hidden' });
+        break;
+      case 'toggleCard':
+        this.setShell({ toggle: 'card', show: true });
+        break;
+      case 'toggleGuide':
+        this.setShell({ toggle: 'guide', show: true });
+        break;
+      case 'openChat':
+        this.setShell({ show: true });
+        // A counter rather than a flag: pressing it twice must reach the page
+        // twice, and a page that reloads must not act on a stale one.
+        this.broadcast({ type: 'focusChat', payload: { at: Date.now() } });
+        break;
+      default:
+        return;
+    }
+    this.broadcast({ type: 'chord', payload: { id, at: Date.now() } });
   }
 
   /** Rate limit: 5 wrong codes per address, then a 60s lockout. */
@@ -519,6 +606,26 @@ class Bridge {
     if (command === 'openApp') {
       if (!client.local) return;
       this.onOpenApp?.(String(payload.section ?? ''));
+      return;
+    }
+
+    /* The shape of Halo on this desktop. Local only: a paired phone may
+       drive the agent, but not move or hide a window on somebody's screen. */
+    if (command === 'setShell') {
+      if (!client.local) return;
+      this.setShell(payload);
+      return;
+    }
+    if (command === 'moveCard') {
+      if (!client.local) return;
+      this.notch?.moveCard({ x: Number(payload.x), y: Number(payload.y) });
+      return;
+    }
+    if (command === 'onboarded') {
+      if (!client.local) return;
+      this.agent.settings = { ...this.agent.settings, onboarded: true };
+      saveShellState({ onboarded: true });
+      this.emitSettings();
       return;
     }
 
@@ -1048,6 +1155,60 @@ try {
   bridge.broadcast({ type: 'notch', payload: { open: true } });
 } catch (err) {
   console.warn(`[bridge] the island could not be opened (${err.message})`);
+}
+
+/* ---------------------------------------------------------------------------
+   The chords
+
+   Registered with Windows through the island host, so they work while Halo
+   is not the window in front — which is every time anybody would want them.
+   Ctrl+Alt+<key>: see pico-ui/src/keybinds.js, which is the list all four
+   sides of this read from. A chord some other program already owns fails to
+   register, says so in the log, and changes nothing else.
+   --------------------------------------------------------------------------- */
+const MOD = { alt: 1, ctrl: 2, shift: 4 };
+const VK = { KeyA: 0x41, KeyF: 0x46, KeyG: 0x47, KeyH: 0x48, KeyK: 0x4B, Space: 0x20 };
+
+if (islandHost) {
+  islandHost.onFired = (id) => {
+    if (process.env.PICO_DEBUG) console.log(`[chord] ${id}`);
+    bridge.onChord(id);
+  };
+  for (const b of CHORDS) {
+    const vk = VK[b.code];
+    if (!vk) continue;
+    const mods = (b.ctrl ? MOD.ctrl : 0) | (b.alt ? MOD.alt : 0) | (b.shift ? MOD.shift : 0);
+    islandHost.hotkey(b.id, mods, vk);
+  }
+  console.log(`[bridge] chords: ${CHORDS.map((b) => `${b.keys.join('+')} ${b.label.toLowerCase()}`).join(', ')}`);
+}
+
+/* Start with Windows, arranged once.
+
+   Halo is meant to be there when you reach for a chord, which it cannot be
+   if starting it is a thing you have to remember. So the first run of an
+   installed copy adds the Startup shortcut itself — the bridge only, no
+   window, nothing on screen until asked (see autostart.mjs) — and records
+   that it has done so, so that turning it off in Settings stays off.
+   A copy running from a source folder is left alone: that is a checkout,
+   not somebody's Halo. */
+{
+  const saved = shellState();
+  const installed = !ROOT.includes(`${sep}Downloads${sep}`) && !existsSync(join(ROOT, '.git'));
+  if (!saved.autostartAsked && installed) {
+    autostart.enable()
+      .then((st) => console.log(`[bridge] Halo will start with Windows${st?.enabled ? '' : ' (could not be arranged)'}`))
+      .catch(() => {});
+    saveShellState({ autostartAsked: true });
+  }
+}
+
+// The shape it was left in, restored once the window exists.
+{
+  const saved = shellState();
+  bridge.agent.settings = { ...bridge.agent.settings, onboarded: Boolean(saved.onboarded) };
+  bridge.emitSettings();
+  if (saved.mode === 'card') bridge.setShell({ mode: 'card' });
 }
 
 /* The page is told whether the pointer is on it rather than working it out —

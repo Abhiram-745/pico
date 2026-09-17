@@ -121,6 +121,18 @@ export class NotchWindow {
     this.over = false;
     this.hoverTimer = null;
     this.run = 0;
+
+    /* Two shapes, and away.
+
+       'island' is the strip at the top of the screen, centred, flush to the
+       edge — a notch. 'card' is the same Halo as a window you can put
+       wherever you like, which is the better shape when you are working with
+       it rather than glancing at it. `hidden` is neither: the window still
+       exists, still holds the conversation, and is simply not on the screen.
+       Each is a keybind away (see pico-ui/src/keybinds.js). */
+    this.mode = 'island';
+    this.hidden = false;
+    this.cardAt = null;         // { x, y } once it has been moved
   }
 
   /**
@@ -160,17 +172,95 @@ export class NotchWindow {
     return this.screenWidth;
   }
 
-  /** Window rectangle that shows exactly `content`, centred, flush to the top. */
+  /**
+   * Window rectangle that shows exactly `content`.
+   *
+   * An island is centred and flush to the top edge, the way a notch is. A
+   * card sits where it was last put, or near the bottom-right to begin with,
+   * and is kept fully on the screen.
+   */
   rectFor({ width, height }) {
     const f = this.frame;
     const outerW = Math.round(width + (2 * f.side));
     const outerH = Math.round(height + f.top + f.bottom);
+    if (this.mode === 'card') {
+      const screenH = this.screenHeight;
+      const margin = 28;
+      const wantX = this.cardAt ? this.cardAt.x : this.width - outerW - margin;
+      const wantY = this.cardAt ? this.cardAt.y : screenH - outerH - margin - 40;
+      return {
+        x: Math.round(Math.max(-f.side, Math.min(this.width - outerW + f.side, wantX))),
+        y: Math.round(Math.max(0, Math.min(screenH - Math.min(outerH, screenH), wantY))),
+        width: outerW,
+        height: outerH,
+      };
+    }
     return {
       x: Math.round((this.width / 2) - (outerW / 2)),
       y: -f.top,
       width: outerW,
       height: outerH,
     };
+  }
+
+  /** How tall the screen is, asked each time, for the same reason as width. */
+  get screenHeight() {
+    try {
+      const h = nut?.getScreenSize?.().height;
+      if (Number.isFinite(h) && h > 240) return h;
+    } catch { /* fall back */ }
+    return Math.round(this.screenWidth * 0.5625);
+  }
+
+  /** Island or card. Returns the mode actually in force. */
+  setMode(mode) {
+    const next = mode === 'card' ? 'card' : 'island';
+    if (next === this.mode) return this.mode;
+    this.mode = next;
+    // The page re-lays-out and reports its new size; this puts the window
+    // where the new shape belongs in the meantime, so the switch does not
+    // show a card-shaped page in an island-shaped window.
+    this.placed = null;
+    this.apply(this.rectFor(this.size));
+    return this.mode;
+  }
+
+  /** Drag: where the card has been put, in screen pixels. */
+  moveCard({ x, y }) {
+    if (this.mode !== 'card') return;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.cardAt = { x, y };
+    this.placed = null;
+    this.apply(this.rectFor(this.size));
+  }
+
+  /**
+   * Off the screen and back, without ending anything.
+   *
+   * The window is hidden rather than closed: closing it would take the
+   * conversation, the run in hand and the socket with it, and bringing it
+   * back would be a cold start. Hidden, it is the same Halo, not on screen.
+   */
+  setHidden(hidden) {
+    const next = Boolean(hidden);
+    if (next === this.hidden) return this.hidden;
+    this.hidden = next;
+    const h = this.hwnd ?? this.findWindow();
+    if (!h) return this.hidden;
+    if (next) {
+      // Without the helper there is no ShowWindow to call, so it is parked
+      // off the edge of the screen instead: the same thing to look at.
+      if (!this.host?.hide(h)) {
+        const r = this.rectFor(this.size);
+        this.placed = null;
+        this.apply({ ...r, y: -(r.height + 200) });
+      }
+    } else {
+      this.host?.show(h);
+      this.placed = null;
+      this.apply(this.rectFor(this.size));
+    }
+    return this.hidden;
   }
 
   /** The page's own measurement of the browser chrome around it. */

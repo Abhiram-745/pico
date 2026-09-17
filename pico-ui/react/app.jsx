@@ -31,6 +31,8 @@ import { mountPalette } from '../src/palette.js';
 import { installHotkeys } from '../src/hotkeys.js';
 import { useStore, useStoreEvent, sel, usePetName, useDebounced, ago } from './hooks.js';
 import { Beam, MetalButton, Orb } from './fx.jsx';
+import { Onboard } from './onboard.jsx';
+import { KEYBINDS } from '../src/keybinds.js';
 import {
   Composer, Decision, Icon, IconButton, MascotView, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
 } from './parts.jsx';
@@ -486,6 +488,17 @@ function SettingsView({ demo, petName, setPetName }) {
       </div>
 
       <div className="h-card">
+        <div className="h-card__title">Keyboard</div>
+        <div className="h-card__sub">Every one of these works while you are in something else — Windows hands them to Halo directly.</div>
+        {KEYBINDS.map((b) => (
+          <div className="h-kv h-kv--keys" key={b.id}>
+            <span>{b.label}<i>{b.hint}</i></span>
+            <span className="h-keys__chord">{b.keys.map((k) => <kbd key={k}>{k}</kbd>)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="h-card">
         <div className="h-card__title">Model</div>
         <div className="h-card__sub">A task is planned once by the strongest model, then each step is carried out by the one measured to click most accurately. A screenshot of the desktop is sent to the provider on each step.</div>
         <div className="h-kv"><span>In use</span><code>{settings.model || 'not configured'}</code></div>
@@ -610,7 +623,11 @@ function IslandToggle({ demo }) {
   return (
     <button type="button" className="h-islandtoggle" data-on={open ? 'true' : 'false'} disabled={demo}
       title={demo ? 'The island only exists in the installed app' : open ? 'Hide the island' : 'Show the island at the top of your screen'}
-      onClick={() => bridge.send(open ? 'closeNotch' : 'openNotch')}>
+      onClick={() => {
+        if (open) { bridge.send('closeNotch'); return; }
+        bridge.send('openNotch');
+        bridge.send('setShell', { show: true, keys: true });
+      }}>
       <span className="h-islandtoggle__pill"><i /></span>
       <span className="h-islandtoggle__text">
         <span className="h-islandtoggle__title">{open ? 'Island is on screen' : 'Show the island'}</span>
@@ -628,6 +645,7 @@ function App({ demo, conn }) {
   const [petName, setPetName] = usePetName();
   const [section, setSection] = useState(sectionFromHash);
   const phase = useStore(sel.phase);
+  const settings = useStore(sel.settings);
   const memory = useStore(sel.memory);
   const routines = useStore(sel.routines);
   const decision = useDecision(null);
@@ -651,8 +669,27 @@ function App({ demo, conn }) {
 
   const counts = { memory: memory.length || null, shortcuts: routines.length || null };
 
+  /* The chords, before anything else.
+     Four of them, one press each, and no way past a step but the real key —
+     because every one of them is how Halo is reached once this window is
+     closed, and an app you can only use while looking at it is not the app
+     this is. The bridge remembers that it has been done (shell.json). */
+  const [onboarding, setOnboarding] = useState(false);
+  useEffect(() => {
+    if (settings.onboarded === false) setOnboarding(true);
+  }, [settings.onboarded]);
+
+  /* Closing this window leaves you with the island, which is the half of
+     Halo that is reached by keyboard — so the chords go with you. */
+  useEffect(() => {
+    const onLeave = () => { if (!demo) bridge.send('setShell', { show: true, keys: true }); };
+    addEventListener('pagehide', onLeave);
+    return () => removeEventListener('pagehide', onLeave);
+  }, [demo]);
+
   return (
     <div className="h-app" data-phase={phase}>
+      {onboarding && <Onboard onDone={() => setOnboarding(false)} />}
       <aside className="h-side">
         <div className="h-side__brand">
           <Presence px={28} />

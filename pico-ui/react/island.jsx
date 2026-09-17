@@ -31,6 +31,7 @@ import { store, isActive, PHASE_COPY } from '../src/store.js';
 import { bridge, connect } from '../src/bridge.js';
 import { chats } from '../src/chats.js';
 import { permissions, LEVELS } from '../src/permissions.js';
+import { TAUGHT, written } from '../src/keybinds.js';
 import { useStore, useStoreEvent, sel, usePetName, ago } from './hooks.js';
 import { Beam, MetalButton } from './fx.jsx';
 import {
@@ -38,7 +39,7 @@ import {
 } from './parts.jsx';
 
 /** Content width for each size. Height is whatever the content needs. */
-export const WIDTHS = { compact: 232, peek: 380, live: 460, open: 620 };
+export const WIDTHS = { compact: 232, peek: 380, live: 460, open: 620, card: 396 };
 
 const SHORT = {
   Idle: 'Ready',
@@ -196,14 +197,17 @@ function Island({ onMeasure }) {
   const chatState = useStore(sel.chats);
   const hover = useHover();
 
+  const shell = useStore(sel.shell);
   const [pinned, setPinned] = useState(false);
   const [flash, setFlash] = useState(null);          // { kind, text } — a passing notice
+  const [keys, setKeys] = useState(false);           // the chords, on arriving from the app
   const [dismissed, setDismissed] = useState(null);  // a question put away unanswered
   const [autoApproved] = useState(() => new Set());
   const [level, setLevel] = useState(permissions.level);
   const rootRef = useRef(null);
   const inputRef = useRef(null);
   const flashTimer = useRef(null);
+  const keysTimer = useRef(null);
 
   const decision = useDecision(autoApproved);
   const running = isActive(phase);
@@ -219,8 +223,29 @@ function Island({ onMeasure }) {
     flashTimer.current = setTimeout(() => setFlash(null), ms);
   }, []);
 
-  /* --- what size to be ---------------------------------------------------- */
+  /* Arriving from the app window: the chords, for a few seconds, in the
+     thing they operate. Opened so there is room to read them, and it puts
+     itself away again — nobody asked for a panel. */
+  useStoreEvent(['shell'], (s) => {
+    if (!s.shell?.keysAt) return;
+    setKeys(true);
+    setPinned(true);
+    clearTimeout(keysTimer.current);
+    keysTimer.current = setTimeout(() => { setKeys(false); setPinned(false); }, 9000);
+  });
+
+  /* Ctrl+Alt+Space, from anywhere on the desktop: the box, open, focused.
+     The bridge counts the presses so a second one is a second open, not a
+     no-op on a flag that was already true. */
+  useStoreEvent(['focusChat'], () => open());
+
+  /* --- what size to be ----------------------------------------------------
+     A card is its own shape and does not peek, grow or shrink with the
+     pointer: it is a window you put somewhere, and a window that changed
+     size when you moved the mouse across it would be a poltergeist. */
+  const card = shell.mode === 'card';
   const view = (() => {
+    if (card) return 'card';
     if (decision && !(decision.kind === 'question' && decision.item.id === dismissed)) return 'open';
     if (pinned) return 'open';
     if (running || streaming || flash) return 'live';
@@ -289,6 +314,7 @@ function Island({ onMeasure }) {
 
   const onBarClick = (e) => {
     if (e.target.closest('button, input')) return;
+    if (view === 'card') { inputRef.current?.focus({ preventScroll: true }); return; }
     if (view === 'open') collapse(); else open();
   };
 
@@ -319,12 +345,34 @@ function Island({ onMeasure }) {
   } else if (view === 'compact') {
     // One line, because there is only room for one: "Halo · Ready".
     head = `${petName} · ${guardian.canAct === false ? 'Chat only' : line}`;
-  } else if (view === 'open') {
+  } else if (view === 'open' || view === 'card') {
     line = running
       ? [total > 1 && step ? `Step ${plan.index + 1} of ${total}` : null, doing || SHORT[phase]].filter(Boolean).join(' · ')
       : guardian.canAct === false ? 'Chat only' : 'Ready';
   }
   if (waitingOnPerson) mark = 'attention';
+
+  /* --- dragging the card -------------------------------------------------
+     The window is moved by the bridge, not by the page: a page cannot move
+     the window it is in. So the grab is measured here in screen coordinates
+     and the new corner is posted; the host places it in one call, the same
+     way the island is placed. */
+  const drag = useRef(null);
+  const onGrab = (e) => {
+    if (view !== 'card' || e.button !== 0) return;
+    if (e.target.closest('button, input, textarea')) return;
+    drag.current = { dx: e.screenX - (window.screenX ?? 0), dy: e.screenY - (window.screenY ?? 0) };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onDrag = (e) => {
+    if (!drag.current) return;
+    bridge.send('moveCard', { x: Math.round(e.screenX - drag.current.dx), y: Math.round(e.screenY - drag.current.dy) });
+  };
+  const onDrop = (e) => {
+    if (!drag.current) return;
+    drag.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
 
   const recent = useMemo(() => chatState.list.filter((c) => c.id !== chatState.current).slice(0, 4), [chatState]);
   const showEmpty = !messages.length && !decision && !plan;
@@ -334,7 +382,8 @@ function Island({ onMeasure }) {
     <Beam active={running && view !== 'compact'} size="md" color="colorful" strength={0.55} radius={view === 'compact' ? 18 : 26} className="h-island-beam">
       <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'}>
         {/* --- the bar ---------------------------------------------------- */}
-        <div className="h-island__bar" onClick={onBarClick}>
+        <div className="h-island__bar" onClick={onBarClick}
+          onPointerDown={onGrab} onPointerMove={onDrag} onPointerUp={onDrop} onPointerCancel={onDrop}>
           <span className="h-island__lead"><Presence px={view === 'compact' ? 22 : view === 'peek' ? 38 : 30} /></span>
 
           <div className="h-island__text">
@@ -351,7 +400,7 @@ function Island({ onMeasure }) {
                 {mark === 'busy' && <span className="h-glyph__bars"><i /><i /><i /><i /></span>}
               </span>
             )}
-            {view === 'open' && (
+            {(view === 'open' || view === 'card') && (
               <>
                 <button type="button" className="h-perm" data-level={level} title={`Permissions: ${lvl.label} — ${lvl.hint}`}
                   onClick={() => { const order = ['ask', 'smart', 'all']; permissions.set(order[(order.indexOf(level) + 1) % order.length]); }}>
@@ -359,7 +408,10 @@ function Island({ onMeasure }) {
                 </button>
                 {messages.length > 0 && <IconButton icon="plus" label="New chat" onClick={() => { chats.newChat(); open(); }} />}
                 <IconButton icon="expand" label="Open the Halo window" onClick={() => bridge.send('openApp', {})} />
-                <IconButton icon="chevron" label="Collapse" onClick={collapse} />
+                {view === 'card'
+                  ? <IconButton icon="chevron" label="Back to the island at the top"
+                      onClick={() => bridge.send('setShell', { mode: 'island' })} />
+                  : <IconButton icon="chevron" label="Collapse" onClick={collapse} />}
               </>
             )}
           </div>
@@ -379,8 +431,34 @@ function Island({ onMeasure }) {
           </div>
         )}
 
-        {/* --- open: everything ------------------------------------------ */}
-        {view === 'open' && (
+        {/* --- the chords, on arriving from the app window ----------------- */}
+        {keys && (view === 'open' || view === 'card') && (
+          <div className="h-keys" onClick={(e) => e.stopPropagation()}>
+            <div className="h-keys__title">Reach Halo from anywhere</div>
+            {TAUGHT.map((b) => (
+              <div className="h-keys__row" key={b.id}>
+                <span>{b.label}</span>
+                <span className="h-keys__chord">{b.keys.map((k) => <kbd key={k}>{k}</kbd>)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* --- guiding rather than working -------------------------------- */}
+        {shell.guide && view !== 'compact' && (
+          <div className="h-guide" onClick={(e) => e.stopPropagation()}>
+            <span className="h-guide__cursor" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 3l14 8.5-6.2 1.2L9.8 19z" /></svg>
+            </span>
+            <div className="h-guide__say">
+              <b>Guiding you</b>
+              <span>Halo shows you where to go and what to type. It does not touch anything itself — {written(TAUGHT.find((k) => k.id === 'toggleGuide'))} to switch back.</span>
+            </div>
+          </div>
+        )}
+
+        {/* --- open and card: everything --------------------------------- */}
+        {(view === 'open' || view === 'card') && (
           <div className="h-island__panel">
             <Thread className="h-island__thread" />
 

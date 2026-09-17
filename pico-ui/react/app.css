@@ -350,3 +350,24 @@ body {
 .h-islandtoggle__title { font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
 .h-islandtoggle__sub { font-size: 11px; color: var(--h-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .h-islandtoggle .h-toggle { pointer-events: none; transform: scale(.82); }
+
+/* Keybinds in settings: what it does, why, and the chord on the right. */
+/* The generic key/value row has a narrow label column, which is right for
+   "In use: gpt-5" and wrong for a sentence — so this row takes the width. */
+.h-kv--keys { align-items: baseline; justify-content: space-between; gap: 18px; padding: 9px 0; border-top: 1px solid rgba(255, 255, 255, .04); }
+.h-kv--keys:first-of-type { border-top: 0; }
+.h-kv--keys > span:first-child { display: grid; gap: 3px; width: auto; flex: 1 1 auto; min-width: 0; color: var(--h-ink); font-size: 12.5px; }
+.h-kv--keys i { font-style: normal; font-size: 11.5px; color: var(--h-faint); line-height: 1.4; }
+.h-kv--keys .h-keys__chord { display: flex; gap: 4px; flex: none; }
+/* The caps themselves. The island has its own copy of this because the two
+   windows do not share a stylesheet; keep them looking the same. */
+.h-keys__chord kbd {
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #dce9f7;
+  background: linear-gradient(180deg, #3a3d41, #2a2d30);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .06);
+}

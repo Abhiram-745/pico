@@ -1,0 +1,280 @@
+/* ==========================================================================
+   Halo — onboarding
+
+   Two columns: what this chord is for, and a drawing of the desktop with a
+   keyboard in front of it. The drawing is where the chord's effect is shown,
+   so the sequence reads left to right: here is the thing, here are the keys,
+   here is what happens.
+   ========================================================================== */
+
+.h-onboard {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 26px;
+  background:
+    radial-gradient(120% 90% at 50% -10%, rgba(40, 110, 220, .16), transparent 60%),
+    rgba(6, 7, 9, .92);
+  backdrop-filter: blur(14px) saturate(1.1);
+  animation: h-onboard-in .5s var(--h-out) both;
+}
+@keyframes h-onboard-in { from { opacity: 0; } to { opacity: 1; } }
+
+.h-onboard__sheet {
+  width: min(1120px, 100%);
+  max-height: calc(100vh - 52px);
+  display: grid;
+  grid-template-columns: minmax(280px, 0.82fr) 1.18fr;
+  gap: 30px;
+  align-items: center;
+  padding: 30px;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: linear-gradient(180deg, rgba(22, 24, 28, .96), rgba(13, 14, 17, .96));
+  box-shadow: 0 40px 120px -40px rgba(0, 0, 0, .95);
+  overflow: auto;
+}
+
+/* --- left column ---------------------------------------------------------- */
+.h-onboard__count { display: flex; align-items: center; gap: 7px; margin-bottom: 18px; }
+.h-onboard__count i {
+  width: 22px; height: 3px; border-radius: 2px;
+  background: var(--h-well-hi);
+  transition: background .4s var(--h-out), width .4s var(--h-out);
+}
+.h-onboard__count i[data-state="now"] { background: #3d9bff; width: 34px; }
+.h-onboard__count i[data-state="done"] { background: #2f7bcc; }
+.h-onboard__count span { margin-left: 6px; font-size: 11.5px; color: var(--h-faint); letter-spacing: .02em; }
+
+.h-onboard__title {
+  font-family: var(--h-display);
+  font-size: 30px;
+  line-height: 1.08;
+  letter-spacing: -.032em;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+.h-onboard__hint { margin: 0 0 22px; font-size: 14px; line-height: 1.5; color: var(--h-dim); max-width: 34ch; }
+
+.h-onboard__visual { margin-bottom: 18px; }
+.h-onboard__vlabel {
+  display: block;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .13em;
+  color: var(--h-faint);
+  margin-bottom: 9px;
+}
+.h-onboard__chips { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+
+/* The keys as buttons: metal, and they arrive one after the other so the
+   chord reads as a sequence rather than three things at once. */
+.h-chipwrap { display: inline-flex; animation: h-chip-in .42s var(--h-spring) both; animation-delay: calc(var(--i) * .07s); }
+.h-onboard__chips .h-metal { border-radius: 11px; }
+.h-chip {
+  min-width: 56px;
+  padding: 9px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+.h-chip.is-done { color: #bfe3ff; }
+@keyframes h-chip-in { from { opacity: 0; transform: translateY(6px) scale(.94); } to { opacity: 1; transform: none; } }
+
+.h-onboard__state {
+  display: flex; align-items: center; gap: 9px;
+  min-height: 24px;
+  font-size: 12.5px;
+  color: var(--h-dim);
+  margin-bottom: 20px;
+}
+.h-onboard__state[data-beat="done"] { color: #9fd3a8; }
+.h-onboard__tick {
+  width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: color-mix(in oklab, var(--h-good) 24%, #000);
+  color: var(--h-good);
+  animation: h-pop .4s var(--h-spring) both;
+}
+
+.h-onboard__go { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.h-onboard__next { padding: 11px 20px; font-size: 13.5px; font-weight: 600; }
+.h-onboard__nudge { font-size: 11.5px; color: var(--h-faint); max-width: 32ch; line-height: 1.45; }
+
+/* --- right column: the desktop and the board ------------------------------ */
+.h-onboard__show {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  /* The keyboard is 17.8 letter-keys wide at its widest row. Sizing a key
+     off this column's width is what keeps the whole board on screen at any
+     window size, instead of hanging off the edge with a scrollbar under it. */
+  container-type: inline-size;
+  min-width: 0;
+}
+
+.h-onboard__kb {
+  display: flex;
+  justify-content: center;
+  transition: opacity .4s var(--h-out), transform .45s var(--h-spring);
+}
+.h-onboard__kb.is-away { opacity: 0; transform: translateY(18px); pointer-events: none; }
+.h-onboard__kb .h-kb { --u: min(34px, calc((100cqw - 26px) / 17.8)); }
+
+/* ==========================================================================
+   The stage: a small, true drawing of the desktop
+   ========================================================================== */
+.h-stage { display: block; }
+.h-stage__screen {
+  position: relative;
+  aspect-ratio: 16 / 9.4;
+  max-height: 46vh;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .08);
+  background: #0a0c10;
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, .7), 0 20px 50px -24px rgba(0, 0, 0, .9);
+}
+.h-stage__wall {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(90% 70% at 22% 8%, rgba(56, 120, 220, .28), transparent 62%),
+    radial-gradient(70% 60% at 82% 88%, rgba(140, 70, 220, .22), transparent 60%),
+    linear-gradient(160deg, #10131a, #0a0b0f);
+}
+
+/* the window you were working in */
+.h-stage__win {
+  position: absolute;
+  left: 11%; top: 24%; width: 52%; height: 56%;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: linear-gradient(180deg, rgba(26, 29, 35, .96), rgba(18, 20, 25, .96));
+  box-shadow: 0 16px 34px -16px rgba(0, 0, 0, .8);
+  padding: 8px;
+}
+.h-stage__winbar { display: flex; gap: 4px; margin-bottom: 9px; }
+.h-stage__winbar i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, .14); }
+.h-stage__lines { display: grid; gap: 6px; }
+.h-stage__lines span { height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .08); }
+
+/* Halo, where Halo is: centred against the top edge */
+.h-stage__halo {
+  position: absolute;
+  top: 0; left: 50%;
+  translate: -50% 0;
+  transition: top .5s var(--h-spring), left .55s var(--h-spring), translate .55s var(--h-spring);
+}
+.h-stage__pill {
+  display: flex; align-items: center; gap: 7px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 0 0 11px 11px;
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-top: 0;
+  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, .9);
+  transition: height .45s var(--h-spring), border-radius .45s var(--h-out), width .45s var(--h-spring);
+}
+.h-stage__face {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 32%, #8fd0ff, #1a6ec8 62%, #0b2c58);
+  box-shadow: 0 0 9px rgba(90, 170, 255, .6);
+  flex: none;
+}
+.h-stage__text { display: flex; align-items: center; gap: 4px; font-size: 8.5px; color: #cfd6de; }
+.h-stage__text b { font-weight: 600; letter-spacing: -.01em; }
+.h-stage__caret { width: 1px; height: 8px; background: #7fc0ff; opacity: 0; }
+.h-stage__dot { width: 5px; height: 5px; border-radius: 50%; background: #b9dcff; box-shadow: 0 0 8px rgba(185, 220, 255, .7); flex: none; }
+
+/* guide mode's second cursor, and what it is saying */
+.h-stage__guide {
+  position: absolute;
+  left: 20%; top: 40%;
+  opacity: 0;
+  display: flex; align-items: flex-start; gap: 5px;
+  pointer-events: none;
+}
+.h-stage__cursor { width: 15px; height: 15px; fill: #fff; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .8)); }
+.h-stage__bubble {
+  margin-top: 8px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  font-size: 8px;
+  white-space: nowrap;
+  color: #eaf4ff;
+  background: linear-gradient(180deg, rgba(36, 104, 190, .96), rgba(22, 68, 140, .96));
+  border: 1px solid rgba(150, 205, 255, .35);
+  box-shadow: 0 8px 18px -8px rgba(0, 0, 0, .9);
+}
+
+/* --------------------------------------------------------------------------
+   What each chord does, played out on the stage.
+
+   Keyed on [data-demo] and restarted by [data-run] flipping between 0 and 1
+   — a CSS animation cannot be told to "play again", but swapping the
+   selector out and back in is the same thing.
+   -------------------------------------------------------------------------- */
+.h-stage.is-live[data-demo="hide"] .h-stage__halo { animation: h-demo-hide 2.6s var(--h-out) both; }
+@keyframes h-demo-hide {
+  0%   { top: 0; opacity: 1; }
+  22%  { top: -34px; opacity: 0; }
+  62%  { top: -34px; opacity: 0; }
+  82%  { top: 2px; opacity: 1; }
+  100% { top: 0; opacity: 1; }
+}
+
+.h-stage.is-live[data-demo="chat"] .h-stage__pill { animation: h-demo-chat 2.8s var(--h-out) both; }
+.h-stage.is-live[data-demo="chat"] .h-stage__caret { animation: h-demo-caret 2.8s steps(1, end) both; }
+@keyframes h-demo-chat {
+  0%   { height: 22px; width: auto; }
+  30%  { height: 38px; border-radius: 0 0 16px 16px; }
+  100% { height: 38px; border-radius: 0 0 16px 16px; }
+}
+@keyframes h-demo-caret {
+  0%, 28% { opacity: 0; }
+  30%, 44%, 58%, 72%, 86% { opacity: 1; }
+  37%, 51%, 65%, 79%, 93% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* the card: it leaves the top edge, becomes a panel, and settles in the corner */
+.h-stage.is-live[data-demo="card"] .h-stage__halo { animation: h-demo-card 3s var(--h-spring) both; }
+.h-stage.is-live[data-demo="card"] .h-stage__pill { animation: h-demo-cardshape 3s var(--h-spring) both; }
+@keyframes h-demo-card {
+  0%   { top: 0; left: 50%; translate: -50% 0; }
+  45%  { top: 34%; left: 62%; translate: -50% 0; }
+  100% { top: 30%; left: 74%; translate: -50% 0; }
+}
+@keyframes h-demo-cardshape {
+  0%   { height: 22px; border-radius: 0 0 11px 11px; }
+  50%  { height: 54px; border-radius: 12px; }
+  100% { height: 66px; border-radius: 14px; box-shadow: 0 18px 40px -14px rgba(0, 0, 0, .95); }
+}
+
+/* guide mode: the second cursor comes in, points at the window, and talks */
+.h-stage.is-live[data-demo="guide"] .h-stage__guide { animation: h-demo-guide 3.4s var(--h-out) both; }
+@keyframes h-demo-guide {
+  0%   { opacity: 0; left: 64%; top: 18%; }
+  18%  { opacity: 1; left: 48%; top: 30%; }
+  52%  { opacity: 1; left: 24%; top: 44%; }
+  84%  { opacity: 1; left: 30%; top: 52%; }
+  100% { opacity: 1; left: 30%; top: 52%; }
+}
+
+@media (max-width: 900px) {
+  .h-onboard__sheet { grid-template-columns: 1fr; gap: 20px; padding: 22px; }
+  .h-onboard__kb { --u: 22px; }
+  .h-onboard__kb .h-kb { --u: 22px; }
+  .h-onboard__title { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .h-onboard, .h-onboard__chips .h-metal { animation: none; }
+  .h-stage.is-live .h-stage__halo,
+  .h-stage.is-live .h-stage__pill,
+  .h-stage.is-live .h-stage__guide,
+  .h-stage.is-live .h-stage__caret { animation-duration: .01s; }
+}

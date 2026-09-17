@@ -37,6 +37,9 @@ export const HOST_EVENTS = [
   'chats',       // { list, current } — every conversation, newest first
   'chatOpened',  // { id, messages } — an earlier chat, reopened in every window
   'chatSearch',  // { q, results } — only to the window that searched
+  'shell',       // { mode: 'island'|'card', hidden, guide } — the shape Halo is in
+  'focusChat',   // { at } — a chord asked for the box, focused and ready
+  'chord',       // { id, at } — a global chord was pressed, whatever it was for
 ];
 
 /** Commands the UI sends up to the host. */
@@ -55,6 +58,9 @@ export const UI_COMMANDS = [
   'openPalette',  // {}
   'closePalette', // {}
   'movePalette',  // { x, y }
+  'setShell',     // { mode?, hidden?, guide?, toggle? } — island, card, hidden, guiding
+  'moveCard',     // { x, y } — the floating card was dragged there
+  'onboarded',    // {} — the chords have been practised; do not ask again
   'openNotch',    // {} — raise the notch window on the real desktop
   'closeNotch',   // {}
   'newChat',      // {} — forget the thread, here and in the host
@@ -194,6 +200,22 @@ class Bridge {
       // the island cannot answer it about itself. See watchHover.
       case 'notchHover':
         store.set({ notchHover: Boolean(payload.over) }, { type: 'notchHover' });
+        break;
+
+      // The shape Halo is in: island, card, hidden, guiding. One owner (the
+      // bridge), so the island, the app and the phone never disagree.
+      case 'shell':
+        store.set({ shell: { mode: 'island', hidden: false, guide: false, ...payload } }, { type: 'shell' });
+        break;
+
+      case 'focusChat':
+        store.set({ focusChatAt: Number(payload.at) || Date.now() }, { type: 'focusChat' });
+        break;
+
+      // Every chord, whatever it did — onboarding waits for these rather than
+      // for keys in its own window, so what it teaches is what really works.
+      case 'chord':
+        store.set({ chord: { id: payload.id, at: Number(payload.at) || Date.now() } }, { type: 'chord' });
         break;
 
       case 'question':

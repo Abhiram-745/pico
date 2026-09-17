@@ -101,6 +101,7 @@ const initial = () => ({
     pauseOnPhysicalInput: true,
     maximumComputerTurns: 100,
     hasApiKey: false,
+    onboarded: true,   // until the bridge says otherwise, never flash onboarding
   },
 
   // The conversation lives here rather than inside a view, so what you type
@@ -127,6 +128,15 @@ const initial = () => ({
   cursor: { x: 0, y: 0, visible: false },
   notchOpen: false,
   notchHover: false,
+
+  /* The shape Halo is in on this desktop, and whether it is guiding rather
+     than doing. Driven by the global chords (see keybinds.js) and kept by
+     the bridge, so every window agrees and a reload comes back the same. */
+  shell: { mode: 'island', hidden: false, guide: false },
+  /** Bumped when a chord asks for the box; the island focuses it. */
+  focusChatAt: 0,
+  /** The last global chord, so onboarding can wait for the real thing. */
+  chord: null,
 
   turn: 0,
   timeline: [],

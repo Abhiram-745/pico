@@ -1,0 +1,145 @@
+/* ==========================================================================
+   Halo — the drawn keyboard
+
+   A dark board with sculpted caps, sized from one variable (--u, the width
+   of a letter key) so the whole thing scales to whatever room it is given
+   without a second set of numbers.
+
+   The keys you have to press are blue: filled, edge-lit, and carrying the
+   order you press them in. Everything else is the same grey as the board, so
+   the chord is the only thing on it that asks to be read.
+   ========================================================================== */
+
+.h-kb {
+  --u: 38px;
+  --gap: calc(var(--u) * .105);
+  --cap-r: calc(var(--u) * .16);
+  display: flex;
+  justify-content: center;
+  transition: opacity .34s var(--h-out), transform .34s var(--h-out), filter .34s var(--h-out);
+}
+
+/* A key is down: the board is no help at that moment, and in the way. */
+.h-kb.is-dim {
+  opacity: .16;
+  transform: translateY(6px) scale(.985);
+  filter: blur(1.5px) saturate(.6);
+  pointer-events: none;
+}
+
+.h-kb__board {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding: calc(var(--u) * .28);
+  border-radius: calc(var(--u) * .3);
+  background: linear-gradient(180deg, #2b2d30, #1e2022 60%, #191b1d);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .06),
+    0 1px 2px rgba(0, 0, 0, .5),
+    0 22px 48px -18px rgba(0, 0, 0, .9);
+}
+
+.h-kb__row { display: flex; gap: var(--gap); }
+
+/* --- a keycap ------------------------------------------------------------- */
+.h-key {
+  width: calc((var(--u) * var(--kw)) + (var(--gap) * (var(--kw) - 1)));
+  height: var(--u);
+  flex: none;
+  border-radius: var(--cap-r);
+  padding: 1px;
+  background: linear-gradient(180deg, #4a4d51, #33363a 45%, #2a2d30);
+  box-shadow: 0 1.5px 0 rgba(0, 0, 0, .55), inset 0 -1px 0 rgba(0, 0, 0, .35);
+  transition: transform .09s var(--h-out), box-shadow .09s var(--h-out), background .2s;
+}
+
+.h-key__face {
+  position: relative;
+  height: 100%;
+  border-radius: calc(var(--cap-r) - 1px);
+  background: linear-gradient(180deg, #3a3d41, #2e3134 55%, #292c2f);
+  display: grid;
+  place-items: center;
+  gap: 0;
+  color: #cfd3d8;
+  font-size: calc(var(--u) * .3);
+  font-weight: 500;
+  letter-spacing: .01em;
+  line-height: 1;
+  padding: calc(var(--u) * .12);
+  overflow: hidden;
+}
+
+/* Keys with two legends read top-left to bottom-left, like the real ones. */
+.h-key__top, .h-key__sub { font-size: calc(var(--u) * .26); color: #b9bec4; }
+.h-key:has(.h-key__top) .h-key__face { place-items: center; gap: calc(var(--u) * .07); }
+.h-key__main { font-size: calc(var(--u) * .3); }
+.h-key__sub.is-flip { order: -1; }
+
+/* Wide keys carry their word at one end, as they do on the board itself. */
+.h-key.is-left .h-key__face { place-items: center start; }
+.h-key.is-right .h-key__face { place-items: center end; }
+
+.h-key__glyph, .h-key__stack { display: grid; place-items: center; color: #cfd3d8; }
+.h-key__stack { gap: calc(var(--u) * -.02); }
+.h-kb__svg { width: calc(var(--u) * .42); height: calc(var(--u) * .42); display: block; }
+.h-key__stack .h-kb__svg { height: calc(var(--u) * .3); }
+
+/* Caps Lock's indicator, which is a real thing on the cap. */
+.h-key__pip {
+  position: absolute;
+  top: calc(var(--u) * .13);
+  right: calc(var(--u) * .16);
+  width: 3px; height: 3px;
+  border-radius: 50%;
+  background: #7b8189;
+}
+
+/* --- the keys to press ---------------------------------------------------- */
+.h-key.is-wanted {
+  background: linear-gradient(180deg, #6fc0ff, #2f8ff0 55%, #1d6ed0);
+  box-shadow:
+    0 1.5px 0 rgba(0, 0, 0, .45),
+    0 0 0 1px rgba(150, 210, 255, .55),
+    0 0 18px rgba(60, 150, 255, .45);
+  animation: h-key-breathe 2.4s ease-in-out infinite;
+}
+.h-key.is-wanted .h-key__face {
+  background: linear-gradient(180deg, #57b2ff, #2382e8 60%, #1a72d6);
+  color: #fff;
+}
+.h-key.is-wanted .h-key__top,
+.h-key.is-wanted .h-key__sub,
+.h-key.is-wanted .h-key__glyph { color: rgba(255, 255, 255, .92); }
+
+@keyframes h-key-breathe {
+  0%, 100% { box-shadow: 0 1.5px 0 rgba(0, 0, 0, .45), 0 0 0 1px rgba(150, 210, 255, .5), 0 0 14px rgba(60, 150, 255, .35); }
+  50%      { box-shadow: 0 1.5px 0 rgba(0, 0, 0, .45), 0 0 0 1px rgba(180, 225, 255, .75), 0 0 26px rgba(70, 160, 255, .6); }
+}
+
+/* Which order to press them in — small, in the corner, only on lit keys. */
+.h-key.is-wanted[data-order]::after {
+  content: attr(data-order);
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: calc(var(--u) * .21);
+  font-weight: 700;
+  color: rgba(255, 255, 255, .75);
+}
+.h-key.is-wanted { position: relative; }
+
+/* --- pressed -------------------------------------------------------------- */
+.h-key.is-down {
+  transform: translateY(1.5px);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, .55);
+}
+.h-key.is-down .h-key__face { background: linear-gradient(180deg, #23262a, #2b2e32); }
+.h-key.is-wanted.is-down .h-key__face { background: linear-gradient(180deg, #a8dcff, #6cb8fb); color: #06284a; }
+.h-key.is-wanted.is-down { animation: none; box-shadow: inset 0 2px 6px rgba(0, 30, 70, .5), 0 0 22px rgba(90, 180, 255, .7); }
+
+@media (prefers-reduced-motion: reduce) {
+  .h-key.is-wanted { animation: none; }
+  .h-kb { transition: none; }
+}

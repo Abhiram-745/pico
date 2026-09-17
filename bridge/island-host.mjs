@@ -11,6 +11,10 @@
    machine Defender blocked two earlier scripts outright. A small compiled
    program that does only window placement is the ordinary way to do this.
 
+   It also registers Halo's global chords, because a chord only reaches a
+   program that is not in front if Windows was asked for it by a real window
+   handle — see native/island-host.cs.
+
    Optional throughout. If the compiler is missing or the build fails, the
    island still opens — it just is not pinned on top or shaped, and the
    bridge falls back to plain move/resize.
@@ -71,6 +75,8 @@ export class IslandHost {
   constructor() {
     this.proc = null;
     this.ready = false;
+    /** Called with a keybind id when its chord is pressed, anywhere. */
+    this.onFired = null;
   }
 
   static async start() {
@@ -95,6 +101,7 @@ export class IslandHost {
 
       createInterface({ input: this.proc.stdout }).on('line', (line) => {
         if (line === 'ready') { this.ready = true; clearTimeout(timer); resolve(); return; }
+        if (line.startsWith('fired ')) { this.onFired?.(line.slice(6).trim()); return; }
         if (line.startsWith('err')) console.warn(`[bridge] island host: ${line.slice(4)}`);
       });
     });
@@ -106,6 +113,21 @@ export class IslandHost {
   }
 
   pin(hwnd) { return this.send(`pin ${hwnd}`); }
+
+  /** Off the screen, still running. The window keeps its size and place. */
+  hide(hwnd) { return this.send(`hide ${hwnd}`); }
+
+  /** Back on screen, without stealing the keyboard from anything. */
+  show(hwnd) { return this.send(`show ${hwnd}`); }
+
+  /**
+   * Ask Windows for a chord. `mods` is MOD_ALT 1 | MOD_CONTROL 2 | MOD_SHIFT 4,
+   * `vk` a virtual-key code. Registering the same id again replaces it.
+   */
+  hotkey(id, mods, vk) { return this.send(`hotkey ${id} ${mods} ${vk}`); }
+
+  /** Give every chord back to Windows. */
+  clearHotkeys() { return this.send('unhotkey'); }
 
   /** Remove the resize border and round the corners. Once, after opening. */
   trim(hwnd) { return this.send(`trim ${hwnd}`); }

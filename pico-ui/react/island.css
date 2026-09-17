@@ -257,3 +257,110 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .h-island *, .h-island { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ==========================================================================
+   The card
+
+   The same Halo, as a window you put where you like: Ctrl+Alt+F. Rounded on
+   every corner rather than only the bottom two, because it is no longer
+   hanging off the top edge of the screen — and it does not react to the
+   pointer at all. An island peeks and grows because it lives in the bezel
+   and has to earn its space; a card is somewhere you have already decided
+   to put it, and one that resized itself as the mouse crossed it would be
+   unusable.
+
+   Dragging is the bar. The page cannot move its own window, so the bar
+   reports where it was dragged to and the bridge places the window (see
+   moveCard in notch-window.mjs).
+   ========================================================================== */
+.h-island[data-view="card"] {
+  --w: 396px;
+  --r: 18px;
+  border-radius: var(--r);
+  background: linear-gradient(180deg, #0b0c0e, #060607);
+  border: 1px solid rgba(255, 255, 255, .075);
+  box-shadow: 0 30px 70px -28px rgba(0, 0, 0, .95), inset 0 1px 0 rgba(255, 255, 255, .04);
+  animation: h-card-in .42s var(--h-spring) both;
+}
+@keyframes h-card-in {
+  from { opacity: 0; transform: translateY(-10px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+.h-island[data-view="card"] .h-island__bar {
+  min-height: 46px;
+  padding: 8px 10px 6px 14px;
+  cursor: grab;
+}
+.h-island[data-view="card"] .h-island__bar:active { cursor: grabbing; }
+/* A grab handle, so the bar looks like the thing you move it by. */
+.h-island[data-view="card"] .h-island__bar::before {
+  content: "";
+  position: absolute;
+  top: 5px; left: 50%;
+  translate: -50% 0;
+  width: 34px; height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .13);
+}
+.h-island[data-view="card"] { position: relative; }
+.h-island[data-view="card"] .h-island__panel { max-height: 52vh; }
+.h-island[data-view="card"] .h-island__thread { max-height: 40vh; }
+
+/* ==========================================================================
+   Guiding, rather than doing
+
+   Halo's own pointer, drawn, with what to do beside it. It never presses
+   anything: the whole point of this mode is that your hands stay on the
+   work and Halo only points — so the cursor here is decoration with a
+   sentence attached, and the real pointer stays yours.
+   ========================================================================== */
+.h-guide {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  border-radius: 13px;
+  background: linear-gradient(180deg, rgba(30, 92, 175, .22), rgba(18, 54, 110, .16));
+  border: 1px solid rgba(120, 185, 255, .22);
+  animation: h-guide-in .4s var(--h-spring) both;
+}
+@keyframes h-guide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.h-guide__cursor { flex: none; width: 18px; height: 18px; color: #fff; animation: h-guide-nudge 2.6s var(--h-out) infinite; }
+.h-guide__cursor svg { width: 100%; height: 100%; fill: currentColor; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .7)); }
+@keyframes h-guide-nudge {
+  0%, 100% { transform: translate(0, 0); }
+  40%      { transform: translate(4px, 5px); }
+  70%      { transform: translate(1px, 2px); }
+}
+.h-guide__say { display: grid; gap: 3px; font-size: 11.5px; line-height: 1.45; color: var(--h-dim); }
+.h-guide__say b { font-size: 12.5px; font-weight: 600; color: #cfe6ff; letter-spacing: -.01em; }
+
+/* ==========================================================================
+   The keys, on the way out of the app window
+
+   Shown for a few seconds when the big window hands back to the island, so
+   the first thing you learn about the small Halo is how to reach it without
+   the mouse.
+   ========================================================================== */
+.h-keys {
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .035);
+  border: 1px solid rgba(255, 255, 255, .06);
+  animation: h-guide-in .4s var(--h-spring) both;
+}
+.h-keys__title { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--h-faint); margin-bottom: 8px; }
+.h-keys__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 12px; color: var(--h-dim); }
+.h-keys__chord { display: flex; gap: 4px; flex: none; }
+.h-keys__chord kbd {
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #dce9f7;
+  background: linear-gradient(180deg, #3a3d41, #2a2d30);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .06);
+}
