@@ -99,7 +99,7 @@ export function Orb({ state, px = 20, paused = false, speed = 1, className = '' 
       role="img"
       aria-label={ORB_WORD[state] ?? 'Thinking'}
     >
-      <span className="h-orb__inner" style={{ transform: scale === 1 ? undefined : `scale(${scale})`, width: tuned, height: tuned }}>
+      <span className="h-orb__inner" style={{ transform: `translate(-50%, -50%) scale(${scale})`, width: tuned, height: tuned }}>
         <ThinkingOrb state={state} size={tuned} theme="dark" speed={speed} paused={paused || reduced} aria-hidden="true" />
       </span>
     </span>

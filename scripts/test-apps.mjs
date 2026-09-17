@@ -9,7 +9,7 @@
    Run with: node scripts/test-apps.mjs
    ========================================================================== */
 
-import { parseOpen, preference, readChoice, resolve, findApp } from '../bridge/apps.mjs';
+import { parseOpen, preference, readChoice, resolve, findApp, namedAsPlace } from '../bridge/apps.mjs';
 
 let failed = 0;
 const check = (label, ok, detail = '') => {
@@ -76,9 +76,21 @@ for (const [answer, options, want] of [
   ['sure', SITE_ONLY, 'site'],
   ['no thanks', SITE_ONLY, 'cancel'],
   ['hmm', SITE_ONLY, null],
+  // a correction, not a refusal
+  ['no the claude gc on the discord', BOTH, null],
 ]) {
   const got = readChoice(answer, options);
   check(`${JSON.stringify(answer)} -> ${got}`, got === want, `wanted ${want}`);
+}
+
+console.log('namedAsPlace');
+for (const [text, name, want] of [
+  ['open discord and go to the claude gc', 'claude', true],
+  ['open claude', 'claude', false],
+  ['message sam on whatsapp group chat', 'whatsapp', false],
+  ['open slack and post in the design channel', 'slack', false],
+]) {
+  check(`"${name}" in "${text}" -> ${namedAsPlace(text, name)}`, namedAsPlace(text, name) === want, `wanted ${want}`);
 }
 
 if (process.platform === 'win32') {

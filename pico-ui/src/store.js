@@ -259,9 +259,17 @@ class Store {
    * longer `text` each time, so this replaces in place rather than appending
    * — otherwise one sentence becomes forty bubbles.
    */
-  setMessage({ id, from = 'pico', text, done, memoryId }) {
+  setMessage({ id, from = 'pico', text, done, memoryId, remove }) {
     const list = this.state.messages;
     const i = list.findIndex((m) => m.id === id);
+    // A reply that turned out to be a job handed to the desktop loop: the
+    // placeholder it streamed into goes, rather than staying as an empty bubble.
+    if (remove) {
+      if (i === -1) return;
+      this.state.messages = list.filter((m) => m.id !== id);
+      this.emit({ type: 'message', restored: true });
+      return;
+    }
     if (i === -1) {
       this.addMessage({ id, from, text, done: Boolean(done), memoryId });
       return;

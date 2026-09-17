@@ -27,8 +27,12 @@
 .h-icon { flex: none; display: block; }
 
 /* --- effects' own boxes ---------------------------------------------------- */
-.h-orb { position: relative; display: inline-grid; place-items: center; flex: none; overflow: visible; }
-.h-orb__inner { display: grid; place-items: center; transform-origin: 50% 50%; flex: none; }
+/* The orb is drawn at a tuned size (20 or 64) and scaled to fit. A scale
+   does not shrink the layout box, so centring it with grid left a 64px box in
+   a 26px slot and the orb landed down and to the right, over the text beside
+   it. Pinned to the middle and scaled from there instead. */
+.h-orb { position: relative; display: inline-block; flex: none; overflow: visible; vertical-align: middle; }
+.h-orb__inner { position: absolute; left: 50%; top: 50%; display: block; transform-origin: 50% 50%; }
 .h-orb canvas { display: block; }
 
 .h-metal { flex: none; }
@@ -402,8 +406,8 @@
 .h-composer.is-big .h-composer__input { font-size: 16px; }
 
 /* --- the face: mascot at rest, orb at work --------------------------------- */
-.h-presence { position: relative; display: inline-grid; flex: none; }
-.h-presence > span { grid-area: 1 / 1; display: grid; place-items: center; transition: opacity .35s var(--h-out), transform .45s var(--h-spring), filter .35s; }
+.h-presence { position: relative; display: inline-block; flex: none; vertical-align: middle; }
+.h-presence > span { position: absolute; inset: 0; display: grid; place-items: center; transition: opacity .35s var(--h-out), transform .45s var(--h-spring), filter .35s; }
 .h-presence[data-busy="true"] .h-presence__rest { opacity: 0; transform: scale(.6); filter: blur(4px); }
 .h-presence[data-busy="false"] .h-presence__busy { opacity: 0; transform: scale(1.3); filter: blur(4px); }
 .h-mascot { display: grid; place-items: center; }

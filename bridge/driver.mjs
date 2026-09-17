@@ -239,6 +239,7 @@ const PLAN_SYSTEM = (shot, facts, answered = null) => [
   facts.front ? `In front right now: ${facts.front}.` : '',
   facts.windows?.length ? `Open windows: ${facts.windows.join('; ')}.` : '',
   facts.apps?.length ? `Installed apps this may be about: ${facts.apps.join(', ')}.` : '',
+  facts.whole && facts.whole !== facts.task ? `This is the rest of a longer request. The whole request was: "${facts.whole}".` : '',
   facts.note ? facts.note : '',
   facts.memory ? `\n${facts.memory}` : '',
   '',
@@ -259,6 +260,10 @@ const PLAN_SYSTEM = (shot, facts, answered = null) => [
   'something new, the document already there is not where it goes: plan a',
   'step that starts a new one, or ask which was meant. Typing into what',
   'somebody had open is the one outcome nobody asked for.',
+  '',
+  'A NAME FOLLOWED BY gc, group chat, chat, channel, server or dm IS A PLACE',
+  'INSIDE AN APP, NOT AN APP: "the claude gc on discord" is a group chat called',
+  'claude in Discord. Find and click it there; never plan opening Claude for it.',
   '',
   'USE THE APP THE TASK NAMES. If the task names an application, the job is',
   'done in that application, not on a website about it, unless the task says',
@@ -652,6 +657,8 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     apps: [],
     note: context.note || '',
     memory: context.memory || '',
+    task,
+    whole: context.whole || '',
   };
   try {
     const listed = (await sense?.windows()) ?? [];
@@ -829,7 +836,24 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     publish();
   };
 
+  /* Corrections that come from inside the run rather than from the steer
+     box: an answer to "the app or the website?" that was neither. Read by
+     listen() like anything typed while it works, so the plan is redone. */
+  const ownNotes = [];
+
   const openThing = async ({ name, url }) => {
+    /* "go to the claude gc" names Claude, but as a group chat inside the app
+       already being used, not as the Claude app. Opening it — or asking
+       "the Claude app, or claude.ai?" — is answering a question nobody asked. */
+    const whole = context.whole || task;
+    if (!url && name && apps.namedAsPlace(whole, name)) {
+      ownNotes.push({ type: 'correct', text: `"${name}" in "${whole}" is a chat, channel or server inside the app, not an app to open. Find it in there.` });
+      return {
+        ok: false,
+        said: `did not open "${name}": in "${whole}" it is the name of a chat, channel or server, `
+          + 'not an app. Find it inside the app that is already open (its sidebar, server list or search) and click it',
+      };
+    }
     const r = await apps.open({ name, url }, {
       computer,
       task,
@@ -850,6 +874,8 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       if (r.window) workWindow = r.window;
       opened.push(r);
     }
+    if (r.outcome === 'corrected') ownNotes.push({ type: 'correct', text: r.correction });
+
     return { ok: r.ok, stop: r.stop, said: r.said };
   };
 
@@ -983,7 +1009,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
      by the very action it was correcting. Returns 'skipped', a replan
      outcome, or null when nothing was said. */
   const listen = async () => {
-    const notes = (() => { try { return steer() || []; } catch { return []; } })();
+    const notes = [...ownNotes.splice(0), ...(() => { try { return steer() || []; } catch { return []; } })()];
     for (const n of notes) {
       if (n?.type === 'skip') {
         if (stepIndex >= steps.length) continue;

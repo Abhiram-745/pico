@@ -32,6 +32,23 @@ import { ALLOW } from './policy.mjs';
 import { memory as defaultMemory, detect as detectMemory } from './memory.mjs';
 import { routines as defaultRoutines, Routines } from './routines.mjs';
 
+/* Verbs people mistype when they are in a hurry. Only the first word of the
+   request, and only to a verb, so nothing anyone meant is rewritten. */
+const TYPOS = new Map([
+  ['opne', 'open'], ['oepn', 'open'], ['opn', 'open'], ['opem', 'open'], ['oen', 'open'],
+  ['lauch', 'launch'], ['lanuch', 'launch'], ['luanch', 'launch'],
+  ['serach', 'search'], ['seach', 'search'], ['saerch', 'search'], ['searh', 'search'],
+  ['sned', 'send'], ['snd', 'send'], ['mesage', 'message'], ['messgae', 'message'], ['msg', 'message'],
+  ['clsoe', 'close'], ['cloes', 'close'], ['clikc', 'click'], ['cilck', 'click'], ['tpye', 'type'],
+  ['goto', 'go to'], ['plya', 'play'], ['pley', 'play'],
+]);
+export function fixTypos(text) {
+  return String(text).replace(/^((?:(?:please|pls|can you|could you|hey|ok|okay|now|just)[,\s]+)*)([a-z]+)\b/i, (all, lead, word) => {
+    const fixed = TYPOS.get(word.toLowerCase());
+    return fixed ? `${lead}${fixed}` : all;
+  });
+}
+
 let sessionCounter = 0;
 const newSessionId = () =>
   `host${(++sessionCounter).toString().padStart(4, '0')}${Math.random().toString(16).slice(2, 10)}`;
@@ -246,7 +263,7 @@ export class HostAgent extends MockAgent {
      The fork
      ---------------------------------------------------------------------- */
   async run(text = '', opts = {}) {
-    const task = String(text || '').trim();
+    const task = fixTypos(String(text || '').trim());
     if (!task) return;
 
     // Cancel anything still in flight. Without this a second message leaves
@@ -307,6 +324,17 @@ export class HostAgent extends MockAgent {
     return this.work(task, { token });
   }
 
+  /* The chat model worked out that this is a job — "yes", "do it", "opne a
+     chat on discord" after it offered. It used to answer "switching to task
+     mode" and then do nothing, because chat cannot touch the desktop and
+     nothing ever switched. Now it names the job, and the job is started. */
+  async handOff(job, token) {
+    if (token !== this.runToken) return;
+    this.emit('routed', { mode: 'agent', why: 'the conversation asked for it', source: 'model' });
+    this.history.pop();                      // the user turn; work() adds it again
+    return this.work(job, { token });
+  }
+
   /** Run a saved shortcut: planned fresh, with the last run as a hint. */
   async runRoutine(item, { alreadyAnnounced = false, token = null } = {}) {
     if (!alreadyAnnounced) {
@@ -336,8 +364,7 @@ export class HostAgent extends MockAgent {
     if (!this.llm) {
       this.emit('message', {
         id,
-        text: 'No model is configured yet, so I can\'t reply properly. '
-          + 'Add your OpenAI key and I\'ll be able to talk.',
+        text: 'I\'m still connecting to the model. Give me a few seconds and try again.',
         done: true,
       });
       return;
@@ -348,6 +375,8 @@ export class HostAgent extends MockAgent {
     this.emit('message', { id, text: '', done: false });
 
     let full = '';
+    // A reply that starts "TASK:" is a hand-off, not something to show.
+    const maybeTask = () => /^\s*T(?:A(?:S(?:K(?::.*)?)?)?)?$/is.test(full) || /^\s*TASK:/i.test(full);
     try {
       full = await this.llm.converse(this.history, {
         name: this.petName,
@@ -355,6 +384,7 @@ export class HostAgent extends MockAgent {
         onDelta: (piece) => {
           if (this.superseded(token)) return;
           full += piece;
+          if (maybeTask()) return;
           this.emit('message', { id, text: full, done: false });
         },
       });
@@ -368,6 +398,11 @@ export class HostAgent extends MockAgent {
     }
 
     if (this.superseded(token)) return;
+    const job = String(full).match(/^\s*TASK:\s*(.+)/is)?.[1]?.split('\n')[0].trim();
+    if (job) {
+      this.emit('message', { id, text: '', done: true, remove: true });
+      return this.handOff(job, token);
+    }
     this.history.push({ role: 'assistant', content: full });
     this.emit('message', { id, text: full, done: true });
   }
@@ -494,6 +529,16 @@ export class HostAgent extends MockAgent {
     };
 
     if (result.outcome === 'stopped') return true;
+    // "Open the Claude app or claude.ai?" — "no, the claude gc on discord".
+    // Not a refusal: the question was the wrong one. Do the job they meant.
+    if (result.outcome === 'corrected') {
+      await this.drive(`${task}\n(asked whether to open ${result.label}, they said: ${result.correction})`, {
+        ...context,
+        choices: [...choices.entries()],
+        whole: task,
+      }, task);
+      return true;
+    }
     if (result.outcome === 'declined' || result.outcome === 'unclear') {
       finish('Stopped', result.summary, result.outcome);
       return true;
@@ -509,6 +554,7 @@ export class HostAgent extends MockAgent {
       const opened = result;
       await this.drive(parsed.rest, {
         ...context,
+        whole: task,
         note: [context.note, opened.note].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(),
         choices: [...choices.entries()],
         // Said first, so the person hears what came to the front before what

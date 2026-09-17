@@ -202,6 +202,7 @@ class Bridge {
       // cheapest model that can actually do each step carries it out.
       model: `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
       hasApiKey: true,
+      provider: PROVIDERS[llm.provider]?.label ?? llm.provider,
     };
     this.emitSettings();
     this.publishCapability();
@@ -254,7 +255,8 @@ class Bridge {
       // Streamed replies arrive many times under one id; keep the latest of
       // each rather than a bubble per token.
       const i = this.messages.findIndex((m) => m.id === entry.id);
-      if (i === -1) this.messages = [...this.messages, entry].slice(-40);
+      if (entry.remove) this.messages = this.messages.filter((m) => m.id !== entry.id);
+      else if (i === -1) this.messages = [...this.messages, entry].slice(-40);
       else this.messages[i] = entry;
       if (chatArchive.record(entry)) this.chatsChanged();
     }
@@ -1044,7 +1046,6 @@ function watchIslandHover() {
 /* The full window, opened from the island: chats, memory, shortcuts. An app
    window in the person's own browser, pointed at this bridge. */
 bridge.onOpenApp = (section) => openAppWindow(section);
-if (OPEN_APP) openAppWindow();
 
 bridge.onNotchCommand = async (command) => {
   if (command === 'closeNotch') {
@@ -1066,18 +1067,34 @@ bridge.onNotchCommand = async (command) => {
 };
 
 
-// Model provider is optional: without a key the bridge still runs the
-// scripted scenarios, so the UI is always demonstrable.
+// The model provider is attached before anything is opened. It used to be
+// attached only after a network probe of the provider answered, while the app
+// window opened first: the window asked the bridge "is there a provider?",
+// heard no, and asked for an OpenAI key — even though the shared free models
+// need no key at all. So attach straight away, and let the probe only pick
+// the best models on offer. A probe that fails is retried; it never unplugs
+// the provider.
 const llm = await LLM.fromEnv();
 if (llm) {
-  const status = await llm.check();
-  if (status.ok) {
-    bridge.attachLLM(llm);
-    const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
-    console.log(`[bridge] ${label}: plans with ${llm.tiers.plan}, works with ${llm.tiers.see}, chats with ${llm.tiers.fast}`);
-  } else {
-    console.warn(`[bridge] model provider unavailable (${status.reason}); using scripted scenarios`);
-  }
+  bridge.attachLLM(llm);
+  const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
+  const probe = async (attempt = 1) => {
+    const status = await llm.check();
+    if (status.ok) {
+      bridge.attachLLM(llm);   // re-publish the tiers the probe settled on
+      console.log(`[bridge] ${label}: plans with ${llm.tiers.plan}, works with ${llm.tiers.see}, chats with ${llm.tiers.fast}`);
+    } else if (attempt < 5) {
+      console.warn(`[bridge] ${label} did not answer (${status.reason}); retrying`);
+      setTimeout(() => probe(attempt + 1), 5_000 * attempt).unref?.();
+    } else {
+      console.warn(`[bridge] ${label} still not answering (${status.reason}); keeping the default models`);
+    }
+  };
+  probe();
 } else {
-  console.log('[bridge] no API key in .env - add OPENAI_API_KEY to use a model; running scripted scenarios');
+  console.log('[bridge] no model provider configured; running scripted scenarios');
 }
+
+// Opened only once the provider is attached, so the window never sees a
+// bridge without one.
+if (OPEN_APP) openAppWindow();

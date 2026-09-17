@@ -489,7 +489,7 @@ function SettingsView({ demo, petName, setPetName }) {
         <div className="h-card__title">Model</div>
         <div className="h-card__sub">A task is planned once by the strongest model, then each step is carried out by the one measured to click most accurately. A screenshot of the desktop is sent to the provider on each step.</div>
         <div className="h-kv"><span>In use</span><code>{settings.model || 'not configured'}</code></div>
-        <div className="h-kv"><span>API key</span><span>{settings.hasApiKey ? 'Configured in .env on this computer' : 'Not set — add OPENAI_API_KEY to .env'}</span></div>
+        <div className="h-kv"><span>Provider</span><span>{settings.hasApiKey ? (settings.provider || 'Connected') : 'Starting…'}</span></div>
       </div>
     </div>
   );

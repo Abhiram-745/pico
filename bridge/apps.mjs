@@ -216,13 +216,36 @@ const COMMON = new Set([
   'saying', 'say', 'hi', 'hello', 'about', 'what', 'my', 'your', 'can', 'you', 'get', 'take', 'look',
 ]);
 
+/* Words that make the name before them a place inside an app rather than an
+   app: "the claude gc", "the design channel", "the gaming server". */
+const PLACE_WORD = String.raw`(?!(?:on|in|to|at|the|my|our|a|an|for|with|and|go|open|into|of|from|whatsapp|discord|slack|teams|telegram|messenger|signal|instagram|facebook|zoom|google)\b)[a-z0-9][\w'.-]*`;
+const PLACE_RE = new RegExp(String.raw`\b${PLACE_WORD}(?:\s+${PLACE_WORD})?\s+(?:gc|group\s*chat|groupchat|chat|channel|server|dms?|thread|group|conversation|convo|room|space)\b`, 'gi');
+
+/** The request with "X gc" / "X channel" style names taken out. */
+export function stripPlaceNames(text) {
+  return String(text ?? '').replace(PLACE_RE, ' ');
+}
+
+const wordRe = (w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+
+/**
+ * Is `name` only mentioned as the name of a chat, channel or server in the
+ * request, and never as something to open itself? "go to the claude gc on
+ * discord" names Claude, but nobody asked for the Claude app.
+ */
+export function namedAsPlace(text, name) {
+  const n = norm(name);
+  if (!n || !wordRe(n).test(norm(text))) return false;
+  return !wordRe(n).test(norm(stripPlaceNames(text)));
+}
+
 /**
  * Installed apps a request seems to be about — for the planner, which then
  * knows that "message Sam on WhatsApp" can be done in an app that is here.
  * Deliberately shallow: names matched against the Start menu, no more.
  */
 export async function mentionedApps(text) {
-  const words = norm(text).split(' ').filter((w) => w.length > 1 && !FILLER.has(w) && !COMMON.has(w));
+  const words = norm(stripPlaceNames(text)).split(' ').filter((w) => w.length > 1 && !FILLER.has(w) && !COMMON.has(w));
   const phrases = [];
   for (let i = 0; i < words.length - 1; i++) phrases.push(`${words[i]} ${words[i + 1]}`);
   phrases.push(...words);
@@ -356,7 +379,11 @@ export function readChoice(answer, options = []) {
   if (!t) return null;
   const byLabel = options.find((o) => norm(o.label) === t);
   if (byLabel) return byLabel.id;
-  if (/^(?:no|nope|cancel|stop|never ?mind|dont|do not|neither)\b/.test(t)) return 'cancel';
+  // A bare "no" is a no. "no the claude gc on the discord" is not: it is the
+  // person saying the question was the wrong one, and reading it as "don't"
+  // ended runs they wanted carried on. That comes back as null, and open()
+  // hands the words on as a correction.
+  if (/^(?:no|nope|cancel|stop|never ?mind|dont|do not|neither)\b/.test(t) && t.split(' ').length <= 3) return 'cancel';
 
   const app = /\b(?:app|application|desktop|program|installed|first|1)\b/.test(t) && !/\bweb ?app\b/.test(t);
   const site = /\b(?:web|website|site|browser|online|chrome|edge|firefox|second|2)\b/.test(t);
@@ -626,6 +653,19 @@ export async function open(what, io = {}) {
     const answer = await ask(decision.question, decision.options);
     if (!(await gate())) return { outcome: 'stopped', ok: false, stop: true, kind: null, key, pick: null, label: name, window: null, said: '', summary: '', note: '' };
     const pick = readChoice(answer, decision.options);
+    const words = String(answer?.text ?? '').trim();
+    if (!pick && words) {
+      // Neither option, in words: a correction, not a refusal. The run
+      // carries on with it rather than ending on "I left it".
+      return {
+        outcome: 'corrected', ok: false, stop: false, kind: null, key, pick: null, label: name, window: null,
+        correction: words,
+        said: `did not open ${name}: asked whether to open it, the person said "${words}" instead, `
+          + `so "${name}" was not meant as something to open. Do what they said, in what is already open`,
+        summary: '',
+        note: '',
+      };
+    }
     if (!pick || pick === 'cancel') {
       return {
         outcome: pick === 'cancel' ? 'declined' : 'unclear',
