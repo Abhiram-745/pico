@@ -239,12 +239,11 @@ Two host-side changes make this fully correct:
 | `palette.html` | WebView2 target #2 — command palette |
 | `src/bridge.js` | The contract above; swap transport, nothing else changes |
 | `src/store.js` | Phase machine + the app's real copy strings |
-| `src/mascot.js` | The character: drawn from geometry, posed and animated. No artwork |
+| `src/mascot.js` | Face rig; measured asset geometry at the top |
 | `src/hotkeys.js` | In-page chord handling (host owns these in production) |
 | `src/timeline.js` | Audit renderer + `assertSafeEvent` redaction guard |
 | `index.html`, `src/harness.css`, `mock/` | Development only — do not ship |
 
-`assets/pico.png` was extracted from `Pico.exe` at offset `10027263`
-(1254×1254 RGBA). The mascot no longer uses it — `src/mascot.js` draws the
-character itself — and it is kept only for anything still pointing at the old
-asset path.
+`assets/pico.png` was extracted from `Halo.exe` at offset `10027263`
+(1254×1254 RGBA) so the harness runs standalone. Replace it with the project's
+own `src/Halo.Desktop/Assets/pico.png` when wiring this up.

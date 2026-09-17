@@ -6,6 +6,15 @@
 :root {
   color-scheme: dark;
 
+  /* --- Mascot geometry, measured from the real pico.png (1254x1254) --------
+     Opaque bbox   x 208-1063, y 163-1036
+     Face screen   x 415-840,  y 458-739   -> 33.09% 36.52% 33.97% 22.49%
+     Forehead dot  centre 49.64% 32.06%, diameter 3.99%                     */
+  --pet-screen-left: 33.09%;
+  --pet-screen-top: 36.52%;
+  --pet-screen-width: 33.97%;
+  --pet-screen-height: 22.49%;
+
   /* --- Neutral ramp (cool navy, tuned to the mascot's own body) ----------- */
   --ink-0:  #05070d;
   --ink-1:  #0a0e18;
@@ -52,13 +61,28 @@
   --accent-text: color-mix(in oklab, var(--accent) 88%, white 12%);
 
   /* Face screen colours, re-derived per phase */
+  --screen-a: #2ee6f6;
+  --screen-b: #12a8d8;
+
   /* Fractal-noise tile used to stop large glass fields from banding */
   --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* Phase accents live in motion.css, next to the mascot that is their main
-   consumer — see the note there. Every page that loads this file loads that
-   one immediately after it. */
+/* ==========================================================================
+   Phase accents — one source of truth. Every surface reads --accent.
+   Set data-phase on any container to re-tint everything inside it.
+   ========================================================================== */
+[data-phase="Idle"]              { --accent: #8b97a8; --screen-a: #35d6ea; --screen-b: #1490c4; }
+[data-phase="Starting"]          { --accent: #38bdf8; --screen-a: #57e2f7; --screen-b: #1b9ad4; }
+[data-phase="Observing"]         { --accent: #22d3ee; --screen-a: #5ef0ff; --screen-b: #0e9fc9; }
+[data-phase="Thinking"]          { --accent: #a78bfa; --screen-a: #c3aeff; --screen-b: #6d54d6; }
+[data-phase="Acting"]            { --accent: #34d399; --screen-a: #6ef2c2; --screen-b: #14a37a; }
+[data-phase="Paused"]            { --accent: #fbbf24; --screen-a: #ffd97a; --screen-b: #d08a06; }
+[data-phase="AwaitingApproval"]  { --accent: #fb923c; --screen-a: #ffbc85; --screen-b: #d1600f; }
+[data-phase="AwaitingTakeover"]  { --accent: #60a5fa; --screen-a: #9ac8ff; --screen-b: #2b6fd4; }
+[data-phase="Completed"]         { --accent: #4ade80; --screen-a: #8cf5ae; --screen-b: #1ca858; }
+[data-phase="Stopped"]           { --accent: #94a3b8; --screen-a: #b9c6d6; --screen-b: #5b6b82; }
+[data-phase="Failed"]            { --accent: #f87171; --screen-a: #ffa3a3; --screen-b: #cf3b3b; }
 
 /* ==========================================================================
    Base

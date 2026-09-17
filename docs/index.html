@@ -17,10 +17,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="site.css">
-<!-- Pico itself, on the page it is being described on. Everything the
-     character needs to move is in this one stylesheet plus the module below;
-     where neither loads, the static icon in the masthead is what stays. -->
-<link rel="stylesheet" href="pico-ui/src/motion.css">
 </head>
 <body>
 <main>
@@ -59,16 +55,6 @@
     <p class="hint">Prefer a portable copy with nothing installed? Grab <code>Pico-latest.zip</code> from <a href="https://github.com/Abhiram-745/pico/releases/latest">Releases</a> instead.</p>
   </section>
 
-  <section class="says">
-    <h2>It tells you what it's doing</h2>
-    <p class="lede-sm">
-      Pico is drawn, not animated frame by frame, so it can hold a pose for
-      every state it can be in — and the colour of the light around it is the
-      state. Hover one.
-    </p>
-    <div class="pets" id="pets" hidden></div>
-  </section>
-
   <section>
     <h2>How it behaves</h2>
     <dl class="facts">
@@ -101,50 +87,6 @@
   </footer>
 
 </main>
-
-<script type="module">
-  /* The masthead mark, alive, and a row of the states underneath.
-
-     Loaded as a module and failing silently: GitHub Pages serves docs/ on its
-     own, without pico-ui/ beside it, and on that host this simply does not
-     run. The static icon stays in the masthead and the row stays hidden, so
-     the page is the same page either way. */
-  try {
-    const { Mascot } = await import('./pico-ui/src/mascot.js');
-
-    const head = document.querySelector('.head');
-    const icon = head.querySelector('.mark');
-    const mark = new Mascot({ size: 34 });
-    mark.el.classList.add('mark-pet');
-    mark.el.addEventListener('pointerenter', () => mark.setHover(true));
-    mark.el.addEventListener('pointerleave', () => mark.setHover(false));
-    icon.replaceWith(mark.el);
-
-    const STATES = [
-      ['Idle', 'Waiting'],
-      ['Observing', 'Looking'],
-      ['Thinking', 'Thinking'],
-      ['Acting', 'Working'],
-      ['AwaitingApproval', 'Asking you'],
-      ['Completed', 'Done'],
-    ];
-    const row = document.getElementById('pets');
-    for (const [phase, label] of STATES) {
-      const cell = document.createElement('figure');
-      const pet = new Mascot({ size: 62 });
-      pet.setPhase(phase);
-      pet.el.addEventListener('pointerenter', () => pet.setHover(true));
-      pet.el.addEventListener('pointerleave', () => pet.setHover(false));
-      const cap = document.createElement('figcaption');
-      cap.textContent = label;
-      cell.append(pet.el, cap);
-      row.append(cell);
-    }
-    row.hidden = false;
-  } catch {
-    /* no pico-ui on this host — the static masthead icon is the fallback */
-  }
-</script>
 
 <script>
   // The interface preview only exists on the built site; GitHub Pages serves
