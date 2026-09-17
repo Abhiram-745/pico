@@ -7,24 +7,21 @@
    the keyboard is the first thing it teaches, and reading about a chord is
    not the same as having pressed it once.
 
-   Each step runs the same three beats:
+   THE TWO LAYERS
+   Behind: a drawing of the desktop, filling the right of the sheet, with
+   Halo on it — built from the island's own markup and its own stylesheet, so
+   what is demonstrated here is the island, not an artist's impression of it.
+   In front: the keyboard, over the whole window, with the chord lit. The
+   moment a key goes down the keyboard clears away and the desktop behind it
+   is doing the thing you just asked for. Press, and you see the result; stop
+   pressing, and you get the keys back.
 
-     read    the words, on their own, for a couple of seconds
-     press   the keyboard appears with those keys lit; press them
-     done    the desktop beside it does the thing you just asked for, then
-             the next step is offered
-
-   TWO THINGS WORTH KNOWING
-
-   The press is counted by the bridge, not by this page: Windows tells the
-   island host the chord fired (bridge/native/island-host.cs), which is the
-   same path that will carry it when Halo is not the window in front. So
-   what onboarding accepts is exactly what works afterwards. A local
-   keydown is accepted too, for the preview, where there is no bridge.
-
-   The keyboard fades out while any key is held. Somebody pressing the chord
-   is not reading a picture of a keyboard at that moment, and the demo beside
-   it is the thing they should see.
+   WHAT COUNTS AS PRESSING IT
+   The bridge, not this page: Windows hands the chord to the island host
+   (bridge/native/island-host.cs), which is the same path that carries it
+   when Halo is not the window in front — so what onboarding accepts is
+   exactly what works afterwards. A keydown in this window counts too, for
+   the preview, where there is no bridge to ask.
    ========================================================================== */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -34,32 +31,105 @@ import { TAUGHT, matches } from '../src/keybinds.js';
 import { useStoreEvent } from './hooks.js';
 import { Keyboard, useKeysDown } from './keyboard.jsx';
 import { MetalButton, Orb } from './fx.jsx';
-import { Icon } from './parts.jsx';
+import { Icon, MascotView } from './parts.jsx';
 
-/* How long the words get on their own before the keyboard slides in. Long
-   enough to read one sentence, short enough that nobody is waiting. */
-const READ_MS = 2300;
+/* How long the words get before the keyboard arrives over them. */
+const READ_MS = 1600;
 
 /* --------------------------------------------------------------------------
-   The stage
+   Halo, as it really is
 
-   A small drawing of this desktop, with Halo where Halo really is: a strip
-   at the top middle of the screen. When a chord lands, the thing it does
-   happens here — the island leaves and comes back, opens with a caret in it,
-   becomes a card and drifts off to the corner, or grows a second cursor that
-   points at things and tells you what to type.
-
-   It is a drawing and not a video because it has to be true after a change
-   to the island, and a video would be true only on the day it was recorded.
+   The island's own class names and its own stylesheet (island.css is loaded
+   by app.html for exactly this), scaled down to sit on a drawing of a
+   screen. Anything that changes about the island changes here too, which is
+   the only way a demonstration stays honest.
    -------------------------------------------------------------------------- */
-function Stage({ demo, run, live }) {
+function MiniHalo({ shape, talking }) {
+  const view = shape === 'card' ? 'card' : shape === 'open' ? 'open' : 'compact';
   return (
-    <div className={`h-stage${live ? ' is-live' : ''}`} data-demo={demo} data-run={run % 2} aria-hidden="true">
-      <div className="h-stage__screen">
+    <div className="h-island" data-view={view} data-phase="Idle">
+      <div className="h-island__bar">
+        <span className="h-island__lead">
+          <span className="h-presence" style={{ width: view === 'compact' ? 22 : 30, height: view === 'compact' ? 22 : 30 }}>
+            <span className="h-presence__rest"><MascotView phase="Idle" size={view === 'compact' ? 22 : 30} /></span>
+          </span>
+        </span>
+        <div className="h-island__text">
+          <div className="h-island__title">
+            {view === 'compact' ? 'Halo · Ready' : 'Halo'}
+            {talking && <i className="h-mini__caret" />}
+          </div>
+          {view !== 'compact' && <div className="h-island__sub">Ready</div>}
+        </div>
+        <div className="h-island__trail"><span className="h-glyph" data-mark="dot" /></div>
+      </div>
+
+      {view !== 'compact' && (
+        <div className="h-island__panel h-mini__panel">
+          <div className="h-mini__thread">
+            <span className="h-mini__bubble" style={{ width: '58%' }} />
+            <span className="h-mini__bubble h-mini__bubble--you" style={{ width: '42%' }} />
+          </div>
+          <div className="h-mini__composer">{talking ? 'Ask Halo anything…' : 'Ask Halo anything, or give it a job…'}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------------
+   The desktop it lives on
+
+   `demo` decides what Halo is doing on it. The card is not animated at all:
+   it is put in your hands, because the thing worth knowing about a card is
+   that you can move it, and being told that is not the same as dragging one.
+   -------------------------------------------------------------------------- */
+function Stage({ demo, live }) {
+  const screen = useRef(null);
+  const [at, setAt] = useState({ x: 62, y: 46 });      // per-cent, card only
+  const grab = useRef(null);
+
+  // A new step starts the card back where a card starts.
+  useEffect(() => { setAt({ x: 62, y: 46 }); }, [demo]);
+
+  const onDown = (e) => {
+    if (demo !== 'card' || !live) return;
+    const box = screen.current.getBoundingClientRect();
+    grab.current = {
+      box,
+      dx: e.clientX - (box.left + (at.x / 100) * box.width),
+      dy: e.clientY - (box.top + (at.y / 100) * box.height),
+    };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+  };
+  const onMove = (e) => {
+    const g = grab.current;
+    if (!g) return;
+    setAt({
+      x: Math.max(4, Math.min(92, ((e.clientX - g.dx - g.box.left) / g.box.width) * 100)),
+      y: Math.max(2, Math.min(86, ((e.clientY - g.dy - g.box.top) / g.box.height) * 100)),
+    });
+  };
+  const onUp = (e) => {
+    if (!grab.current) return;
+    grab.current = null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  };
+
+  const isCard = demo === 'card' && live;
+  const shape = isCard ? 'card' : demo === 'chat' && live ? 'open' : 'compact';
+
+  const place = isCard
+    ? { left: `${at.x}%`, top: `${at.y}%`, translate: '-50% 0' }
+    : undefined;
+
+  return (
+    <div className={`h-stage${live ? ' is-live' : ''}`} data-demo={demo}>
+      <div className="h-stage__screen" ref={screen}>
         <div className="h-stage__wall" />
 
-        {/* what you were doing when you reached for Halo */}
-        <div className="h-stage__win">
+        <div className="h-stage__win" aria-hidden="true">
           <div className="h-stage__winbar"><i /><i /><i /></div>
           <div className="h-stage__lines">
             <span style={{ width: '72%' }} /><span style={{ width: '54%' }} />
@@ -67,44 +137,35 @@ function Stage({ demo, run, live }) {
           </div>
         </div>
 
-        {/* Halo itself: the island at the top, or the card once it has moved */}
-        <div className="h-stage__halo">
-          <div className="h-stage__pill">
-            <span className="h-stage__face" />
-            <span className="h-stage__text">
-              <b>Halo</b>
-              <i className="h-stage__caret" />
-            </span>
-            <span className="h-stage__dot" />
-          </div>
+        <div
+          className={`h-stage__halo${isCard ? ' is-card' : ''}`}
+          style={place}
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerCancel={onUp}
+        >
+          <MiniHalo shape={shape} talking={demo === 'chat' && live} />
         </div>
 
-        {/* guide mode: a second cursor that only ever points */}
-        <div className="h-stage__guide">
-          <svg viewBox="0 0 24 24" className="h-stage__cursor"><path d="M5 3l14 8.5-6.2 1.2L9.8 19z" /></svg>
-          <span className="h-stage__bubble">Type “hello” here</span>
-        </div>
+        {isCard && <div className="h-stage__grabhint">Drag it anywhere</div>}
+
+        {demo === 'guide' && live && (
+          <div className="h-stage__guide" aria-hidden="true">
+            <svg viewBox="0 0 24 24" className="h-stage__cursor"><path d="M5 3l14 8.5-6.2 1.2L9.8 19z" /></svg>
+            <span className="h-stage__bubble">Type “hello” here</span>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
-   One key, as a button
-
-   The same metal as the buttons that do things elsewhere in Halo, because
-   these are the buttons that do things: hovering one says it is a key and
-   not a picture of a key, and the metal runs across it while you are there.
-   -------------------------------------------------------------------------- */
+/* One key of the chord, as a metal button. */
 function KeyChip({ label, done, i }) {
   return (
     <span className="h-chipwrap" style={{ '--i': i }}>
-      <MetalButton
-        className={`h-chip${done ? ' is-done' : ''}`}
-        preset="chromatic"
-        strength={done ? 1.15 : 0.85}
-        tabIndex={-1}
-      >
+      <MetalButton className={`h-chip${done ? ' is-done' : ''}`} preset="chromatic" strength={done ? 1.15 : 0.85} tabIndex={-1}>
         {label}
       </MetalButton>
     </span>
@@ -117,7 +178,6 @@ function KeyChip({ label, done, i }) {
 export function Onboard({ onDone }) {
   const [index, setIndex] = useState(0);
   const [beat, setBeat] = useState('read');     // read -> press -> done
-  const [run, setRun] = useState(0);            // bumped to replay the demo
   const down = useKeysDown();
   const timer = useRef(null);
 
@@ -125,7 +185,6 @@ export function Onboard({ onDone }) {
   const step = steps[index];
   const last = index === steps.length - 1;
 
-  /* The words, then the keyboard. */
   useEffect(() => {
     setBeat('read');
     clearTimeout(timer.current);
@@ -133,30 +192,23 @@ export function Onboard({ onDone }) {
     return () => clearTimeout(timer.current);
   }, [index]);
 
-  const land = useCallback(() => {
-    setBeat((b) => (b === 'done' ? b : 'done'));
-    setRun((r) => r + 1);
-  }, []);
+  const land = useCallback(() => setBeat('done'), []);
 
   /* The real chord, as Windows reported it to the bridge. */
   useStoreEvent(['chord'], (s) => {
-    if (!s.chord || s.chord.id !== step?.id) return;
-    if (beat === 'done') { setRun((r) => r + 1); return; }   // pressing it again replays
-    land();
+    if (s.chord?.id === step?.id) land();
   });
 
-  /* The same chord typed into this window, for when there is no bridge
-     behind the page — and because the app window is often the focused one,
-     in which case Windows hands the chord here first. */
+  /* The same chord in this window — the preview has no bridge behind it. */
   useEffect(() => {
     const on = (e) => {
       if (!step || !matches(e, step)) return;
       e.preventDefault();
-      if (beat === 'done') setRun((r) => r + 1); else land();
+      land();
     };
     addEventListener('keydown', on, true);
     return () => removeEventListener('keydown', on, true);
-  }, [step, beat, land]);
+  }, [step, land]);
 
   const next = () => {
     if (last) {
@@ -169,14 +221,15 @@ export function Onboard({ onDone }) {
 
   const held = down.length > 0;
   const need = useMemo(() => step?.keys ?? [], [step]);
+  // The board is in front until a key is held or the chord has landed; after
+  // that the desktop behind it is the thing to look at.
+  const boardUp = beat === 'press' && !held;
 
   if (!step) return null;
 
   return (
     <div className="h-onboard" role="dialog" aria-modal="true" aria-label="Getting started with Halo">
       <div className="h-onboard__sheet">
-
-        {/* --- left: what this one is ------------------------------------- */}
         <div className="h-onboard__say">
           <div className="h-onboard__count">
             {steps.map((s, i) => (
@@ -191,9 +244,7 @@ export function Onboard({ onDone }) {
           <div className="h-onboard__visual">
             <span className="h-onboard__vlabel">Press</span>
             <div className="h-onboard__chips">
-              {step.keys.map((k, i) => (
-                <KeyChip key={k} label={k} i={i} done={beat === 'done'} />
-              ))}
+              {step.keys.map((k, i) => <KeyChip key={k} label={k} i={i} done={beat === 'done'} />)}
             </div>
           </div>
 
@@ -201,7 +252,7 @@ export function Onboard({ onDone }) {
             {beat === 'done' ? (
               <>
                 <span className="h-onboard__tick"><Icon name="check" size={12} /></span>
-                <span>That is it — press it again to watch it once more.</span>
+                <span>{step.demo === 'card' ? 'That is it — now drag it somewhere.' : 'That is it.'}</span>
               </>
             ) : (
               <>
@@ -212,12 +263,7 @@ export function Onboard({ onDone }) {
           </div>
 
           <div className="h-onboard__go">
-            <MetalButton
-              className="h-onboard__next"
-              disabled={beat !== 'done'}
-              onClick={next}
-              strength={1.1}
-            >
+            <MetalButton className="h-onboard__next" disabled={beat !== 'done'} onClick={next} strength={1.1}>
               {last ? 'Start using Halo' : 'Next'}
             </MetalButton>
             <span className="h-onboard__nudge">
@@ -226,13 +272,14 @@ export function Onboard({ onDone }) {
           </div>
         </div>
 
-        {/* --- right: the desktop, and the keyboard over it ---------------- */}
         <div className="h-onboard__show">
-          <Stage demo={step.demo} run={run} live={beat === 'done'} />
-          <div className={`h-onboard__kb${beat === 'read' ? ' is-away' : ''}`}>
-            <Keyboard need={need} down={down} dim={held || beat === 'done'} />
-          </div>
+          <Stage demo={step.demo} live={beat === 'done'} />
         </div>
+      </div>
+
+      {/* The board, over everything, until a key is actually held down. */}
+      <div className={`h-onboard__kb${boardUp ? '' : ' is-away'}`} aria-hidden={!boardUp}>
+        <Keyboard need={need} down={down} />
       </div>
     </div>
   );

@@ -103,39 +103,54 @@
 .h-onboard__next { padding: 11px 20px; font-size: 13.5px; font-weight: 600; }
 .h-onboard__nudge { font-size: 11.5px; color: var(--h-faint); max-width: 32ch; line-height: 1.45; }
 
-/* --- right column: the desktop and the board ------------------------------ */
-.h-onboard__show {
-  position: relative;
-  display: grid;
-  gap: 14px;
-  /* The keyboard is 17.8 letter-keys wide at its widest row. Sizing a key
-     off this column's width is what keeps the whole board on screen at any
-     window size, instead of hanging off the edge with a scrollbar under it. */
-  container-type: inline-size;
-  min-width: 0;
-}
-
-.h-onboard__kb {
-  display: flex;
-  justify-content: center;
-  transition: opacity .4s var(--h-out), transform .45s var(--h-spring);
-}
-.h-onboard__kb.is-away { opacity: 0; transform: translateY(18px); pointer-events: none; }
-.h-onboard__kb .h-kb { --u: min(34px, calc((100cqw - 26px) / 17.8)); }
+/* --- right: the desktop, filling the column -------------------------------- */
+.h-onboard__show { position: relative; min-width: 0; display: grid; }
 
 /* ==========================================================================
-   The stage: a small, true drawing of the desktop
+   The board, over the whole window
+
+   It is the thing you are being asked to use, so it is in front of
+   everything, at a size you could read across the room. The instant a key
+   goes down it clears away — you are not reading a picture of a keyboard
+   while your fingers are on one, and what is behind it is the desktop doing
+   what you just asked.
    ========================================================================== */
-.h-stage { display: block; }
+.h-onboard__kb {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 95;
+  display: flex;
+  justify-content: center;
+  padding: 0 26px 34px;
+  transition: opacity .28s var(--h-out), transform .38s var(--h-spring), filter .28s;
+  pointer-events: none;
+}
+.h-onboard__kb::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(4, 5, 7, .2) 20%, rgba(4, 5, 7, .78) 62%);
+  transition: opacity .28s var(--h-out);
+}
+.h-onboard__kb.is-away { opacity: 0; transform: translateY(26px) scale(.985); filter: blur(2px); }
+.h-onboard__kb.is-away::before { opacity: 0; }
+.h-onboard__kb .h-kb { --u: min(52px, calc((100vw - 90px) / 17.8)); }
+
+/* ==========================================================================
+   The stage: a drawing of the desktop, with the real island on it
+   ========================================================================== */
+.h-stage { display: grid; height: 100%; }
 .h-stage__screen {
   position: relative;
-  aspect-ratio: 16 / 9.4;
-  max-height: 46vh;
-  border-radius: 14px;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  max-height: 62vh;
+  border-radius: 16px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .08);
   background: #0a0c10;
-  box-shadow: inset 0 0 60px rgba(0, 0, 0, .7), 0 20px 50px -24px rgba(0, 0, 0, .9);
+  box-shadow: inset 0 0 70px rgba(0, 0, 0, .7), 0 24px 60px -26px rgba(0, 0, 0, .95);
 }
 .h-stage__wall {
   position: absolute; inset: 0;
@@ -145,136 +160,117 @@
     linear-gradient(160deg, #10131a, #0a0b0f);
 }
 
-/* the window you were working in */
 .h-stage__win {
   position: absolute;
-  left: 11%; top: 24%; width: 52%; height: 56%;
-  border-radius: 9px;
+  left: 9%; top: 22%; width: 54%; height: 58%;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, .07);
   background: linear-gradient(180deg, rgba(26, 29, 35, .96), rgba(18, 20, 25, .96));
   box-shadow: 0 16px 34px -16px rgba(0, 0, 0, .8);
-  padding: 8px;
+  padding: 9px;
 }
-.h-stage__winbar { display: flex; gap: 4px; margin-bottom: 9px; }
+.h-stage__winbar { display: flex; gap: 4px; margin-bottom: 10px; }
 .h-stage__winbar i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, .14); }
-.h-stage__lines { display: grid; gap: 6px; }
+.h-stage__lines { display: grid; gap: 7px; }
 .h-stage__lines span { height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .08); }
 
-/* Halo, where Halo is: centred against the top edge */
+/* Halo on it: the island hangs from the top edge; the card is wherever it
+   has been dragged. The island is drawn at its real size and scaled, so it
+   keeps its own proportions rather than being redrawn at another size. */
 .h-stage__halo {
   position: absolute;
   top: 0; left: 50%;
   translate: -50% 0;
-  transition: top .5s var(--h-spring), left .55s var(--h-spring), translate .55s var(--h-spring);
+  transform: scale(.62);
+  transform-origin: top center;
+  transition: opacity .45s var(--h-out), top .5s var(--h-spring);
 }
-.h-stage__pill {
-  display: flex; align-items: center; gap: 7px;
-  height: 22px;
-  padding: 0 9px;
-  border-radius: 0 0 11px 11px;
-  background: #000;
-  border: 1px solid rgba(255, 255, 255, .07);
-  border-top: 0;
-  box-shadow: 0 8px 22px -8px rgba(0, 0, 0, .9);
-  transition: height .45s var(--h-spring), border-radius .45s var(--h-out), width .45s var(--h-spring);
+.h-stage__halo.is-card { transform-origin: top center; transform: scale(.62); cursor: grab; }
+.h-stage__halo.is-card:active { cursor: grabbing; }
+
+/* hide: away, and back, over and over, because the point of it is the
+   leaving and returning — one pass and you have missed it. */
+.h-stage.is-live[data-demo="hide"] .h-stage__halo { animation: h-demo-hide 3.4s var(--h-out) infinite; }
+@keyframes h-demo-hide {
+  0%, 12%   { top: 0; opacity: 1; }
+  26%, 58%  { top: -46px; opacity: 0; }
+  74%, 100% { top: 0; opacity: 1; }
 }
-.h-stage__face {
-  width: 11px; height: 11px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 32%, #8fd0ff, #1a6ec8 62%, #0b2c58);
-  box-shadow: 0 0 9px rgba(90, 170, 255, .6);
-  flex: none;
+
+.h-mini__panel { padding: 0 10px 10px; display: grid; gap: 8px; }
+.h-mini__thread { display: grid; gap: 6px; padding-top: 2px; }
+.h-mini__bubble { height: 10px; border-radius: 6px; background: rgba(255, 255, 255, .07); }
+.h-mini__bubble--you { justify-self: end; background: rgba(120, 175, 255, .22); }
+.h-mini__composer {
+  font-size: 10px;
+  color: var(--h-faint);
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .045);
+  border: 1px solid rgba(255, 255, 255, .06);
 }
-.h-stage__text { display: flex; align-items: center; gap: 4px; font-size: 8.5px; color: #cfd6de; }
-.h-stage__text b { font-weight: 600; letter-spacing: -.01em; }
-.h-stage__caret { width: 1px; height: 8px; background: #7fc0ff; opacity: 0; }
-.h-stage__dot { width: 5px; height: 5px; border-radius: 50%; background: #b9dcff; box-shadow: 0 0 8px rgba(185, 220, 255, .7); flex: none; }
+.h-mini__caret {
+  display: inline-block;
+  width: 1px; height: 11px;
+  margin-left: 2px;
+  background: #7fc0ff;
+  vertical-align: -2px;
+  animation: h-mini-blink 1.1s steps(1, end) infinite;
+}
+@keyframes h-mini-blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+.h-stage__grabhint {
+  position: absolute;
+  left: 50%; bottom: 12px;
+  translate: -50% 0;
+  font-size: 10.5px;
+  color: var(--h-faint);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .06);
+  animation: h-chip-in .4s var(--h-spring) both;
+  pointer-events: none;
+}
 
 /* guide mode's second cursor, and what it is saying */
 .h-stage__guide {
   position: absolute;
   left: 20%; top: 40%;
-  opacity: 0;
   display: flex; align-items: flex-start; gap: 5px;
   pointer-events: none;
+  animation: h-demo-guide 5.2s var(--h-out) infinite;
 }
-.h-stage__cursor { width: 15px; height: 15px; fill: #fff; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .8)); }
+.h-stage__cursor { width: 17px; height: 17px; fill: #fff; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .8)); flex: none; }
 .h-stage__bubble {
-  margin-top: 8px;
-  padding: 4px 7px;
-  border-radius: 7px;
-  font-size: 8px;
+  margin-top: 9px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 9.5px;
   white-space: nowrap;
   color: #eaf4ff;
   background: linear-gradient(180deg, rgba(36, 104, 190, .96), rgba(22, 68, 140, .96));
   border: 1px solid rgba(150, 205, 255, .35);
   box-shadow: 0 8px 18px -8px rgba(0, 0, 0, .9);
 }
-
-/* --------------------------------------------------------------------------
-   What each chord does, played out on the stage.
-
-   Keyed on [data-demo] and restarted by [data-run] flipping between 0 and 1
-   — a CSS animation cannot be told to "play again", but swapping the
-   selector out and back in is the same thing.
-   -------------------------------------------------------------------------- */
-.h-stage.is-live[data-demo="hide"] .h-stage__halo { animation: h-demo-hide 2.6s var(--h-out) both; }
-@keyframes h-demo-hide {
-  0%   { top: 0; opacity: 1; }
-  22%  { top: -34px; opacity: 0; }
-  62%  { top: -34px; opacity: 0; }
-  82%  { top: 2px; opacity: 1; }
-  100% { top: 0; opacity: 1; }
-}
-
-.h-stage.is-live[data-demo="chat"] .h-stage__pill { animation: h-demo-chat 2.8s var(--h-out) both; }
-.h-stage.is-live[data-demo="chat"] .h-stage__caret { animation: h-demo-caret 2.8s steps(1, end) both; }
-@keyframes h-demo-chat {
-  0%   { height: 22px; width: auto; }
-  30%  { height: 38px; border-radius: 0 0 16px 16px; }
-  100% { height: 38px; border-radius: 0 0 16px 16px; }
-}
-@keyframes h-demo-caret {
-  0%, 28% { opacity: 0; }
-  30%, 44%, 58%, 72%, 86% { opacity: 1; }
-  37%, 51%, 65%, 79%, 93% { opacity: 0; }
-  100% { opacity: 1; }
-}
-
-/* the card: it leaves the top edge, becomes a panel, and settles in the corner */
-.h-stage.is-live[data-demo="card"] .h-stage__halo { animation: h-demo-card 3s var(--h-spring) both; }
-.h-stage.is-live[data-demo="card"] .h-stage__pill { animation: h-demo-cardshape 3s var(--h-spring) both; }
-@keyframes h-demo-card {
-  0%   { top: 0; left: 50%; translate: -50% 0; }
-  45%  { top: 34%; left: 62%; translate: -50% 0; }
-  100% { top: 30%; left: 74%; translate: -50% 0; }
-}
-@keyframes h-demo-cardshape {
-  0%   { height: 22px; border-radius: 0 0 11px 11px; }
-  50%  { height: 54px; border-radius: 12px; }
-  100% { height: 66px; border-radius: 14px; box-shadow: 0 18px 40px -14px rgba(0, 0, 0, .95); }
-}
-
-/* guide mode: the second cursor comes in, points at the window, and talks */
-.h-stage.is-live[data-demo="guide"] .h-stage__guide { animation: h-demo-guide 3.4s var(--h-out) both; }
 @keyframes h-demo-guide {
-  0%   { opacity: 0; left: 64%; top: 18%; }
-  18%  { opacity: 1; left: 48%; top: 30%; }
-  52%  { opacity: 1; left: 24%; top: 44%; }
-  84%  { opacity: 1; left: 30%; top: 52%; }
-  100% { opacity: 1; left: 30%; top: 52%; }
+  0%   { opacity: 0; left: 62%; top: 16%; }
+  12%  { opacity: 1; left: 48%; top: 28%; }
+  42%  { opacity: 1; left: 22%; top: 42%; }
+  70%  { opacity: 1; left: 28%; top: 54%; }
+  92%  { opacity: 1; left: 28%; top: 54%; }
+  100% { opacity: 0; left: 62%; top: 16%; }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 960px) {
   .h-onboard__sheet { grid-template-columns: 1fr; gap: 20px; padding: 22px; }
-  .h-onboard__kb { --u: 22px; }
-  .h-onboard__kb .h-kb { --u: 22px; }
   .h-onboard__title { font-size: 24px; }
+  .h-onboard__kb .h-kb { --u: min(30px, calc((100vw - 60px) / 17.8)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .h-onboard, .h-onboard__chips .h-metal { animation: none; }
+  .h-onboard, .h-chipwrap { animation: none; }
   .h-stage.is-live .h-stage__halo,
-  .h-stage.is-live .h-stage__pill,
-  .h-stage.is-live .h-stage__guide,
-  .h-stage.is-live .h-stage__caret { animation-duration: .01s; }
+  .h-stage__guide,
+  .h-mini__caret { animation: none; }
 }
