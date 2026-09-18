@@ -404,6 +404,37 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       if (text) await keyboard.type(String(text));
     },
 
+    /* --- the clipboard -----------------------------------------------------
+       How a person moves anything worth moving between two applications.
+
+       Without this, the only route from one app to another was for the model
+       to read the text off a screenshot and type it back in somewhere else:
+       fine for a word, hopeless for an address, a paragraph or a column of
+       figures, and silently wrong whenever the picture was small enough to
+       misread a digit. Pressing ctrl+c already worked — nothing could read
+       back what it had picked up, so the run never knew what it was holding.
+
+       Reading also makes copying checkable: `copy` compares the clipboard
+       before and after, which is the difference between "ctrl+c was sent"
+       and "something was actually copied".
+       -------------------------------------------------------------------- */
+
+    /** What is on the clipboard, or '' if it holds nothing readable. */
+    async readClipboard() {
+      try {
+        const text = await nut.clipboard.getContent();
+        return typeof text === 'string' ? text : '';
+      } catch { return ''; }        // an image, a file, or nothing at all
+    },
+
+    /** Put text on the clipboard. Returns whether it went. */
+    async writeClipboard(text) {
+      try {
+        await nut.clipboard.setContent(String(text ?? ''));
+        return true;
+      } catch { return false; }
+    },
+
     /** A chord: pressed together, released in reverse. */
     async keypress(keys = []) {
       const mapped = keys.map(mapKey).filter((k) => k !== null);

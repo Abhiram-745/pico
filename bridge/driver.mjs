@@ -84,7 +84,7 @@ import { scrollBy, regionChanged } from './scroll.mjs';
 const signature = (a) =>
   // Keys are normalised so "escape", "Esc" and "ESC" count as the same press —
   // the model varies the spelling while repeating itself.
-  [a.type, a.x, a.y, a.to_x, a.to_y, a.text, a.app, a.url, a.scroll_direction,
+  [a.type, a.x, a.y, a.to_x, a.to_y, a.text, a.paste_text, a.app, a.url, a.scroll_direction,
     (a.keys || []).map((k) => String(k).toUpperCase().replace(/^ESCAPE$/, 'ESC')).join('+')].join('|');
 
 /**
@@ -114,12 +114,17 @@ function sameScreen(a, b) {
 /**
  * Actions that are supposed to leave no trace on the screen. A screenshot
  * does not contain the pointer, so judging "move the mouse" by the picture
- * judges it by the one thing that cannot show it.
+ * judges it by the one thing that cannot show it. Copying is the same kind
+ * of thing from the other direction: it has a verdict of its own — the
+ * clipboard either changed or it did not — and a screen that looks
+ * identical afterwards is what success looks like, not a failed attempt.
  */
-const INVISIBLE = new Set(['move', 'wait']);
+const INVISIBLE = new Set(['move', 'wait', 'copy']);
 
 const POINTER = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag']);
-const KEYBOARD = new Set(['type', 'key']);
+/* copy and paste are ctrl+c and ctrl+v: they go to whatever has keyboard
+   focus, so they need the same focus guards as anything else typed. */
+const KEYBOARD = new Set(['type', 'key', 'copy', 'paste']);
 const OPENING = new Set(['open_app', 'open_url']);
 
 /**
@@ -141,6 +146,31 @@ const MISSES_BEFORE_REPLAN = 2;
 /** Re-plans after things going wrong, and after the person steering, per run. */
 const MAX_REPLANS = 3;
 const MAX_CORRECTIONS = 4;
+
+/**
+ * The tail of the run's log, newest kept, capped by length rather than by a
+ * count of entries — "pressed ctrl+c" and a paragraph of pasted text are not
+ * worth the same amount of the turn's context.
+ */
+const recent = (log, budget = 1200) => {
+  const out = [];
+  let room = budget;
+  for (let i = log.length - 1; i >= 0; i--) {
+    const line = String(log[i]);
+    if (room - line.length < 0 && out.length) break;
+    out.unshift(line);
+    room -= line.length + 2;
+  }
+  return `${log.length > out.length ? `(${log.length - out.length} earlier) ` : ''}${out.join('; ')}`;
+};
+
+/** Clipboard text as one readable phrase, with its size when it has one. */
+const preview = (text, max = 80) => {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return 'nothing';
+  const body = flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  return flat.length > max ? `${JSON.stringify(body)} (${flat.length} characters)` : JSON.stringify(body);
+};
 
 /** Shortened for a sentence: "Pico.sln - Notepad" stays, a 200-character tab title does not. */
 const short = (title, max = 60) => {
@@ -183,6 +213,23 @@ const PLAN_TOOL = [{
                 description: 'open = open an app or a website. pointer = click, drag or hover '
                   + 'something on screen. keyboard = type text or press keys. scroll = move '
                   + 'a page or list.',
+              },
+              /* Named here so an opening step costs nothing to carry out.
+                 Everything else in the plan has to be checked against the
+                 screen before it can be done, but "open Chrome" does not
+                 change meaning between being planned and being reached — so
+                 when the planner says which app or address it means, the
+                 loop opens it rather than spending a whole look-and-decide
+                 turn rediscovering an answer it was already given. */
+              app: {
+                type: 'string',
+                description: 'For kind "open", when it is an app: the app\'s name, e.g. Google Chrome. '
+                  + 'Leave empty for anything else.',
+              },
+              url: {
+                type: 'string',
+                description: 'For kind "open", when it is a website: the full address, e.g. '
+                  + 'https://www.youtube.com. Leave empty for anything else.',
               },
             },
             required: ['do', 'kind'],
@@ -256,6 +303,17 @@ ${facts.precedent}` : '',
   'bar: that searches the web for the name instead of going anywhere.',
   'If what the task needs is already open, "open" it anyway — that brings the',
   'open window to the front instead of starting a second copy.',
+  'On every "open" step, also fill in "app" with the application\'s name, or',
+  '"url" with the full address — whichever it is, never both. Halo opens that',
+  'without looking at the screen again, so the step happens immediately',
+  'instead of costing a whole turn. Leave both empty on every other kind.',
+  '',
+  'WORK THAT CROSSES TWO APPS is normal and does not need extra steps to',
+  'describe it. Halo can copy in one and paste in the other, and remembers',
+  'what it copied for the whole run — so "put the total from the invoice in',
+  'the email" is a step to copy it and a step to paste it, not a plan to',
+  'read it, hold it in mind and hope. Plan the copy as its own step, of',
+  'kind "keyboard".',
   '',
   'A WINDOW TITLE THAT NAMES A FILE says that file is open in it:',
   '"Pico.sln - Notepad" is Notepad with a solution file loaded, not a blank',
@@ -381,7 +439,7 @@ const ACT_TOOLS = [
           action: {
             type: 'string',
             enum: ['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag',
-              'type', 'key', 'scroll', 'wait', 'open_app', 'open_url'],
+              'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste'],
           },
           target: {
             type: 'string',
@@ -414,6 +472,26 @@ const ACT_TOOLS = [
           },
           app: { type: 'string', description: 'For "open_app": the app\'s name, as the person would say it.' },
           url: { type: 'string', description: 'For "open_url": the full web address, e.g. https://www.youtube.com.' },
+          paste_text: {
+            type: 'string',
+            description: 'For "paste": text to put on the clipboard first, then paste. Use this '
+              + 'instead of "type" for anything long or exact — it arrives in one go and cannot '
+              + 'be mistyped. Leave empty to paste whatever was last copied.',
+          },
+          remember_as: {
+            type: 'string',
+            description: 'For "copy": a short name to file the copied text under, e.g. '
+              + '"order number". You will be shown it under that name for the rest of the run, '
+              + 'in full, however many steps later you need it.',
+          },
+          note: {
+            type: 'string',
+            description: 'Anything you have just learned that a LATER step will need and that '
+              + 'will not still be on screen then — a total, a name, a file path, which of two '
+              + 'windows is which. Kept for the rest of the run and shown back to you every '
+              + 'turn. Can be set on any action. Leave empty when there is nothing worth '
+              + 'keeping; do not narrate what you are doing here.',
+          },
           why: {
             type: 'string',
             description: 'What you are about to do and what for, in one short plain '
@@ -488,6 +566,23 @@ const ACT_SYSTEM = (shot, front) => [
   'address. Never type an app\'s or a website\'s name into a browser\'s address',
   'bar — that searches the web for the name. If you do use the address bar',
   '(ctrl+l), type a full address such as youtube.com.',
+  '',
+  'MOVING ANYTHING BETWEEN APPS, USE THE CLIPBOARD — do not read it off the',
+  'screen and retype it. Select it, "copy", and give "remember_as" a short',
+  'name; you are shown the whole thing under that name for the rest of the',
+  'run, however many steps later you need it. Then "paste" where it goes.',
+  'Copying is also how you get text you cannot read clearly in the picture.',
+  '',
+  'PASTE RATHER THAN TYPE for anything long or exact — an address, a URL, a',
+  'paragraph, a number that must be right. Put it in "paste_text" and it',
+  'arrives in one go instead of a character at a time, and cannot be',
+  'mistyped. Short, ordinary text is still fine to "type".',
+  '',
+  'WHAT YOU WILL NEED LATER, PUT IN "note". You are shown your notes every',
+  'turn for the whole run, and the screen you are looking at now will be',
+  'gone. A total, a file path, a name, which window is which: note it when',
+  'you see it, not when you need it. Do not note what you are doing — that',
+  'is what "why" is for.',
   '',
   'SCROLLING: put x and y over the thing that should scroll, choose',
   'scroll_direction, and give scroll_amount in screens of that area — or',
@@ -737,7 +832,15 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   }
 
   const toSteps = (list) => (Array.isArray(list)
-    ? list.filter((s) => s?.do).slice(0, 8).map((s) => ({ do: String(s.do), kind: s.kind || 'pointer', status: 'pending' }))
+    ? list.filter((s) => s?.do).slice(0, 8).map((s) => ({
+      do: String(s.do),
+      kind: s.kind || 'pointer',
+      status: 'pending',
+      // Only kept where it means something, so a stray app name on a click
+      // step can never be mistaken for an instruction to open one.
+      app: s.kind === 'open' ? String(s.app || '').trim() : '',
+      url: s.kind === 'open' ? String(s.url || '').trim() : '',
+    }))
     : []);
   let steps = toSteps(plan?.steps);
 
@@ -759,7 +862,13 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
      report from last week". */
   const askedToOpen = (() => { try { return apps.parseOpen(task); } catch { return null; } })();
   if (askedToOpen && !steps.some((s) => s.kind === 'open')) {
-    steps.unshift({ do: `Open ${askedToOpen.said || askedToOpen.name}`, kind: 'open', status: 'pending' });
+    steps.unshift({
+      do: `Open ${askedToOpen.said || askedToOpen.name}`,
+      kind: 'open',
+      status: 'pending',
+      app: askedToOpen.url ? '' : (askedToOpen.name || ''),
+      url: askedToOpen.url || '',
+    });
     steps.length = Math.min(steps.length, 8);
     debug(`[plan] the task says to open "${askedToOpen.said || askedToOpen.name}" and the plan did not, so that step was put back`);
     onAudit('plan_repaired', { metadata: { added: 'open' } });
@@ -821,6 +930,47 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   const typed = [];           // every piece of text typed, for the verdict
   const pressed = [];         // every key chord, likewise
   const opened = [];          // everything opened, likewise
+
+  /* --- the scratchpad ------------------------------------------------------
+     What the run knows, as opposed to what it has done.
+
+     `done` is a log, and it was the only thing carried between turns — the
+     last eight lines of it, which is where complex work fell apart. A job
+     that reads something in one app and uses it in another is the normal
+     shape of desktop work, and anything found before the last eight actions
+     was simply gone by the time it was needed: the model would go back and
+     look again, or invent something close, or give up and ask.
+
+     So facts are kept apart from events, and are not aged out. `kept` is
+     named values, in full, because a half-remembered order number is worse
+     than none. `learned` is everything else worth carrying. Both are shown
+     every turn, and both are small by construction: the model is asked for
+     them only when a later step will need them.
+     -------------------------------------------------------------------- */
+  const kept = new Map();     // name -> the whole value, never truncated
+  const learned = [];         // free notes, newest last
+  let clipboard = '';         // what Halo last saw on the clipboard
+
+  /** Everything the run knows, as the lines the model is shown each turn. */
+  const scratchpad = () => {
+    const lines = [];
+    if (kept.size) {
+      lines.push('What you have kept (use these rather than reading them off the screen again):');
+      for (const [name, value] of kept) lines.push(`  ${name}: ${value}`);
+    }
+    if (learned.length) lines.push(`Also noted: ${learned.join('; ')}`);
+    if (clipboard) lines.push(`On the clipboard now: ${preview(clipboard, 120)}`);
+    return lines.join('\n');
+  };
+
+  /** Keep a note, without letting one turn crowd out the rest of the run. */
+  const note = (text) => {
+    const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!clean || learned.includes(clean)) return;
+    learned.push(clean);
+    if (learned.length > 20) learned.shift();
+    onAudit('note_kept', { metadata: { note: clean } });
+  };
   let turn = 0;
 
   /** The plan as it stands, for the interface. */
@@ -1194,6 +1344,62 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     }
     turnsOnStep += 1;
 
+    /* --- an opening step the plan already answered -------------------------
+       Every other kind of step has to be checked against the screen before
+       it can be carried out: where a control is, whether a field is focused,
+       what a row says. Opening does not. "Open Google Chrome" means the same
+       thing when it is reached as it did when it was planned, and the plan
+       was asked to name the app or the address outright.
+
+       So it is done from the plan, and the look-and-decide turn it used to
+       cost is not spent. On a five-step job like "open Chrome, go to
+       youtube.com, search X" that is two of the five turns gone — which is
+       most of the waiting, because the picture and the reply are the slow
+       part and the opening itself is not.
+
+       Only on the first attempt at the step, and never in guide mode, where
+       the point is to show the person where to go rather than to go there.
+       Anything unexpected falls through to the model exactly as before. */
+    if (!guide && step.kind === 'open' && (step.app || step.url) && turnsOnStep === 1 && !feedback) {
+      const what = step.url || step.app;
+      onPhase('Acting');
+      onAction({ type: 'Open', detail: step.do });
+      let r;
+      try {
+        r = await openThing({ name: step.app || '', url: step.url || '' });
+      } catch (err) {
+        r = { ok: false, said: `could not open ${what}: ${err.message}` };
+      }
+      if (!(await gate())) return;
+      if (r?.stop) {
+        onStep(null);
+        publish({ finished: true, succeeded: false });
+        onPhase('Stopped');
+        onAudit('run_stopped', { metadata: { failure_class: 'declined' } });
+        onSummary(r.said ? `I left it: ${r.said}.` : 'I left it there.');
+        return;
+      }
+      await computer.wait(600);
+      onPhase('Observing');
+      try { await observe(); } catch (err) {
+        return fail('screen_unavailable', `Halo could not see the screen: ${err.message}`);
+      }
+      lastGrey = shot.grey;
+      if (r?.ok) {
+        onAudit('action_executed', { action_type: 'Open', risk: 'low' });
+        lastActionType = 'open_url';
+        done.push(r.said || `opened ${what}`);
+        debug(`[turn ${turn}] opened "${what}" straight from the plan — no model turn spent`);
+        nextStep('done');
+        continue;
+      }
+      /* It did not open. Not a failure of the run — the model gets the step
+         back with the reason, and decides from the screen like always. */
+      feedback = `${r?.said || `could not open ${what}`}. Carry on from what is on screen.`;
+      misses += 1;
+      continue;
+    }
+
     // A step that has stalled goes to the stronger model.
     const stuck = repeats >= 2;
     const model = stuck ? llm.tiers.plan : llm.tiers.see;
@@ -1210,7 +1416,14 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
             text: [
               `Task: ${brief}`,
               `Plan: ${steps.map((s, i) => `${i + 1}. ${s.do}${s.status === 'pending' ? '' : ` (${s.status})`}`).join(' ')}`,
-              done.length ? `Done so far: ${done.slice(-8).join('; ')}.` : null,
+              /* The log is still trimmed — it is a narrative, and the oldest
+                 of it stops mattering. Trimmed by length rather than by a
+                 count of eight, so short actions do not push out the run's
+                 whole history the way they used to. Anything that must
+                 survive regardless is in the scratchpad below, which is not
+                 trimmed at all. */
+              done.length ? `Done so far: ${recent(done)}.` : null,
+              scratchpad() || null,
               `CURRENT STEP (${stepIndex + 1} of ${steps.length}, ${step.kind}): ${step.do}`,
               'Do only that step.',
               feedback ? `Result of your last action: ${feedback}` : null,
@@ -1242,7 +1455,43 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     const name = choice.call?.name;
     const args = choice.call?.args ?? {};
 
-    if (!choice.call || name === 'step_done') {
+    /* step_done is a claim: the model looked at the screen and said this step
+       is already the case. Believed, as it always has been.
+
+       Silence is not that claim, and used to be read as one. A model asked
+       for an action that answers with prose instead — "I'll click the search
+       bar now" — has decided nothing, and marking the step done anyway is
+       exactly how a run ticks every step green without touching the mouse:
+       the plan reads right, the checks appear in order, and not one thing
+       happened on the desktop. Malformed tool arguments came back the same
+       way and were waved through the same way.
+
+       Smaller models do this most, so the loop has to be what notices — the
+       fix cannot be "use a better model". Handled as a miss, in the model's
+       own words, and replanned if it keeps happening. */
+    if (!choice.call) {
+      misses += 1;
+      const said = String(choice.text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      const bad = choice.why === 'bad_args';
+      onAudit('action_skipped', {
+        metadata: { reason: bad ? 'the action came back malformed' : 'the model described an action instead of choosing one' },
+      });
+      debug(`[turn ${turn}] NO ACTION (${choice.why ?? 'no_call'}) on "${step.do}" — misses=${misses}${said ? ` — said: ${said}` : ''}`);
+      if (misses >= MISSES_BEFORE_REPLAN) {
+        const outcome = await replan(`Nothing has been done for "${step.do}": the last ${misses} turns returned no `
+          + 'usable action. Plan what is left from this screen.');
+        if (outcome === 'error' || outcome === 'stopped') return;
+        if (outcome === 'done') break;
+        if (outcome === 'continue') continue;
+      }
+      feedback = bad
+        ? 'Nothing happened: your last action could not be read. Call one tool again, with valid arguments.'
+        : `Nothing happened: you wrote ${said ? `"${said}"` : 'a reply'} instead of calling a tool. Describing an `
+          + 'action does not carry it out. Call exactly one tool now, for this step only.';
+      continue;
+    }
+
+    if (name === 'step_done') {
       nextStep('done');
       continue;
     }
@@ -1513,6 +1762,26 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     arrivalChecked = false;
     if (action.type === 'type' && action.text) typed.push({ text: String(action.text), window: fg?.title ?? '' });
     if (action.type === 'key') pressed.push((action.keys ?? []).join('+'));
+
+    /* --- what this turn learned ------------------------------------------
+       A copy is only useful if what it picked up outlives the turn, so the
+       whole text is filed under the name the model asked for and shown back
+       in full every turn afterwards. Pasting counts as typing for the
+       verdict at the end: it is text that went into an application, and the
+       check for "did it really do what it said" must see it. */
+    if (result?.copied) {
+      clipboard = result.copied;
+      const as = String(action.remember_as || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (as) {
+        kept.set(as, result.copied);
+        onAudit('value_kept', { metadata: { name: as, length: result.copied.length } });
+      }
+    }
+    if (action.type === 'paste') {
+      if (action.paste_text) clipboard = String(action.paste_text);
+      if (clipboard) typed.push({ text: clipboard, window: fg?.title ?? '' });
+    }
+    if (action.note) note(action.note);
     if (!(await gate())) return;
 
     // Let the screen settle before looking. Clicking and photographing in the
@@ -1858,6 +2127,40 @@ async function execute({ computer, sense, shot, action, openThing, trustStale = 
     case 'key':
       await computer.keypress(action.keys ?? []);
       return { said: `pressed ${(action.keys ?? []).join('+')}` };
+
+    /* Copying, and knowing what was copied.
+
+       Checked against what the clipboard held a moment earlier, because
+       ctrl+c on nothing selected is silent: it leaves the last thing copied
+       sitting there, and a run that took that for its answer would carry
+       the wrong text into the next app and never notice. Unchanged is
+       reported as unchanged. */
+    case 'copy': {
+      const before = await computer.readClipboard?.() ?? '';
+      await computer.keypress(['ctrl', 'c']);
+      await computer.wait(120);           // the application has to put it there
+      const after = await computer.readClipboard?.() ?? '';
+      if (!after) return { said: 'copied nothing: the clipboard is empty, so nothing was selected' };
+      if (after === before) {
+        return {
+          said: 'the clipboard still holds what it held before, so the copy probably did not take — '
+            + 'select what you want first, then copy',
+        };
+      }
+      return { ok: true, copied: after, said: `copied ${preview(after)}` };
+    }
+
+    case 'paste': {
+      if (action.paste_text) {
+        const put = await computer.writeClipboard?.(action.paste_text);
+        if (!put) return { said: 'nothing was pasted: the clipboard could not be set' };
+        await computer.wait(60);
+      }
+      const holding = await computer.readClipboard?.() ?? '';
+      if (!holding) return { said: 'nothing was pasted: the clipboard is empty' };
+      await computer.keypress(['ctrl', 'v']);
+      return { ok: true, said: `pasted ${preview(holding)}` };
+    }
 
     case 'wait':
       await computer.wait(900);

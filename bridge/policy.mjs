@@ -78,7 +78,7 @@ export function assess(action = {}, windowTitle = '') {
   // What it is clicking ("the Send button") counts towards weighing a click,
   // but not towards handing over: a "Sign in" button can be pressed by
   // anyone, it is the password field that is the person's alone.
-  const said = `${action.why ?? ''} ${action.text ?? ''} ${(action.keys ?? []).join(' ')}`;
+  const said = `${action.why ?? ''} ${action.text ?? ''} ${action.paste_text ?? ''} ${(action.keys ?? []).join(' ')}`;
   const context = `${said} ${action.target ?? ''} ${windowTitle}`;
 
   // Credentials are never approvable — they are handed back, every time.
@@ -95,8 +95,11 @@ export function assess(action = {}, windowTitle = '') {
 
   // Only acts that commit something need weighing. Moving, looking, scrolling
   // and waiting change nothing, whatever the window happens to be.
+  // Pasting commits: it puts text into whatever has focus, exactly as typing
+  // does, and the rules below weigh what that text says. Copying takes a
+  // reading and changes nothing, so it is weighed like looking.
   const commits = ['click', 'double_click', 'right_click', 'middle_click',
-    'drag', 'type', 'key'].includes(action.type);
+    'drag', 'type', 'key', 'paste'].includes(action.type);
   if (!commits) return { ...ALLOW };
 
   for (const rule of RULES) {
@@ -126,6 +129,8 @@ export function describe(action = {}) {
     case 'drag': return 'Drag something across the screen';
     case 'type': return 'Enter text';            // never the text itself
     case 'key': return `Press ${(action.keys || []).join('+')}`;
+    case 'copy': return 'Copy the selection';
+    case 'paste': return 'Paste what was copied';   // never the text itself
     case 'scroll': return 'Scroll the view';
     case 'move': return 'Move the pointer';
     case 'wait': return 'Wait for the app to respond';
@@ -147,4 +152,6 @@ export const ACTION_PHASE = {
   wait: 'Wait',
   screenshot: 'Screenshot',
   drag: 'Drag',
+  copy: 'Keypress',
+  paste: 'Type',
 };

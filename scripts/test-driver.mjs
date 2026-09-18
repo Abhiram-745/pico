@@ -35,6 +35,8 @@ function desktop({ windows, front }) {
     windows: new Map(windows.map((w) => [w.hwnd, { ...w }])),
     front,
     value: '',
+    clipboard: '',
+    selection: '',       // what ctrl+c would pick up right now
     screen: 1,           // bumped whenever something visibly changes
     typed: [],           // [{ text, into }]
     focusCalls: [],
@@ -67,7 +69,16 @@ function desktop({ windows, front }) {
     drag: async () => {},
     wheel: async () => {},
     type: async (t) => { state.typed.push({ text: t, into: state.front }); state.value += t; state.screen += 1; },
-    keypress: async () => { state.screen += 1; },
+    keypress: async (keys = []) => {
+      const chord = keys.map((k) => String(k).toLowerCase()).join('+');
+      // ctrl+c picks up whatever is "selected"; ctrl+v puts the clipboard
+      // into the text field, the way the real ones do.
+      if (chord === 'ctrl+c') { state.clipboard = state.selection; return; }
+      if (chord === 'ctrl+v') { state.typed.push({ text: state.clipboard, into: state.front }); state.value += state.clipboard; }
+      state.screen += 1;
+    },
+    readClipboard: async () => state.clipboard,
+    writeClipboard: async (t) => { state.clipboard = String(t ?? ''); return true; },
     // A real timer, briefly: a wait that resolves as a microtask never lets
     // anything else run, and the loop that waits for a person would spin.
     wait: (ms = 0) => new Promise((r) => setTimeout(r, Math.min(ms, 20))),
@@ -393,6 +404,158 @@ console.log('guide mode');
   check('it put the arrow away at the end', pointed.at(-1)?.hidden === true, JSON.stringify(pointed.at(-1)));
   check('the steps were marked done as the person did them', events.plans.at(-1)?.steps?.every((s) => s.status === 'done'), JSON.stringify(events.plans.at(-1)?.steps));
   check('and it finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
+}
+
+
+/* --- a model that talks instead of acting --------------------------------
+   The whole run used to go green without the desktop being touched: asked
+   for an action, a weaker model answers with prose — "I'll click the search
+   bar now" — the loop saw no tool call, marked the step done and moved on.
+   Right plan, every step ticked, nothing done.
+   ------------------------------------------------------------------------ */
+console.log('a model that talks instead of acting');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Type hello there', kind: 'keyboard' }]),
+    () => null,                                            // "I will type it now."
+    () => null,                                            // and again
+    plan([{ do: 'Type hello there', kind: 'keyboard' }]),  // the replan it should force
+    act({ action: 'type', text: 'hello there' }),
+    { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+  ]);
+  const { done, events } = run({ computer, llm });
+  await done;
+
+  check('a step with no action is not marked done',
+    computer.state.typed.length === 1, JSON.stringify(computer.state.typed));
+  check('the text really went in',
+    computer.state.typed[0]?.text === 'hello there', JSON.stringify(computer.state.typed));
+  check('and it said why nothing happened',
+    events.audits.some((a) => String(a.metadata?.reason || '').includes('described an action')),
+    JSON.stringify(events.audits.map((a) => a.metadata?.reason).filter(Boolean)));
+}
+
+/* --- an opening step costs no model turn ---------------------------------- */
+console.log('opening from the plan');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Open youtube.com', kind: 'open', url: 'https://www.youtube.com' },
+      { do: 'Type ssuazo', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'ssuazo' }),
+    { name: 'report', args: { succeeded: true, summary: 'Searched.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'open youtube.com and search ssuazo' });
+  await done;
+
+  const acts = llm.calls.filter((c) => c.tool === 'act');
+  check('the open step spent no act call', acts.length === 1, `${acts.length} act calls`);
+  check('both steps finished',
+    events.plans.at(-1)?.steps?.every((s) => s.status === 'done'),
+    JSON.stringify(events.plans.at(-1)?.steps));
+}
+
+
+/* --- carrying something between two apps ---------------------------------
+   The thing the loop could not do. What is copied has to still be in front
+   of the model when the app it is going into is several steps away — and
+   the run's log, which was the only thing carried between turns, is trimmed.
+   The scratchpad is not.
+   ------------------------------------------------------------------------ */
+console.log('carrying a value between apps');
+{
+  const computer = desktop({ windows: [NOTEPAD, VIDEO], front: '100' });
+  computer.state.selection = 'ORDER-99312';
+  const filler = (n) => ({ do: `Type line ${n}`, kind: 'keyboard' });
+  const llm = scripted([
+    plan([{ do: 'Copy the order number', kind: 'keyboard' },
+      filler(1), filler(2), filler(3), filler(4), filler(5), filler(6),
+      { do: 'Paste it into the other window', kind: 'keyboard' }]),
+    act({ action: 'copy', remember_as: 'order number' }),
+    act({ action: 'type', text: 'one ' }),
+    act({ action: 'type', text: 'two ' }),
+    act({ action: 'type', text: 'three ' }),
+    act({ action: 'type', text: 'four ' }),
+    act({ action: 'type', text: 'five ' }),
+    act({ action: 'type', text: 'six ' }),
+    ({ calls }) => {
+      // Six steps and seven actions after the copy, the value is still in
+      // front of the model, in full, under the name it was given.
+      const seen = calls.at(-1).text;
+      check('the copied value is still in front of the model at the last step',
+        seen.includes('ORDER-99312'), seen.slice(-500));
+      check('and is filed under the name it was given',
+        /order number: ORDER-99312/.test(seen), seen.slice(-500));
+      return act({ action: 'paste' });
+    },
+    { name: 'report', args: { succeeded: true, summary: 'Moved it across.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'copy the order number into the other window' });
+  await done;
+
+  check('the value really was pasted',
+    computer.state.typed.some((t) => t.text === 'ORDER-99312'), JSON.stringify(computer.state.typed));
+}
+
+/* --- a copy that did not take -------------------------------------------- */
+console.log('a copy that picked nothing up');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clipboard = 'something from before';
+  computer.state.selection = 'something from before';   // ctrl+c on no selection
+  const llm = scripted([
+    plan([{ do: 'Copy the total', kind: 'keyboard' }]),
+    act({ action: 'copy', remember_as: 'total' }),
+    ({ calls }) => {
+      const seen = calls.at(-1).text;
+      check('it says the copy did not take',
+        /did not take|still holds/.test(seen), seen.slice(-300));
+      check('and nothing wrong was filed under the name',
+        !/total: something from before/.test(seen), seen.slice(-300));
+      return { name: 'step_done', args: {} };
+    },
+    { name: 'report', args: { succeeded: false, summary: 'Could not copy it.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'copy the total' });
+  await done;
+}
+
+/* --- pasting exact text beats typing it ---------------------------------- */
+console.log('pasting long exact text');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const LONG = 'https://example.com/invoices/2026/09/AC-4471-payable?ref=q3-reconciliation';
+  const llm = scripted([
+    plan([{ do: 'Put the link in', kind: 'keyboard' }]),
+    act({ action: 'paste', paste_text: LONG }),
+    { name: 'report', args: { succeeded: true, summary: 'Pasted the link.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'put the link in' });
+  await done;
+
+  check('the exact text arrived in one piece',
+    computer.state.typed.some((t) => t.text === LONG), JSON.stringify(computer.state.typed));
+  check('and the clipboard holds it', computer.state.clipboard === LONG, computer.state.clipboard);
+}
+
+/* --- a note outlives the screen it came from ------------------------------ */
+console.log('notes');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Look at the total', kind: 'pointer' }, { do: 'Type it', kind: 'keyboard' }]),
+    act({ action: 'click', x: 10, y: 10, target: 'the total', note: 'the invoice total is 240.50' }),
+    ({ calls }) => {
+      const seen = calls.at(-1).text;
+      check('the note comes back on a later turn',
+        seen.includes('the invoice total is 240.50'), seen.slice(-300));
+      return act({ action: 'type', text: '240.50' });
+    },
+    { name: 'report', args: { succeeded: true, summary: 'Typed the total.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'type the invoice total' });
+  await done;
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

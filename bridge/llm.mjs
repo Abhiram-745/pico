@@ -402,7 +402,12 @@ export class LLM {
 
     const message = body?.choices?.[0]?.message ?? {};
     const call = message.tool_calls?.[0];
-    if (!call) return { call: null, text: (message.content || '').trim() };
+    /* No call, and why, because the caller has to tell the difference.
+       `tool_choice: 'required'` asks for an action and nothing else, but a
+       model is free to answer with prose anyway — "I'll click the search bar
+       next" — and the smaller and cheaper it is, the more often it does. That
+       is not a decision, and the loop above must not read it as one. */
+    if (!call) return { call: null, text: (message.content || '').trim(), why: 'no_call' };
 
     let args = {};
     try {
@@ -410,7 +415,7 @@ export class LLM {
     } catch {
       // Malformed arguments are the model's fault, not the user's. Treat the
       // turn as a no-op rather than crashing a run halfway through.
-      return { call: null, text: '' };
+      return { call: null, text: '', why: 'bad_args' };
     }
 
     return {
@@ -526,13 +531,13 @@ export class LLM {
       .trim();
     const usage = json?.usage ?? null;
     const call = output.find((o) => o.type === 'function_call');
-    if (!call) return { call: null, text, usage };
+    if (!call) return { call: null, text, usage, why: 'no_call' };
 
     let args = {};
     try {
       args = JSON.parse(call.arguments || '{}');
     } catch {
-      return { call: null, text, usage };
+      return { call: null, text, usage, why: 'bad_args' };
     }
     return { call: { name: call.name, args, raw: call }, text, usage };
   }
