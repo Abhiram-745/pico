@@ -594,9 +594,13 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   } = hooks;
 
   const sense = computer.sense ?? null;
+  /* Guide mode: Halo points at what to use and the person uses it. Nothing
+     in this run touches the mouse or the keyboard while this is set. */
+  const guide = context.guide ?? null;
   const debug = (...a) => { if (process.env.PICO_DEBUG) console.log(...a); };
 
   const fail = (failureClass, message) => {
+    guide?.hide();
     onPhase('Failed');
     onAudit('run_failed', { metadata: { failure_class: failureClass } });
     onError({ title: 'Halo stopped', message, recoverable: true });
@@ -827,6 +831,95 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     ...extra,
   });
   publish();
+
+  /* --- guide mode ----------------------------------------------------------
+     Halo points; the person does it. The plan, the model and the verdict are
+     all the same — only the middle changes, from carrying an action out to
+     showing where it goes and waiting to be shown it happened.
+
+     What it says is written for someone about to do it themselves, not for a
+     log: "Click the address bar", "Type halo.dev", "Press Ctrl and L".
+     -------------------------------------------------------------------- */
+  const KEY_WORDS = { ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', win: 'the Windows key', enter: 'Enter', esc: 'Escape', tab: 'Tab' };
+  const sayKeys = (keys = []) => keys.map((k) => KEY_WORDS[String(k).toLowerCase()] ?? String(k).toUpperCase()).join(' and ');
+
+  const instructionFor = (action) => {
+    const what = String(action.target || '').replace(/^the\s+/i, '').trim();
+    switch (action.type) {
+      case 'click': return what ? `Click ${what}` : 'Click here';
+      case 'double_click': return what ? `Double-click ${what}` : 'Double-click here';
+      case 'right_click': return what ? `Right-click ${what}` : 'Right-click here';
+      case 'middle_click': return what ? `Middle-click ${what}` : 'Middle-click here';
+      case 'drag': return what ? `Drag ${what} to where it should go` : 'Drag from here';
+      case 'move': return what ? `Hover ${what}` : 'Put the pointer here';
+      case 'scroll': return `Scroll ${action.scroll_direction || 'down'}${what ? ` in ${what}` : ' here'}`;
+      case 'type': return `Type: ${String(action.text ?? '').slice(0, 90)}`;
+      case 'key': return `Press ${sayKeys(action.keys)}`;
+      case 'open_app': return `Open ${action.app || what || 'it'}`;
+      case 'open_url': return `Go to ${action.url || what || 'the address'}`;
+      case 'wait': return 'Wait a moment for it to catch up';
+      default: return describe(action);
+    }
+  };
+
+  /** How long to wait for the person before asking whether they are stuck. */
+  const PATIENCE_MS = 90_000;
+
+  const showTheWay = async (action, step) => {
+    const words = instructionFor(action);
+    let where = null;
+    if (Number.isFinite(action.x) && Number.isFinite(action.y)) {
+      const physical = shot.toPhysical(action.x, action.y);
+      const aim = await settle(sense, physical, { target: action.target || action.why || '' });
+      where = shot.physToScreen(aim.x, aim.y);
+    }
+    if (where) guide.point(where.x, where.y, words);
+    else guide.say(words);
+    onAction({ type: 'Guide', detail: words });
+    onAudit('guided', { metadata: { step: step.do, said: words } });
+
+    /* Waiting for a person, not for a machine: the screen changing is the
+       only sign that counts, and they are allowed to take their time. Skip
+       and corrections still reach the run while it waits. */
+    const before = shot.grey;
+    const until = Date.now() + PATIENCE_MS;
+    while (Date.now() < until) {
+      await computer.wait(500);
+      if (!(await gate())) return { stopped: true };
+      const heard = await listen();
+      if (heard === 'skipped') return { said: `you skipped: ${step.do}`, moved: false, skipped: true };
+      if (heard === 'error' || heard === 'stopped') return { stopped: true };
+      let now;
+      try { now = await look(); } catch { continue; }
+      if (!sameScreen(before, now.grey)) {
+        shot = now;
+        return { said: `you did it: ${words.toLowerCase()}`, moved: true };
+      }
+    }
+    return { said: `you were shown "${words}" and nothing happened for a while`, moved: false };
+  };
+
+  /* --- get the pointer out of the picture ----------------------------------
+     A click leaves the pointer resting on what it clicked, and the next
+     screenshot is taken seconds later with it still there. On a website that
+     is a menu hanging open under it, a tooltip, a link preview in the corner
+     — none of which the person asked for, all of which the model then has to
+     understand. It also makes the run look like it is fiddling with things
+     it has finished with.
+
+     So after acting, the pointer steps aside: into the left margin of the
+     window being worked in, halfway down, which is inert in every layout
+     worth naming. Not after `move` — there the model deliberately put the
+     pointer somewhere and hovering is the whole point — and not after a
+     scroll, where the wheel has to stay over the thing that scrolls. */
+  const parkPointer = async (action) => {
+    if (guide) return;               // in guide mode the pointer is theirs, untouched
+    if (action.type === 'move' || action.type === 'scroll' || INVISIBLE.has(action.type)) return;
+    const r = workWindow?.rect;
+    if (!Array.isArray(r) || r.length !== 4 || r[2] < 200 || r[3] < 160) return;
+    const spot = shot.physToScreen(r[0] + 16, r[1] + (r[3] / 2));
+    try { await computer.move(spot.x, spot.y); } catch { /* the picture is only slightly busier */ }
+  };
 
   /** Look again, and note what is in front as Halo looks. */
   const observe = async (frame) => {
@@ -1235,6 +1328,41 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       return;
     }
 
+    /* --- guiding, rather than doing --------------------------------------
+       Nothing below this is reached in guide mode: no risk to weigh, because
+       nothing is about to happen; no approval to ask for, because the person
+       is the one who will do it; no pointer moved and no key pressed. Halo
+       points at the thing and waits to be shown it was done. */
+    if (guide) {
+      const shown = await showTheWay(action, step);
+      if (shown.stopped) return;
+      feedback = shown.said;
+      lastActionType = action.type;
+      if (shown.moved) {
+        done.push(shown.said);
+        repeats = 0;
+        lastSignature = null;
+      }
+      onPhase('Observing');
+      try { await observe(); } catch (err) {
+        return fail('screen_unavailable', `Halo could not see the screen: ${err.message}`);
+      }
+      if (shown.moved) {
+        lastGrey = shot.grey;
+        nextStep('done');
+      } else {
+        lastGrey = shot.grey;
+        misses += 1;
+        if (misses >= MISSES_BEFORE_REPLAN) {
+          const outcome = await replan(`You showed them "${step.do}" and nothing on screen changed. `
+            + 'They may have done something else, or be stuck. Plan what is left from this screen.');
+          if (outcome === 'error' || outcome === 'stopped') return;
+          if (outcome === 'done') break;
+        }
+      }
+      continue;
+    }
+
     const risk = assess(action, frontTitle);
     const detail = describe(action);
     const phaseType = ACTION_PHASE[action.type] || 'Move';
@@ -1393,6 +1521,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     if (!result?.frame) {
       await computer.wait(KEYBOARD.has(action.type) ? 240 : OPENING.has(action.type) ? 600 : 160);
     }
+    await parkPointer(action);
 
     onPhase('Observing');
     try { await observe(result?.frame); } catch (err) {
@@ -1480,6 +1609,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   }
 
   /* --- and stop ---------------------------------------------------------- */
+  guide?.hide();
   onStep(null);
 
   /* A fresh look for the verdict.

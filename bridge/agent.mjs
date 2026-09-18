@@ -94,6 +94,20 @@ export class HostAgent extends MockAgent {
   }
 
   attachComputer(computer) { this.computer = computer; }
+
+  /* Guide mode's cursor, when the bridge has one. A function rather than the
+     thing itself: it is built the first time guide mode is switched on, and
+     a run that starts a second later should get it. */
+  attachGuide(get) { this.getGuide = get; }
+
+  /** The guide to run with, or null when Halo is doing the work itself. */
+  async guideFor() {
+    if (!this.shell?.guide || !this.getGuide) return null;
+    try { return await this.getGuide(); } catch { return null; }
+  }
+
+  /** The shape Halo is in, told by the bridge whenever it changes. */
+  setShell(shell) { this.shell = shell; }
   attachLLM(llm) { this.llm = llm; }
 
   /** Can a task actually be carried out on this machine, right now? */
@@ -626,6 +640,7 @@ export class HostAgent extends MockAgent {
       context: {
         ...context,
         memory: this.memory.forPrompt(),
+        guide: await this.guideFor(),
         browser: helpers.browser,
       },
       maxTurns: Math.max(1, Number(this.settings.maximumComputerTurns) || 24),
@@ -679,6 +694,10 @@ export class HostAgent extends MockAgent {
         },
       },
     });
+
+    // However the loop ended — finished, stopped, failed, replaced — the
+    // guide arrow does not belong on screen afterwards.
+    (await this.guideFor())?.hide();
 
     if (result && !this.superseded(context.token)) {
       const steps = [

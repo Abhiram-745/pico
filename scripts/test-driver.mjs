@@ -68,7 +68,9 @@ function desktop({ windows, front }) {
     wheel: async () => {},
     type: async (t) => { state.typed.push({ text: t, into: state.front }); state.value += t; state.screen += 1; },
     keypress: async () => { state.screen += 1; },
-    wait: async () => {},
+    // A real timer, briefly: a wait that resolves as a microtask never lets
+    // anything else run, and the loop that waits for a person would spin.
+    wait: (ms = 0) => new Promise((r) => setTimeout(r, Math.min(ms, 20))),
     sense: {
       hit: async () => null,
       near: async () => null,
@@ -347,6 +349,50 @@ console.log('the wrong row');
   await done;
   check('refused once, then the second click went through', clicks === 1, `clicks=${clicks}`);
   check('and the run finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
+}
+
+/* --- 10. guide mode: points, waits, and touches nothing --------------------
+   The one mode where Halo does not use the mouse or the keyboard at all. It
+   has to stay that way: a guide that clicks for you is not a guide. */
+console.log('guide mode');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const touched = [];
+  for (const m of ['click', 'doubleClick', 'type', 'keypress', 'drag', 'wheel']) {
+    computer[m] = async () => { touched.push(m); };
+  }
+  // Only `move` is allowed to be called — and only because parking is off.
+  computer.move = async () => { touched.push('move'); };
+
+  const pointed = [];
+  const guide = {
+    point: (x, y, words) => { pointed.push({ x, y, words }); return true; },
+    say: (words) => { pointed.push({ words }); return true; },
+    hide: () => { pointed.push({ hidden: true }); return true; },
+  };
+
+  // The person does each step a moment after being shown it.
+  const doesIt = () => setTimeout(() => { computer.state.screen += 5; }, 600);
+  const origPoint = guide.point;
+  const origSay = guide.say;
+  guide.point = (x, y, words) => { doesIt(); return origPoint(x, y, words); };
+  guide.say = (words) => { doesIt(); return origSay(words); };
+
+  const llm = scripted([
+    plan([{ do: 'Click the address bar', kind: 'pointer' }, { do: 'Type halo.dev', kind: 'keyboard' }]),
+    act({ action: 'click', x: 40, y: 10, target: 'the address bar' }),
+    act({ action: 'type', text: 'halo.dev' }),
+    { name: 'report', args: { succeeded: true, summary: 'You opened halo.dev.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'put halo.dev in the address bar', context: { guide } });
+  await done;
+
+  check('nothing was clicked, typed or pressed', touched.length === 0, touched.join(','));
+  check('it pointed at the control it found', pointed.some((p) => p.words === 'Click address bar' && Number.isFinite(p.x)), JSON.stringify(pointed.slice(0, 3)));
+  check('and said what to type', pointed.some((p) => String(p.words).startsWith('Type: halo.dev')), JSON.stringify(pointed));
+  check('it put the arrow away at the end', pointed.at(-1)?.hidden === true, JSON.stringify(pointed.at(-1)));
+  check('the steps were marked done as the person did them', events.plans.at(-1)?.steps?.every((s) => s.status === 'done'), JSON.stringify(events.plans.at(-1)?.steps));
+  check('and it finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

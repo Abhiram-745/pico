@@ -41,6 +41,7 @@ import { IslandHost } from './island-host.mjs';
 import { Sense } from './sense.mjs';
 import { check as checkUpdate, install as installUpdate, localBuild } from './updater.mjs';
 import { chatArchive } from './chats.mjs';
+import { Guide } from './guide.mjs';
 import { memory } from './memory.mjs';
 import { routines } from './routines.mjs';
 import { runbook } from './runbook.mjs';
@@ -391,6 +392,10 @@ class Bridge {
       this.notch.setHidden(now.hidden);
     }
     this.snapshot.shell = now;
+    this.agent.setShell(now);
+    // Started the first time it is needed, and put away the moment it is not.
+    if (now.guide) startGuide?.();
+    else stopGuide?.();
     saveShellState({ mode: now.mode });
     this.broadcast({ type: 'shell', payload: now });
     return now;
@@ -736,6 +741,11 @@ async function saveKey(key) {
 }
 
 let islandHost = null;
+
+/* Guide mode's cursor. Assigned once the desktop is known to be reachable —
+   setShell calls these, and before then there is nothing to point with. */
+let startGuide = null;
+let stopGuide = null;
 
 /* A bug anywhere must not take the bridge down with it. When it did, the
    interface and the paired phone both lost their connection and the only
@@ -1136,6 +1146,27 @@ const computer = await loadComputer({
 });
 if (!computer) sense?.stop();
 if (computer) await bridge.attachComputer(computer);
+
+/* --- guide mode ------------------------------------------------------------
+   The one drawn cursor Halo has, and the one mode in which it touches
+   nothing: it points at what to use next and the person uses it. Built the
+   first time guide mode is switched on — most runs never need it — and put
+   away, not killed, when it goes off, so switching back and forth costs
+   nothing after the first second. */
+if (computer) {
+  let guide = null;
+  let building = null;
+  startGuide = () => {
+    if (guide) return Promise.resolve(guide);
+    building = building ?? Guide.start({ scale: computer.vision?.scale ?? 1 })
+      .then((g) => { guide = g; building = null; return g; });
+    return building;
+  };
+  stopGuide = () => { guide?.hide(); };
+  bridge.agent.attachGuide(() => startGuide());
+  bridge.agent.setShell(bridge.snapshot.shell);
+  if (bridge.snapshot.shell?.guide) startGuide();
+}
 
 /* ---------------------------------------------------------------------------
    The notch

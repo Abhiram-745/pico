@@ -278,6 +278,28 @@ export class Screen {
    */
   async capture({ width = null, quality = 80, raw = null } = {}) {
     const desktop = raw ?? await this.rawDesktop();
+    return shotFrom(encodeFrame(desktop, { width, quality }), desktop, this.mode);
+  }
+
+  /** Title of whatever is in front, for the activity log. */
+  focusedWindow() {
+    try {
+      const w = Window.all().find((x) => x.isFocused());
+      return w ? `${w.appName()}${w.title() ? ` — ${w.title()}` : ''}` : '';
+    } catch {
+      return '';
+    }
+  }
+}
+
+/**
+ * The expensive half of a capture: scale the frame down, encode it, and
+ * average it into a thumbnail. All CPU, no geometry — which is what lets it
+ * run in a worker thread (screen-worker.mjs) instead of on the thread that
+ * is also moving the pointer.
+ */
+export async function encodeFrame(desktop, { width = null, quality = 80 } = {}) {
+  {
     const target = Math.min(width ?? Screen.modelWidth(desktop.width, desktop.scale), desktop.width);
 
     let buffer;
@@ -315,6 +337,17 @@ export class Screen {
        whether a resize happened to sample it. */
     const grey = thumbnail(desktop.data, desktop.width, desktop.height, 64);
 
+    return { b64: buffer.toString('base64'), bytes: buffer.length, grey, shotW, shotH };
+  }
+}
+
+/**
+ * The cheap half: everything a point can be converted between, wrapped
+ * around an already-encoded frame. Closures, so they cannot cross a thread —
+ * which is why they are made here, on whichever thread asked for the shot.
+ */
+export function shotFrom({ b64, bytes, grey, shotW, shotH }, desktop, mode = null) {
+  {
     // model space -> physical -> the virtual units SetCursorPos takes.
     //
     // Half a model pixel, added back. A model pixel covers kx screen pixels,
@@ -348,13 +381,13 @@ export class Screen {
     });
 
     return {
-      b64: buffer.toString('base64'),
+      b64,
       mime: 'image/jpeg',
-      bytes: buffer.length,
+      bytes,
       grey,
       width: shotW,
       height: shotH,
-      mode: this.mode,
+      mode,
       scale: desktop.scale,
       physical: { width: desktop.width, height: desktop.height },
       raw: desktop,
@@ -362,15 +395,5 @@ export class Screen {
       toPhysical,
       physToScreen,
     };
-  }
-
-  /** Title of whatever is in front, for the activity log. */
-  focusedWindow() {
-    try {
-      const w = Window.all().find((x) => x.isFocused());
-      return w ? `${w.appName()}${w.title() ? ` — ${w.title()}` : ''}` : '';
-    } catch {
-      return '';
-    }
   }
 }

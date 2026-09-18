@@ -35,6 +35,7 @@
 
 import { createRequire } from 'node:module';
 import { Screen } from './screen.mjs';
+import { RemoteScreen } from './screen-remote.mjs';
 import { WHEEL_DELTA } from './scroll.mjs';
 
 const require = createRequire(import.meta.url);
@@ -90,14 +91,21 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
   }
 
   // --- eyes ---------------------------------------------------------------
-  const screen = new Screen();
+  /* Seeing happens on a thread of its own (screen-remote.mjs). A capture is
+     a third of a second of solid work, and on this thread that is a third of
+     a second the pointer spends frozen mid-glide — measured at 641ms of
+     stall in a 337ms movement. `local` stays for the one thing that has to
+     answer instantly and costs nothing: the title of the window in front. */
+  const local = new Screen();
   let vision;
   try {
-    vision = await screen.detect();
+    vision = await local.detect();
   } catch (err) {
     console.warn(`[bridge] the screen could not be read (${err.message})`);
     return null;
   }
+  const screen = (await RemoteScreen.start()) ?? local;
+  if (screen !== local) vision = { ...vision, threaded: true };
 
   // --- hands --------------------------------------------------------------
   let nut;
@@ -134,7 +142,7 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
   const mapKey = (name) => KEY_MAP[String(name).toUpperCase().trim()] ?? null;
   const BUTTON = { left: Button.LEFT, right: Button.RIGHT, middle: Button.MIDDLE };
 
-  const bounds = screen.bounds;
+  const bounds = local.bounds;
   const clampX = (x) => Math.round(Math.max(0, Math.min(bounds.width - 1, x)));
   const clampY = (y) => Math.round(Math.max(0, Math.min(bounds.height - 1, y)));
 
@@ -260,7 +268,7 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
     frame() { return screen.rawDesktop(); },
 
     /** Title of what is in front. Synchronous, for the activity log. */
-    focusedWindow() { return screen.focusedWindow(); },
+    focusedWindow() { return local.focusedWindow(); },
 
     /**
      * Can input reach the desktop at all right now?
@@ -413,12 +421,12 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
 
     wait(ms = 500) { return sleep(Math.min(Math.max(ms, 0), 5000)); },
 
-    stop() { sense?.stop(); },
+    stop() { sense?.stop(); if (screen !== local) screen.stop(); },
   };
 
   console.log(
     `[bridge] desktop control ready — ${bounds.width}x${bounds.height}, `
-    + `capture via ${vision.mode}${sense ? ', accessibility on' : ''}`,
+    + `capture via ${vision.mode}${vision.threaded ? ' on its own thread' : ''}${sense ? ', accessibility on' : ''}`,
   );
   return surface;
 }
