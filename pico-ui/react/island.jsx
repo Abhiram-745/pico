@@ -76,6 +76,20 @@ function useHover() {
 
   useStoreEvent(['notchHover'], (s) => { told.current = true; setHover(Boolean(s.notchHover)); });
 
+  /* A bridge that has gone away cannot say where the pointer is any more.
+     Trusting it anyway left an island that never opened again, however long
+     you hovered — so the moment the connection drops, the page goes back to
+     judging hover for itself, and hands back to the bridge when it returns
+     and speaks. */
+  useEffect(() => {
+    const onConn = () => {
+      if (document.body.dataset.conn !== 'connected') { told.current = false; setHover(false); }
+    };
+    const watch = new MutationObserver(onConn);
+    watch.observe(document.body, { attributes: true, attributeFilter: ['data-conn'] });
+    return () => watch.disconnect();
+  }, []);
+
   useEffect(() => {
     const page = document.documentElement;
     let timer = null;
