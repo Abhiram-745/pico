@@ -37,6 +37,7 @@ function desktop({ windows, front }) {
     value: '',
     clipboard: '',
     selection: '',       // what ctrl+c would pick up right now
+    drift: 0,            // ambient change: a video, a clock, a notification
     screen: 1,           // bumped whenever something visibly changes
     typed: [],           // [{ text, into }]
     focusCalls: [],
@@ -44,17 +45,37 @@ function desktop({ windows, front }) {
     fgCalls: 0,
     clicksChange: true,
   };
-  const grey = () => new Uint8Array(64).fill((state.screen * 37) % 256);
+  // `drift` is ambient movement nobody asked for — a video frame, a clock
+  // minute, a notification — as distinct from `screen`, which is something
+  // actually happening.
+  const grey = () => new Uint8Array(64).fill(((state.screen * 37) + state.drift) % 256);
+  /* Real RGBA frames, so the region check guide mode now relies on can be
+     exercised: the left band is where the things being pointed at live and
+     only moves when somebody actually does something; the right band is
+     ambient — a video, a clock, a notification. */
+  const RW = 800, RH = 600;
+  const rawFrame = () => {
+    const data = new Uint8Array(RW * RH * 4);
+    for (let y = 0; y < RH; y++) {
+      for (let x = 0; x < RW; x++) {
+        const v = x < 200 ? (10 + ((state.screen * 53) % 200))
+          : x > 400 ? (10 + ((state.drift * 27) % 200)) : 10;
+        const i = ((y * RW) + x) * 4;
+        data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
+      }
+    }
+    return { data, width: RW, height: RH };
+  };
   const shot = () => ({
     b64: '', mime: 'image/jpeg', width: 100, height: 60,
-    physical: { width: 1000, height: 600 }, scale: 1, raw: null, grey: grey(),
+    physical: { width: 1000, height: 600 }, scale: 1, raw: rawFrame(), grey: grey(),
     toPhysical: (x, y) => ({ x, y }), physToScreen: (x, y) => ({ x, y }), toScreen: (x, y) => ({ x, y }),
   });
   const win = (h) => (h ? { ...state.windows.get(h), hwnd: h } : null);
   const computer = {
     state,
     capture: async () => shot(),
-    frame: async () => null,
+    frame: async () => rawFrame(),
     focusedWindow: () => win(state.front)?.title ?? '',
     available: async () => ({ ok: true }),
     foreground: async () => {
@@ -96,16 +117,29 @@ function desktop({ windows, front }) {
 /** A model that answers from a script: each entry is a function of the call. */
 function scripted(script) {
   const calls = [];
+  const retries = [];      // what the model was told off for, per re-ask
   const llm = {
     tiers: { plan: 'plan-model', see: 'see-model', fast: 'fast-model' },
     calls,
+    retries,
     respond: async (req) => {
       const tool = req.tools?.[0]?.function?.name;
       calls.push({ tool, model: req.model, text: req.content?.find((c) => c.type === 'text')?.text ?? '' });
-      const next = script.shift();
-      if (!next) throw new Error(`the script ran out at a "${tool}" call`);
-      const answer = typeof next === 'function' ? next({ tool, req, calls }) : next;
-      return { call: answer, text: '' };
+      // Mirrors LLM.respond: a scripted answer that fails the caller's
+      // checks is re-asked, up to three times, inside this one call.
+      let out = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const next = script.shift();
+        if (!next) throw new Error(`the script ran out at a "${tool}" call`);
+        const answer = typeof next === 'function' ? next({ tool, req, calls }) : next;
+        out = { call: answer, text: '' };
+        const problems = (req.checks ?? [])
+          .map((c) => { try { return c(out); } catch { return [true, '']; } })
+          .filter(([ok, why]) => !ok && why);
+        if (!problems.length) return out;
+        retries.push(problems.map(([, why]) => why));
+      }
+      return { ...out, exhausted: true };
     },
   };
   return llm;
@@ -135,13 +169,13 @@ function run({ computer, llm, task = 'type hello there', hooks = {}, context = {
 }
 
 const NOTEPAD = { hwnd: '100', title: 'Untitled - Notepad', process: 'Notepad' };
-const VIDEO = { hwnd: '200', title: 'Big Buck Bunny - YouTube - Google Chrome', process: 'chrome' };
+const SHEET = { hwnd: '200', title: 'Q3 figures.xlsx - Excel', process: 'excel' };
 
 
 /* --- 1. focus taken once: brought back, and the text still goes in --------- */
 console.log('focus taken once');
 {
-  const computer = desktop({ windows: [NOTEPAD, VIDEO], front: '100' });
+  const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   const llm = scripted([
     plan([{ do: 'Type hello there', kind: 'keyboard' }]),
     // While this decision is being made, the video takes the screen.
@@ -162,7 +196,7 @@ console.log('focus taken once');
 /* --- 2. focus taken twice: stops, and names what took it ------------------- */
 console.log('focus taken twice');
 {
-  const computer = desktop({ windows: [NOTEPAD, VIDEO], front: '100' });
+  const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   const llm = scripted([
     plan([{ do: 'Type hello there', kind: 'keyboard' }]),
     () => { computer.state.front = '200'; return act({ action: 'type', text: 'hello there' }); },
@@ -172,14 +206,14 @@ console.log('focus taken twice');
   await done;
   check('nothing was typed at all', computer.state.typed.length === 0, JSON.stringify(computer.state.typed));
   check('the run stopped', events.phases.at(-1) === 'Stopped', events.phases.join(' > '));
-  check('the summary names the window that took the screen', (events.summaries.at(-1) ?? '').includes('Big Buck Bunny'), events.summaries.at(-1));
+  check('the summary names the window that took the screen', (events.summaries.at(-1) ?? '').includes('Q3 figures'), events.summaries.at(-1));
   check('it did not loop until the turns ran out', llm.calls.length === 3, `${llm.calls.length} model calls`);
 }
 
 /* --- 3. taken between steps, while Halo was only typing --------------------- */
 console.log('focus taken between steps');
 {
-  const computer = desktop({ windows: [NOTEPAD, VIDEO], front: '100' });
+  const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   const llm = scripted([
     plan([{ do: 'Type hello', kind: 'keyboard' }, { do: 'Type there', kind: 'keyboard' }]),
     () => act({ action: 'type', text: 'hello ' }),
@@ -418,10 +452,10 @@ console.log('a model that talks instead of acting');
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
     plan([{ do: 'Type hello there', kind: 'keyboard' }]),
-    () => null,                                            // "I will type it now."
-    () => null,                                            // and again
-    plan([{ do: 'Type hello there', kind: 'keyboard' }]),  // the replan it should force
-    act({ action: 'type', text: 'hello there' }),
+    // Three attempts of prose in one turn: the in-turn retry cannot save
+    // this, so it falls through to the loop's own handling.
+    () => null, () => null, () => null,
+    act({ action: 'type', text: 'hello there' }),          // the next turn, done properly
     { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
   ]);
   const { done, events } = run({ computer, llm });
@@ -429,6 +463,8 @@ console.log('a model that talks instead of acting');
 
   check('a step with no action is not marked done',
     computer.state.typed.length === 1, JSON.stringify(computer.state.typed));
+  check('the model was re-asked inside the turn before giving up',
+    llm.retries.length === 3, `${llm.retries.length} re-asks`);
   check('the text really went in',
     computer.state.typed[0]?.text === 'hello there', JSON.stringify(computer.state.typed));
   check('and it said why nothing happened',
@@ -441,12 +477,12 @@ console.log('opening from the plan');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Open youtube.com', kind: 'open', url: 'https://www.youtube.com' },
+    plan([{ do: 'Open the reports site', kind: 'open', url: 'https://reports.example.com' },
       { do: 'Type ssuazo', kind: 'keyboard' }]),
     act({ action: 'type', text: 'ssuazo' }),
     { name: 'report', args: { succeeded: true, summary: 'Searched.' } },
   ]);
-  const { done, events } = run({ computer, llm, task: 'open youtube.com and search ssuazo' });
+  const { done, events } = run({ computer, llm, task: 'open the reports site and search ssuazo' });
   await done;
 
   const acts = llm.calls.filter((c) => c.tool === 'act');
@@ -465,7 +501,7 @@ console.log('opening from the plan');
    ------------------------------------------------------------------------ */
 console.log('carrying a value between apps');
 {
-  const computer = desktop({ windows: [NOTEPAD, VIDEO], front: '100' });
+  const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   computer.state.selection = 'ORDER-99312';
   const filler = (n) => ({ do: `Type line ${n}`, kind: 'keyboard' });
   const llm = scripted([
@@ -556,6 +592,168 @@ console.log('notes');
   ]);
   const { done } = run({ computer, llm, task: 'type the invoice total' });
   await done;
+}
+
+
+/* --- a job that spans two windows ----------------------------------------
+   The shape of most real desktop work, and the one the loop used to treat
+   as an attack: one workWindow, and anything else coming to the front was
+   theft — put back once, and the second time the run stopped and named it.
+   A run told to move something from Notepad into the browser had to fight
+   its own destination.
+   ------------------------------------------------------------------------ */
+console.log('working across two windows');
+{
+  const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
+  computer.state.selection = 'the quarterly figure';
+  const llm = scripted([
+    plan([{ do: 'Copy the figure', kind: 'keyboard' },
+      { do: 'Go to the spreadsheet', kind: 'keyboard' },
+      { do: 'Paste it there', kind: 'keyboard' },
+      { do: 'Go back to Notepad', kind: 'keyboard' }]),
+    act({ action: 'copy', remember_as: 'figure' }),
+    act({ action: 'switch_to', window: 'Excel' }),
+    act({ action: 'paste' }),
+    act({ action: 'switch_to', window: 'Notepad' }),
+    { name: 'report', args: { succeeded: true, summary: 'Moved it across and came back.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'copy the figure into the spreadsheet' });
+  await done;
+
+  check('it switched windows instead of calling it theft',
+    !events.audits.some((a) => a.e === 'focus_stolen'),
+    JSON.stringify(events.audits.filter((a) => a.e === 'focus_stolen')));
+  check('the run was not stopped',
+    events.phases.at(-1) === 'Completed', events.phases.join(' > '));
+  check('it pasted into the window it switched to',
+    computer.state.typed.some((t) => t.text === 'the quarterly figure' && t.into === '200'),
+    JSON.stringify(computer.state.typed));
+  check('and ended back in Notepad', computer.state.front === '100', computer.state.front);
+}
+
+/* --- switching to something that is not open ------------------------------ */
+console.log('switching to a window that is not there');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Go to Excel', kind: 'keyboard' }]),
+    act({ action: 'switch_to', window: 'Excel' }),
+    ({ calls }) => {
+      const seen = calls.at(-1).text;
+      check('it says so, and lists what is actually open',
+        /no open window matching/.test(seen) && /Notepad/.test(seen), seen.slice(-300));
+      return { name: 'step_done', args: {} };
+    },
+    { name: 'report', args: { succeeded: false, summary: 'Excel was not open.' } },
+  ]);
+  // Not "go to excel": that phrasing is a request to OPEN something, and the
+  // planner rightly adds an open step for it. This is about switching to a
+  // window that is not there.
+  const { done } = run({ computer, llm, task: 'put the total in the spreadsheet window' });
+  await done;
+}
+
+/* --- saying what you expect, and being asked about it --------------------
+   "The screen changed" is not the question. A click one row out changes it
+   just as convincingly as a click on the right row.
+   ------------------------------------------------------------------------ */
+console.log('expectation is fed back');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Click the address bar', kind: 'pointer' }, { do: 'Type it', kind: 'keyboard' }]),
+    act({ action: 'click', x: 20, y: 8, target: 'the address bar', expect: 'the address bar is focused and empty' }),
+    ({ calls }) => {
+      const seen = calls.at(-1).text;
+      check('the next turn is shown what was expected',
+        seen.includes('the address bar is focused and empty'), seen.slice(-400));
+      check('and is told to check it before going on',
+        /check that is what actually happened/.test(seen), seen.slice(-400));
+      return act({ action: 'type', text: 'halo.dev' });
+    },
+    { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'put halo.dev in the address bar' });
+  await done;
+}
+
+
+/* --- guide mode does not mistake a video for the person ------------------
+   The step ended on "any part of the screen looks different", which on a
+   real desktop is not a signal: a video playing, a clock minute rolling
+   over, a notification sliding in. Guide mode would walk itself through a
+   whole plan while the person was still reading the first instruction.
+   ------------------------------------------------------------------------ */
+console.log('guide mode and a screen that moves on its own');
+{
+  const touched = [];
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  for (const m of ['click', 'doubleClick', 'type', 'keypress', 'drag', 'wheel']) {
+    computer[m] = async () => { touched.push(m); };
+  }
+  const pointed = [];
+  const guide = {
+    point: (x, y, words) => { pointed.push({ x, y, words }); return true; },
+    say: (words) => { pointed.push({ words }); return true; },
+    hide: () => { pointed.push({ hidden: true }); return true; },
+  };
+
+  // Something on screen keeps twitching, and nobody touches the machine.
+  const ticking = setInterval(() => { computer.state.drift = (computer.state.drift + 1) % 7; }, 40);
+
+  const shown = act({ action: 'click', x: 40, y: 20, target: 'the Send button' });
+  const llm = scripted([
+    plan([{ do: 'Click the Send button', kind: 'pointer' }]),
+    shown, shown,
+    plan([{ do: 'Click the Send button', kind: 'pointer' }]),   // the re-plan a miss forces
+    shown, shown,
+    { name: 'report', args: { succeeded: false, summary: 'You did not do it.' } },
+  ]);
+  const { done, events } = run({
+    computer, llm, task: 'send it', context: { guide, patienceMs: 250 },
+  });
+  await done;
+  clearInterval(ticking);
+
+  check('nothing was touched', touched.length === 0, touched.join(','));
+  check('the twitching never counted as the person acting',
+    events.plans.every((p) => (p.steps || []).every((st) => st.status !== 'done')),
+    JSON.stringify(events.plans.map((p) => (p.steps || []).map((st) => st.status))));
+  check('it still pointed at the thing', pointed.some((p) => /Send/i.test(String(p.words))),
+    JSON.stringify(pointed.slice(0, 3)));
+}
+
+
+/* --- a bad answer is corrected inside the turn ---------------------------
+   Ported from Agent-S's call_llm_formatted: rather than spending a whole
+   round trip discovering the answer was unusable and another correcting
+   it, the answer is checked before the turn returns and the model is told
+   exactly what was wrong. On a free model that is the difference between a
+   step taking four seconds and twenty.
+   ------------------------------------------------------------------------ */
+console.log('a bad answer is put right without spending a turn');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Click the address bar', kind: 'pointer' }]),
+    () => null,                                                   // prose, no tool call
+    act({ action: 'click', target: 'the address bar' }),          // no coordinates
+    act({ action: 'click', x: 30, y: 15, target: 'the address bar' }),   // usable
+    { name: 'report', args: { succeeded: true, summary: 'Focused it.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'focus the address bar' });
+  await done;
+
+  check('it was told to call a tool',
+    llm.retries.flat().some((w) => /call exactly one tool/i.test(w)),
+    JSON.stringify(llm.retries));
+  check('and then told the click needed coordinates',
+    llm.retries.flat().some((w) => /needs x and y/i.test(w)),
+    JSON.stringify(llm.retries));
+  check('all three attempts were one turn, not three',
+    llm.calls.filter((c) => c.tool === 'act').length === 1,
+    `${llm.calls.filter((c) => c.tool === 'act').length} act turns`);
+  check('the step finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

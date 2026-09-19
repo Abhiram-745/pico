@@ -441,7 +441,56 @@ export class LLM {
    * @param {string} [req.effort] reasoning effort
    * @returns {Promise<{call:{name,args}|null, text:string, usage:object|null}>}
    */
-  async respond({ model, system, content, tools, effort = 'low', maxTokens = 3000, signal }) {
+  /**
+   * One turn, and it has to come back usable.
+   *
+   * Asking for a tool and being handed prose instead is the commonest way a
+   * smaller model fails, and it used to cost a whole round trip to find
+   * out: the loop noticed next turn, said so, and asked again from the top
+   * with a fresh screenshot. Two calls and several seconds to recover from
+   * a mistake the model would have fixed immediately if anyone had told it.
+   *
+   * So the answer is checked before it is returned, and a failed check is
+   * put back to the model with the specific complaint attached — up to
+   * three attempts, inside the one turn the caller asked for. Adapted from
+   * Agent-S's call_llm_formatted (Apache-2.0, simular-ai/Agent-S).
+   *
+   * @param {Array<(out:object) => [boolean, string]>} checks
+   *   each returns [ok, what to say if not]
+   */
+  async respond({ checks = [], ...req }) {
+    const MAX_ATTEMPTS = 3;
+    let extra = [];
+    let out = null;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      out = await this._respondOnce({ ...req, content: [...req.content, ...extra] });
+      if (!checks.length) return out;
+
+      const problems = [];
+      for (const check of checks) {
+        let ok = true;
+        let says = '';
+        try { [ok, says] = check(out); } catch { ok = true; }
+        if (!ok && says) problems.push(says);
+      }
+      if (!problems.length) return { ...out, attempts: attempt + 1 };
+
+      this.onRetry?.(attempt + 1, problems);
+      if (attempt === MAX_ATTEMPTS - 1) break;
+
+      const said = String(out?.text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      extra = [{
+        type: 'text',
+        text: 'Your previous answer could not be used, and you are answering again to replace '
+          + `it. Do not mention this message.${said ? ` You said: "${said}".` : ''} Fix these: `
+          + problems.map((p) => `- ${p}`).join(' '),
+      }];
+    }
+    return { ...out, attempts: MAX_ATTEMPTS, exhausted: true };
+  }
+
+  async _respondOnce({ model, system, content, tools, effort = 'low', maxTokens = 3000, signal }) {
     const useModel = model || this.tiers.see;
 
     if (!this._responses) {
@@ -500,18 +549,18 @@ export class LLM {
       // No Responses API behind this address: use the other one from now on.
       if (res.status === 404 && !/model/i.test(message)) {
         this._responses = false;
-        return this.respond({ model: useModel, system, content, tools, effort, maxTokens, signal });
+        return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens, signal });
       }
       // The effort was refused: step it down and remember what worked.
       if (res.status === 400 && asked && /reasoning|effort/i.test(message)) {
         this._effort.set(useModel, EFFORT_FALLBACK[asked] ?? null);
-        return this.respond({ model: useModel, system, content, tools, effort, maxTokens, signal });
+        return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens, signal });
       }
       // Full detail refused: this model gets high detail from now on.
       if (res.status === 400 && /detail/i.test(message) && !this._noOriginal.has(useModel)
         && content.some((c) => c.type === 'image' && c.detail === 'original')) {
         this._noOriginal.add(useModel);
-        return this.respond({ model: useModel, system, content, tools, effort, maxTokens, signal });
+        return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens, signal });
       }
       throw this._error(res.status, json);
     }
@@ -519,7 +568,7 @@ export class LLM {
     // Reasoning can use the whole budget and leave nothing for the answer.
     // Once, with more room, rather than failing a step over it.
     if (json?.status === 'incomplete' && json?.incomplete_details?.reason === 'max_output_tokens' && maxTokens < 12000) {
-      return this.respond({ model: useModel, system, content, tools, effort, maxTokens: maxTokens * 2, signal });
+      return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens: maxTokens * 2, signal });
     }
 
     const output = Array.isArray(json?.output) ? json.output : [];

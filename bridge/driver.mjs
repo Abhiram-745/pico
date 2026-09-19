@@ -99,7 +99,7 @@ const signature = (a) =>
  */
 const UNCHANGED_BELOW = 1.2;   // mean grey-level difference, 0-255
 const CELL_CHANGED_AT = 16;    // one region of the screen, clearly different
-function sameScreen(a, b) {
+function sameScreen(a, b, factor = 1) {
   if (!a || !b || a.length !== b.length) return false;
   let sum = 0;
   let peak = 0;
@@ -108,7 +108,13 @@ function sameScreen(a, b) {
     sum += d;
     if (d > peak) peak = d;
   }
-  return (sum / a.length) < UNCHANGED_BELOW && peak < CELL_CHANGED_AT;
+  /* `factor` raises the bar for what counts as different. Left at 1
+     everywhere the loop judges its own actions — there, the question is
+     "did anything at all happen", and the answer should be yes for a
+     checkbox filling in. Guide mode asks the opposite question of a screen
+     nobody is supposed to be touching, where a video, a clock or a
+     notification would otherwise answer it. */
+  return (sum / a.length) < UNCHANGED_BELOW * factor && peak < CELL_CHANGED_AT * factor;
 }
 
 /**
@@ -125,14 +131,14 @@ const POINTER = new Set(['click', 'double_click', 'right_click', 'middle_click',
 /* copy and paste are ctrl+c and ctrl+v: they go to whatever has keyboard
    focus, so they need the same focus guards as anything else typed. */
 const KEYBOARD = new Set(['type', 'key', 'copy', 'paste']);
-const OPENING = new Set(['open_app', 'open_url']);
+const OPENING = new Set(['open_app', 'open_url', 'switch_to']);
 
 /**
  * Actions that can legitimately put a different window in front: a click
  * that opens a dialog, Enter on a link, opening an app. After anything else
  * — typing, scrolling, waiting — a new window in front is not Halo's doing.
  */
-const MAY_BRING_WINDOW = new Set(['click', 'double_click', 'right_click', 'middle_click', 'drag', 'key', 'open_app', 'open_url']);
+const MAY_BRING_WINDOW = new Set(['click', 'double_click', 'right_click', 'middle_click', 'drag', 'key', 'open_app', 'open_url', 'switch_to']);
 
 /** How many identical actions in a row before the run is called stuck. */
 const STUCK_AFTER = 4;
@@ -439,7 +445,8 @@ const ACT_TOOLS = [
           action: {
             type: 'string',
             enum: ['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag',
-              'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste'],
+              'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste',
+              'switch_to'],
           },
           target: {
             type: 'string',
@@ -472,6 +479,13 @@ const ACT_TOOLS = [
           },
           app: { type: 'string', description: 'For "open_app": the app\'s name, as the person would say it.' },
           url: { type: 'string', description: 'For "open_url": the full web address, e.g. https://www.youtube.com.' },
+          window: {
+            type: 'string',
+            description: 'For "switch_to": enough of the target window title to pick it out '
+              + 'of the list of open windows you were given, e.g. "Gmail" or "Untitled - '
+              + 'Notepad". Use this to go back to a window that is already open rather than '
+              + 'opening a second copy of it.',
+          },
           paste_text: {
             type: 'string',
             description: 'For "paste": text to put on the clipboard first, then paste. Use this '
@@ -483,6 +497,14 @@ const ACT_TOOLS = [
             description: 'For "copy": a short name to file the copied text under, e.g. '
               + '"order number". You will be shown it under that name for the rest of the run, '
               + 'in full, however many steps later you need it.',
+          },
+          expect: {
+            type: 'string',
+            description: 'What you will SEE on screen if this action worked — the one thing that '
+              + 'will be different, in a few words: "the address bar is focused and empty", "a '
+              + 'Save dialog opens", "the row for March is highlighted". You are shown this back '
+              + 'next turn alongside the new screenshot, so you can tell whether it actually '
+              + 'happened. Say what will be visible, not what you intend.',
           },
           note: {
             type: 'string',
@@ -546,13 +568,76 @@ const ACT_TOOLS = [
   },
 ];
 
-const ACT_SYSTEM = (shot, front) => [
+/* --------------------------------------------------------------------------
+   What a usable answer looks like
+
+   Checked before the turn returns, so a model that answers badly is told
+   exactly what was wrong and asked again inside the same turn — three
+   attempts, one screenshot, no turn spent. Before this, a bad answer cost a
+   whole round trip to discover and another to correct, which on a free
+   model is the difference between a step taking four seconds and twenty.
+
+   Each check returns [ok, what to say when it is not]. The wording is
+   addressed to the model and says what to do, not what it did.
+
+   The pattern is Agent-S's call_llm_formatted and its formatters.py
+   (Apache-2.0, simular-ai/Agent-S); the checks themselves are Halo's, being
+   about Halo's tools.
+   -------------------------------------------------------------------------- */
+const NEEDS_POINT = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'scroll']);
+const KNOWN_ACTIONS = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag',
+  'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste', 'switch_to']);
+
+const ACT_CHECKS = [
+  (out) => [Boolean(out?.call),
+    'You must call exactly one tool. Describing what you would do does not do it — '
+    + 'call act, step_done, ask or handover now.'],
+
+  (out) => {
+    if (out?.call?.name !== 'act') return [true, ''];
+    const t = out.call.args?.action;
+    return [KNOWN_ACTIONS.has(t),
+      `"${t ?? 'nothing'}" is not an action Halo has. Use one of: ${[...KNOWN_ACTIONS].join(', ')}.`];
+  },
+
+  (out) => {
+    const a = out?.call?.args;
+    if (out?.call?.name !== 'act' || !NEEDS_POINT.has(a?.action)) return [true, ''];
+    return [Number.isFinite(a.x) && Number.isFinite(a.y),
+      `"${a.action}" is aimed at the screen, so it needs x and y in screenshot pixels, at the `
+      + 'middle of the thing you mean. Look at where it actually is in the image and give both.'];
+  },
+
+  (out) => {
+    const a = out?.call?.args;
+    if (out?.call?.name !== 'act') return [true, ''];
+    if (a?.action === 'type') return [Boolean(String(a.text ?? '')), 'A "type" action needs the text to type.'];
+    if (a?.action === 'key') return [Array.isArray(a.keys) && a.keys.length > 0,
+      'A "key" action needs "keys", e.g. ["ctrl","l"] or ["enter"].'];
+    if (a?.action === 'switch_to') return [Boolean(String(a.window ?? a.app ?? a.target ?? '')),
+      'A "switch_to" action needs "window": part of the title of an already-open window.'];
+    return [true, ''];
+  },
+
+  (out) => {
+    const a = out?.call?.args;
+    if (out?.call?.name !== 'act') return [true, ''];
+    return [Boolean(String(a?.why ?? '').trim()),
+      'Every action needs "why": one short plain sentence, written to the person watching, '
+      + 'saying what you are doing and what for.'];
+  },
+];
+
+const ACT_SYSTEM = (shot, front, windows = []) => [
   'You operate a Windows 11 desktop, one action at a time.',
   '',
   `The screenshot is ${shot.width} by ${shot.height} pixels. Give every coordinate`,
   'in that space, measured from its top-left corner, at the middle of the thing',
   'you mean. Look at where it actually is in the image.',
   front ? `In front right now: ${front}.` : '',
+  /* The model cannot switch to a window it does not know is there. This is
+     the same list the planner gets, and without it "switch_to" is a guess. */
+  windows.length ? `Other windows open: ${windows.join('; ')}.` : '',
   '',
   'For anything aimed at the screen, write "target" first: the thing\'s visible',
   'text or icon, what kind of control it is, and where it is. Halo uses that to',
@@ -567,6 +652,12 @@ const ACT_SYSTEM = (shot, front) => [
   'bar — that searches the web for the name. If you do use the address bar',
   '(ctrl+l), type a full address such as youtube.com.',
   '',
+  'GOING BACK TO A WINDOW THAT IS ALREADY OPEN: use "switch_to" with enough',
+  'of its title to pick it out of the list above. That is how you move',
+  'between the windows a job spans — do not open a second copy, and do not',
+  'alt-tab blind. Working in two or three windows at once is normal and',
+  'nothing is wrong when the front window changes because you changed it.',
+  '',
   'MOVING ANYTHING BETWEEN APPS, USE THE CLIPBOARD — do not read it off the',
   'screen and retype it. Select it, "copy", and give "remember_as" a short',
   'name; you are shown the whole thing under that name for the rest of the',
@@ -577,6 +668,14 @@ const ACT_SYSTEM = (shot, front) => [
   'paragraph, a number that must be right. Put it in "paste_text" and it',
   'arrives in one go instead of a character at a time, and cannot be',
   'mistyped. Short, ordinary text is still fine to "type".',
+  '',
+  'SAY WHAT YOU EXPECT, EVERY TIME, in "expect": the one thing that will be',
+  'different on screen if the action worked. Next turn you are shown it',
+  'beside the new screenshot. Check it before doing anything else. A click',
+  'that lands one row out changes the screen just as convincingly as one',
+  'that lands right, so "something changed" proves nothing — only you can',
+  'tell whether the right thing changed. If it did not, say so and put it',
+  'right; do not carry on from a wrong turn and do not tick the step off.',
   '',
   'WHAT YOU WILL NEED LATER, PUT IN "note". You are shown your notes every',
   'turn for the whole run, and the screen you are looking at now will be',
@@ -923,6 +1022,99 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   let replans = 0;            // after things going wrong
   let corrections = 0;        // after the person said something
   let thefts = 0;             // times another window took the screen
+  let pendingExpect = null;   // what the last action said would be true now
+
+  /* --- the windows this job is being done in -------------------------------
+     There used to be exactly one, `workWindow`, and any other window coming
+     to the front was theft: put back once, and the second time the run
+     stopped and named it. That is right for a notification stealing the
+     keyboard mid-sentence, and exactly wrong for the thing most real jobs
+     are made of — read it here, write it there. A run told to put a figure
+     from a spreadsheet into an email had to treat the email as an intruder.
+
+     So the run keeps the set of windows it is legitimately working in:
+     whatever it started in, anything it opened, and anything it switched to
+     on purpose. A window in that set coming forward is the job. Everything
+     else is still theft, and still stops the run the second time.
+     -------------------------------------------------------------------- */
+  const taskWindows = new Map();   // hwnd (as a string) -> title, for the log
+  let windowCache = [];            // what is open, as of the last look
+
+  /** Work in this window from now on, and remember the run is entitled to it. */
+  const useWindow = (w) => {
+    if (!w?.hwnd || isHaloWindow(w.title)) return;
+    workWindow = w;
+    taskWindows.set(String(w.hwnd), w.title ?? '');
+  };
+
+  /** Is this window one the job is being done in, rather than an interruption? */
+  const ours = (w) => Boolean(w?.hwnd) && taskWindows.has(String(w.hwnd));
+
+  if (workWindow) useWindow(workWindow);   // whatever the job started in
+
+  /**
+   * The titles of everything else open, for the step prompt.
+   *
+   * Refreshed each turn rather than taken from the plan's snapshot: windows
+   * the run itself opened are the ones it is most likely to want back, and
+   * those did not exist when the plan was written. Falls back to the
+   * planner's list if the accessibility layer is not there.
+   */
+  const openTitles = (frontTitle) => {
+    const seen = [];
+    try {
+      for (const w of windowCache) {
+        if (!w.title || w.title === frontTitle || isHaloWindow(w.title)) continue;
+        seen.push(short(w.title, 50));
+        if (seen.length >= 8) break;
+      }
+    } catch { /* the turn can do without */ }
+    return seen.length ? seen : facts.windows.filter((t) => t !== frontTitle).slice(0, 8);
+  };
+
+  /**
+   * Go to a window that is already open, by name.
+   *
+   * Without this the only way back to an application was to "open" it
+   * again, which works but goes the long way round — and for a job moving
+   * between two windows of the same application it does not work at all.
+   * Matched loosely against the titles Windows reports, because the model
+   * is working from a list of titles and a tab name changes under it.
+   */
+  const switchTo = async (wanted) => {
+    const want = String(wanted || '').trim().toLowerCase();
+    if (!want) return { said: 'nothing was switched to: no window was named' };
+
+    let listed = [];
+    try { listed = (await sense?.windows()) ?? []; } catch { /* fall back to what is known */ }
+    const open = listed
+      .filter((w) => !w.minimized && !w.tool && !isHaloWindow(w.title) && w.title && w.title !== 'Program Manager');
+
+    // The closest thing to what was asked for: a title that contains it,
+    // then a title contained by it, preferring the shortest match so
+    // "Notepad" does not land on a window that merely mentions it.
+    const norm = (t) => String(t).toLowerCase();
+    const hits = open.filter((w) => norm(w.title).includes(want))
+      .concat(open.filter((w) => want.includes(norm(w.title)) && !norm(w.title).includes(want)))
+      .sort((a, b) => a.title.length - b.title.length);
+    const target = hits[0];
+
+    if (!target) {
+      return {
+        said: `there is no open window matching "${wanted}". Open windows: `
+          + `${open.slice(0, 8).map((w) => short(w.title, 40)).join('; ') || 'none'}. `
+          + 'Open it instead, or name one of these',
+      };
+    }
+    const ok = await computer.focus(target.hwnd).catch(() => false);
+    await computer.wait(220);
+    const now = await computer.foreground().catch(() => null);
+    if (!ok || (now?.hwnd && String(now.hwnd) !== String(target.hwnd))) {
+      return { said: `could not bring "${short(target.title, 40)}" to the front` };
+    }
+    useWindow(now?.hwnd ? now : { hwnd: target.hwnd, title: target.title, process: target.process });
+    return { ok: true, said: `switched to ${short(target.title, 40)}` };
+  };
   let seenFront = front;      // what was in front when Halo last looked
   let lastActionType = null;
   let arrivalChecked = false; // a window that arrived after Halo looked, looked at once
@@ -1013,7 +1205,9 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   };
 
   /** How long to wait for the person before asking whether they are stuck. */
-  const PATIENCE_MS = 90_000;
+  /* Overridable so the guide-mode tests do not have to wait a real minute
+     and a half to prove that nothing happened. */
+  const PATIENCE_MS = Number(context.patienceMs) > 0 ? Number(context.patienceMs) : 90_000;
 
   const showTheWay = async (action, step) => {
     const words = instructionFor(action);
@@ -1028,10 +1222,27 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     onAction({ type: 'Guide', detail: words });
     onAudit('guided', { metadata: { step: step.do, said: words } });
 
-    /* Waiting for a person, not for a machine: the screen changing is the
-       only sign that counts, and they are allowed to take their time. Skip
-       and corrections still reach the run while it waits. */
+    /* Waiting for a person, not for a machine: they are allowed to take
+       their time, and skip and corrections still reach the run while it
+       waits. Ends when they have done it.
+
+       Deciding they have done it used to be "any part of the screen looks
+       different", which on a real desktop is not a signal at all: a video
+       playing, a clock minute rolling over, a notification sliding in, a
+       caret blinking somewhere — each of those ended the step and moved the
+       arrow on to the next one while the person was still reading the first.
+       Guide mode would walk itself through a whole plan untouched.
+
+       So the question is asked where the answer actually is. If there is a
+       point being indicated, the pixels around it are what change when the
+       thing there is used — a menu opens, a field takes a caret, a button
+       goes down. Only with nothing to point at does it fall back to the
+       whole screen, and then it wants a much larger change than before. */
     const before = shot.grey;
+    const beforeRaw = shot.raw;
+    const near = where && Number.isFinite(action.x) && Number.isFinite(action.y)
+      ? shot.toPhysical(action.x, action.y)
+      : null;
     const until = Date.now() + PATIENCE_MS;
     while (Date.now() < until) {
       await computer.wait(500);
@@ -1041,7 +1252,29 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       if (heard === 'error' || heard === 'stopped') return { stopped: true };
       let now;
       try { now = await look(); } catch { continue; }
-      if (!sameScreen(before, now.grey)) {
+
+      let acted;
+      if (near && beforeRaw && now.raw && now.raw.width === beforeRaw.width) {
+        const half = 90;
+        const box = {
+          x: Math.max(0, Math.round(near.x - half)),
+          y: Math.max(0, Math.round(near.y - half)),
+        };
+        box.width = Math.min(now.raw.width - box.x, half * 2);
+        box.height = Math.min(now.raw.height - box.y, half * 2);
+        /* Only the region, when there is one. Using the thing being
+           pointed at repaints at or around it in every case worth naming —
+           a press state, a focus ring, a menu opening under it, a caret —
+           and if they navigate away instead, the window under the point
+           repaints too. Adding "or the screen changed a lot" back in as a
+           safety net would hand the decision straight back to the playing
+           video this exists to ignore. */
+        acted = regionChanged(beforeRaw, now.raw, box, 14);
+      } else {
+        acted = !sameScreen(before, now.grey, 6);
+      }
+
+      if (acted) {
         shot = now;
         return { said: `you did it: ${words.toLowerCase()}`, moved: true };
       }
@@ -1075,6 +1308,13 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   const observe = async (frame) => {
     shot = await look(frame);
     seenFront = await computer.foreground().catch(() => null);
+    /* Kept fresh with the picture, because switching to a window means
+       naming one, and a window opened three steps ago is exactly the one
+       the next step wants back. */
+    try {
+      const listed = (await sense?.windows()) ?? [];
+      windowCache = listed.filter((w) => !w.minimized && !w.tool && w.title && w.title !== 'Program Manager');
+    } catch { /* keep the last list rather than none */ }
     return shot;
   };
 
@@ -1125,7 +1365,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       browser: context.browser ?? null,
     });
     if (r.ok) {
-      if (r.window) workWindow = r.window;
+      if (r.window) useWindow(r.window);
       opened.push(r);
     }
     if (r.outcome === 'corrected') ownNotes.push({ type: 'correct', text: r.correction });
@@ -1313,12 +1553,12 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
        arrived after the picture was taken: look again, once, and carry on in
        it. If not — Halo only typed, or scrolled, or had not done anything
        yet — it came forward on its own, and it is not where the work is. */
-    if (fg?.hwnd && !isHaloWindow(fg.title) && workWindow?.hwnd
+    if (fg?.hwnd && !isHaloWindow(fg.title) && workWindow?.hwnd && !ours(fg)
       && String(fg.hwnd) !== String(workWindow.hwnd) && String(fg.hwnd) !== String(seenFront?.hwnd)) {
       if (lastActionType && MAY_BRING_WINDOW.has(lastActionType)) {
         if (!arrivalChecked) {
           arrivalChecked = true;
-          workWindow = fg;
+          useWindow(fg);
           try { await observe(); } catch (err) { return fail('screen_unavailable', `Halo could not see the screen: ${err.message}`); }
           lastGrey = shot.grey;
           turn -= 1;         // a second look is not a turn spent on the step
@@ -1409,7 +1649,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     try {
       choice = await llm.respond({
         model,
-        system: ACT_SYSTEM(shot, frontTitle),
+        system: ACT_SYSTEM(shot, frontTitle, openTitles(frontTitle)),
         content: [
           {
             type: 'text',
@@ -1427,6 +1667,12 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
               `CURRENT STEP (${stepIndex + 1} of ${steps.length}, ${step.kind}): ${step.do}`,
               'Do only that step.',
               feedback ? `Result of your last action: ${feedback}` : null,
+              pendingExpect
+                ? `Your last action expected: "${pendingExpect}". Look at the screenshot and check `
+                  + 'that is what actually happened. If something else did — the wrong thing '
+                  + 'opened, the wrong row, a menu you did not want — put it right before going '
+                  + 'on rather than carrying on from it.'
+                : null,
               repeats > 0
                 ? `Your last attempt (${describe(lastAction)}) changed nothing on screen. Do it a `
                   + 'different way, or call step_done if it is already the case.'
@@ -1438,10 +1684,12 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         tools: ACT_TOOLS,
         effort: 'low',
         maxTokens: 3000,
+        checks: ACT_CHECKS,
       });
     } catch (err) {
       return fail('model_error', err.message);
     }
+    pendingExpect = null;      // asked about once, not every turn after
     if (!(await gate())) return;
 
     // Anything said while the model was deciding outranks what it decided.
@@ -1718,7 +1966,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       // The same click, found stale once already, is clicked this time: a
       // video or an animation under the target is always "changing", and
       // must not make it unclickable.
-      result = await execute({ computer, sense, shot, action, openThing, trustStale: staleSignature === sig, mayRefuse: misfireStep !== stepIndex });
+      result = await execute({ computer, sense, shot, action, openThing, switchTo, trustStale: staleSignature === sig, mayRefuse: misfireStep !== stepIndex });
     } catch (err) {
       return fail('action_failed', `That action did not go through: ${err.message}`);
     }
@@ -1800,10 +2048,10 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     /* A different window in front after typing, scrolling or waiting is not
        something those did. Taken while the keys were going in, most likely —
        which is the moment it matters most. */
-    if (seenFront?.hwnd && !isHaloWindow(seenFront.title) && workWindow?.hwnd
+    if (seenFront?.hwnd && !isHaloWindow(seenFront.title) && workWindow?.hwnd && !ours(seenFront)
       && String(seenFront.hwnd) !== String(workWindow.hwnd)) {
       if (MAY_BRING_WINDOW.has(lastActionType)) {
-        workWindow = seenFront;
+        useWindow(seenFront);
       } else {
         const thief = seenFront;
         const target = workWindow;
@@ -1819,15 +2067,36 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         repeats = 0;
         continue;
       }
-    } else if (seenFront?.hwnd && !isHaloWindow(seenFront.title) && !workWindow?.hwnd) {
-      workWindow = seenFront;
+    } else if (seenFront?.hwnd && !isHaloWindow(seenFront.title) && (ours(seenFront) || !workWindow?.hwnd)) {
+      useWindow(seenFront);
     }
 
     const changed = INVISIBLE.has(action.type) || !sameScreen(lastGrey, shot.grey)
       || (action.type === 'scroll' && Math.abs(result?.moved ?? 0) > 0);
-    feedback = result?.said
-      ? `${result.said}${POINTER.has(action.type) || KEYBOARD.has(action.type) ? (changed ? ' — the screen changed.' : ' — nothing visibly changed.') : '.'}`
-      : null;
+
+    /* --- did what you meant to happen, happen? -------------------------
+       "The screen changed" is the only verdict the loop could reach on its
+       own, and it is not the question. A click that lands one row out
+       changes the screen exactly as convincingly as a click that lands
+       right; so does a menu opening where a dialog was wanted. Every
+       failure of that kind used to read as success and the run moved on.
+
+       The loop still cannot judge intent — but the model can, and it is
+       about to look at the screen anyway. So it is asked beforehand what
+       the screen will look like if the action worked, and handed that back
+       next turn beside the picture. Nothing extra is called: the check
+       rides along on the turn that was going to happen regardless, and
+       what was a yes/no about pixels becomes a question about the job. */
+    const verdict = POINTER.has(action.type) || KEYBOARD.has(action.type)
+      ? (changed ? ' — the screen changed.' : ' — nothing visibly changed.')
+      : '.';
+    feedback = result?.said ? `${result.said}${verdict}` : null;
+    /* Kept apart from `feedback`, which nextStep() clears — and a step that
+       advanced is the one most worth checking, because advancing is what a
+       wrong click looks like from the loop's side. */
+    pendingExpect = INVISIBLE.has(action.type)
+      ? null
+      : String(action.expect || '').replace(/\s+/g, ' ').trim().slice(0, 160) || null;
 
     /* Does this action finish the step? Only when it is the kind of action
        the step is and it did something. A click while working on "type the
@@ -1837,6 +2106,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     const matches = (step.kind === 'pointer' && POINTER.has(action.type))
       || (step.kind === 'keyboard' && KEYBOARD.has(action.type))
       || (step.kind === 'open' && OPENING.has(action.type) && result?.ok)
+      || (step.kind === 'keyboard' && action.type === 'switch_to' && result?.ok)
       || (step.kind === 'scroll' && action.type === 'scroll' && !SCROLL_WITH_A_PURPOSE.test(step.do));
     const advance = matches && (changed || result?.ok);
 
@@ -1999,7 +2269,7 @@ async function changedUnder(computer, shot, point, half = 60) {
 /**
  * @returns {Promise<{said:string, ok?:boolean, moved?:number, frame?:object, stop?:boolean, stale?:boolean}>}
  */
-async function execute({ computer, sense, shot, action, openThing, trustStale = false, mayRefuse = false }) {
+async function execute({ computer, sense, shot, action, openThing, switchTo, trustStale = false, mayRefuse = false }) {
   const type = action.type;
   const hasPoint = Number.isFinite(action.x) && Number.isFinite(action.y);
 
@@ -2171,6 +2441,9 @@ async function execute({ computer, sense, shot, action, openThing, trustStale = 
 
     case 'open_url':
       return openThing({ url: action.url || '', name: action.target || '' });
+
+    case 'switch_to':
+      return switchTo(action.window || action.app || action.target || '');
 
     default:
       return { said: `"${type}" is not something Halo can do` };

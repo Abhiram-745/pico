@@ -141,3 +141,22 @@ dotnet build Halo.sln -c Release
 Interface work does not need the .NET SDK — see [`pico-ui/README.md`](pico-ui/README.md) to run it standalone, and [`pico-ui/INTEGRATION.md`](pico-ui/INTEGRATION.md) for the WebView2 host contract.
 
 Native behavior must be smoke-tested on Windows. Follow [WINDOWS-TEST.md](WINDOWS-TEST.md) before trusting a new build with real accounts or data.
+
+---
+
+## Acknowledgements
+
+Two mechanisms in the desktop loop are adapted from
+[Agent-S](https://github.com/simular-ai/Agent-S) by Simular AI, used under the
+Apache License 2.0:
+
+- **Checked answers with an in-turn re-ask.** A model's answer is validated
+  before the turn returns, and a failed check goes back to it with the
+  specific complaint attached rather than costing a round trip to discover.
+  After `call_llm_formatted` and `formatters.py`.
+- **A text buffer the agent writes to and is shown every turn**, for things a
+  later step needs that the screen will no longer show. After the grounding
+  agent's `notes` and `save_to_knowledge`.
+
+No Agent-S source is included; both are reimplementations against Halo's own
+tools, screen layer and accessibility grounding.

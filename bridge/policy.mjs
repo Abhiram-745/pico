@@ -129,6 +129,7 @@ export function describe(action = {}) {
     case 'drag': return 'Drag something across the screen';
     case 'type': return 'Enter text';            // never the text itself
     case 'key': return `Press ${(action.keys || []).join('+')}`;
+    case 'switch_to': return 'Switch to another window';
     case 'copy': return 'Copy the selection';
     case 'paste': return 'Paste what was copied';   // never the text itself
     case 'scroll': return 'Scroll the view';
@@ -154,4 +155,5 @@ export const ACTION_PHASE = {
   drag: 'Drag',
   copy: 'Keypress',
   paste: 'Type',
+  switch_to: 'Move',
 };

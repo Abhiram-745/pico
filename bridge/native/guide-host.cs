@@ -66,8 +66,9 @@ static class NativeGuide
 /// a second, and nothing it does can cover anything it is not pointing at.
 class GuideWindow : Form
 {
-    const int W = 470, H = 160;           // device pixels, before scale
+    const int W = 470, H = 200;           // device pixels, before scale
     const float TIP = 16f;                // room round the tip for the ring
+    const float TAIL = 32f;               // the arrow hangs this far below its tip
 
     float scale = 1f;
     float x, y, tx, ty;                   // where it is, where it is going
@@ -110,15 +111,24 @@ class GuideWindow : Form
 
     public void SetScale(float s) { if (s > 0.5f && s < 5f) scale = s; }
 
+    /* One instruction, and short enough to stay inside the bubble: past
+       about this much it wraps to more lines than the bitmap is tall and
+       the end of the sentence is simply not drawn. */
+    static string Fit(string words)
+    {
+        string t = (words ?? "").Trim();
+        return t.Length > 120 ? t.Substring(0, 119) + "…" : t;
+    }
+
     public void Point(float lx, float ly, string words)
     {
         tx = lx * scale; ty = ly * scale;
         if (!visible) { x = tx - 60 * scale; y = ty - 40 * scale; }   // arrive, rather than appear
-        text = words ?? "";
+        text = Fit(words);
         visible = true; talpha = 1f;
     }
 
-    public void Say(string words) { text = words ?? ""; }
+    public void Say(string words) { text = Fit(words); }
 
     public void HideGuide() { talpha = 0f; }
 
@@ -141,9 +151,35 @@ class GuideWindow : Form
         Render(alpha);
     }
 
+    /* Which way the bubble opens.
+
+       It used to open down-and-right always, and the window was placed with
+       the tip a fixed 16px from its top-left corner — with nothing anywhere
+       that knew where the screen ended. Point at a Send button in the
+       bottom-right, or a close button in the top-right, and the words went
+       off the edge of the display: an arrow with no instruction beside it,
+       which in guide mode is the whole of what Halo had to say. Now the
+       side is chosen from the monitor the tip is actually on, so the bubble
+       opens into whatever room there is. */
+    void Sides(out bool flipX, out bool flipY)
+    {
+        var area = Screen.FromPoint(new Point((int)Math.Round(x), (int)Math.Round(y))).WorkingArea;
+        // Room needed to the right of / below the tip for the bubble to fit.
+        float needX = (W - TIP) * scale, needY = (H - TIP) * scale;
+        flipX = (x + needX) > area.Right && (x - needX) >= area.Left;
+        flipY = (y + needY) > area.Bottom && (y - needY) >= area.Top;
+    }
+
     void Render(float a)
     {
         int w = (int)(W * scale), h = (int)(H * scale);
+        bool flipX, flipY;
+        Sides(out flipX, out flipY);
+        // Where the tip sits inside the bitmap. Flipped vertically it needs
+        // TAIL rather than TIP below it, or the arrow's own tail is clipped.
+        float ox = flipX ? (W - TIP) * scale : TIP * scale;
+        float oy = flipY ? (H - TAIL) * scale : TIP * scale;
+
         using (var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb))
         {
             using (var g = Graphics.FromImage(bmp))
@@ -157,16 +193,15 @@ class GuideWindow : Form
                    into a premultiplied surface does not land where the
                    numbers say it should, and an instruction you cannot read
                    over the page behind it is no instruction. */
-                if (a > 0.01f) Draw(g, 1f);
+                if (a > 0.01f) Draw(g, 1f, ox, oy, flipX, flipY);
             }
-            Blit(bmp, (int)Math.Round(x) - (int)(TIP * scale), (int)Math.Round(y) - (int)(TIP * scale), a);
+            Blit(bmp, (int)Math.Round(x) - (int)Math.Round(ox), (int)Math.Round(y) - (int)Math.Round(oy), a);
         }
     }
 
-    void Draw(Graphics g, float a)
+    void Draw(Graphics g, float a, float ox, float oy, bool flipX, bool flipY)
     {
         float s = scale;
-        float ox = TIP * s, oy = TIP * s;          // the tip of the arrow, inside the bitmap
 
         // A soft ring at the tip that breathes, so the eye finds the point.
         float r = (9f + (float)Math.Sin(pulse * 4.2) * 2.2f) * s;
@@ -200,9 +235,12 @@ class GuideWindow : Form
         using (var small = new Font("Segoe UI", 9.5f * s, FontStyle.Regular, GraphicsUnit.Pixel))
         {
             var size = g.MeasureString(text, font, (int)(300 * s));
-            float bx = ox + 18 * s, by = oy + 22 * s;
             float bw = Math.Min(size.Width, 300 * s) + 22 * s;
             float bh = size.Height + 30 * s;
+            // Opening away from whichever edge the tip is near, so the words
+            // are on the screen even when the thing to click is in a corner.
+            float bx = flipX ? ox - 18 * s - bw : ox + 18 * s;
+            float by = flipY ? oy - 22 * s - bh : oy + 22 * s;
             var box = new RectangleF(bx, by, bw, bh);
 
             using (var path = Rounded(box, 10 * s))
