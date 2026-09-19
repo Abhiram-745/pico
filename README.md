@@ -168,10 +168,28 @@ Apache License 2.0:
   concluded something is wrong, where Agent-S asks every turn; on free models
   a call per turn is the latency the loop exists to avoid.
 
+- **Selecting a span of text**, and **holding a modifier across several key
+  taps**. After `highlight_text_span` and `hold_and_press`. Halo selects with
+  a click and a shift-click rather than a drag between two OCR'd points: a
+  drag across text autoscrolls at the edge of the view, becomes a
+  drag-and-drop if it starts inside an existing selection, and does nothing
+  in a control that reads a drag as a gesture.
+
 Not ported: `bbon`. It is offline best-of-N over completed runs — it compares
 whole trajectories from separate result directories and picks a winner, which
 needs the same task run several times over. Halo drives somebody's real
 machine, where the side effects of a run cannot be taken back and tried again.
+
+Also not ported: `generate_text_coords`, which grounds text through
+pytesseract OCR — Halo asks UI Automation what a control actually is, which
+is better than reading the pixels back. And `set_cell_values`, which drives
+LibreOffice Calc over a UNO bridge; the same job on Windows is a clipboard
+paste, which Halo now has.
+
+`call_code_agent` is not ported **yet, and not by oversight**: it executes
+model-written Python and Bash. Agent-S runs inside a disposable OSWorld VM.
+Halo runs on somebody's actual laptop, beside their actual files, so the same
+feature needs an approval boundary and a default of off before it goes in.
 
 No Agent-S source is included; both are reimplementations against Halo's own
 tools, screen layer and accessibility grounding.

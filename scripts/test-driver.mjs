@@ -38,6 +38,8 @@ function desktop({ windows, front }) {
     clipboard: '',
     selection: '',       // what ctrl+c would pick up right now
     drift: 0,            // ambient change: a video, a clock, a notification
+    shiftClicks: [],
+    chords: [],          // [{ hold, press, times }]
     screen: 1,           // bumped whenever something visibly changes
     typed: [],           // [{ text, into }]
     focusCalls: [],
@@ -96,6 +98,11 @@ function desktop({ windows, front }) {
       // into the text field, the way the real ones do.
       if (chord === 'ctrl+c') { state.clipboard = state.selection; return; }
       if (chord === 'ctrl+v') { state.typed.push({ text: state.clipboard, into: state.front }); state.value += state.clipboard; }
+      state.screen += 1;
+    },
+    shiftClick: async (x, y) => { state.shiftClicks.push({ x, y }); state.screen += 1; },
+    holdAndPress: async (hold, press, times = 1) => {
+      state.chords.push({ hold: [...hold], press: [...press], times });
       state.screen += 1;
     },
     readClipboard: async () => state.clipboard,
@@ -858,6 +865,78 @@ console.log('no second opinion on a healthy run');
 
   check('nothing was spent looking back', llm.chats.length === 0,
     `${llm.chats.length} reflection calls`);
+}
+
+
+/* --- selecting a span of text -------------------------------------------
+   Agent-S drags between two OCR'd points. A drag across text autoscrolls
+   the moment it reaches the edge of the view, turns into a drag-and-drop if
+   it starts inside an existing selection, and does nothing at all in a
+   control that reads a drag as a gesture. Click then shift-click costs the
+   same and cannot run away.
+   ------------------------------------------------------------------------ */
+console.log('selecting a span of text');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.selection = 'the second paragraph';
+  const llm = scripted([
+    plan([{ do: 'Select the paragraph', kind: 'pointer' },
+      { do: 'Copy it', kind: 'keyboard' }]),
+    act({ action: 'select_text', x: 12, y: 20, to_x: 70, to_y: 34, target: 'the second paragraph' }),
+    act({ action: 'copy', remember_as: 'paragraph' }),
+    { name: 'report', args: { succeeded: true, summary: 'Selected and copied it.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'copy the second paragraph' });
+  await done;
+
+  check('it clicked where the text starts',
+    computer.state.shiftClicks.length === 1, JSON.stringify(computer.state.shiftClicks));
+  check('and shift-clicked where it ends, rather than dragging',
+    computer.state.shiftClicks[0]?.x === 70 && computer.state.shiftClicks[0]?.y === 34,
+    JSON.stringify(computer.state.shiftClicks));
+  check('then the selection was copied',
+    computer.state.clipboard === 'the second paragraph', computer.state.clipboard);
+}
+
+/* --- a modifier held across several taps --------------------------------- */
+console.log('holding a key across several taps');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Select four lines', kind: 'keyboard' }]),
+    act({ action: 'hold_and_press', hold: ['shift'], press: ['down'], times: 4 }),
+    { name: 'report', args: { succeeded: true, summary: 'Selected four lines.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'select the next four lines' });
+  await done;
+
+  check('shift was held across all four taps',
+    computer.state.chords.length === 1
+      && computer.state.chords[0].hold.join() === 'shift'
+      && computer.state.chords[0].times === 4,
+    JSON.stringify(computer.state.chords));
+  check('and it was not sent as four separate chords',
+    computer.state.chords.length === 1, `${computer.state.chords.length} chords`);
+}
+
+/* --- and a half-given one is put right in the turn ------------------------ */
+console.log('a select_text missing its end point');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Select the paragraph', kind: 'pointer' }]),
+    act({ action: 'select_text', x: 12, y: 20, target: 'the paragraph' }),        // no end
+    act({ action: 'select_text', x: 12, y: 20, to_x: 60, to_y: 30, target: 'the paragraph' }),
+    { name: 'report', args: { succeeded: true, summary: 'Selected it.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'select the paragraph' });
+  await done;
+
+  check('it was told which half was missing',
+    llm.retries.flat().some((w) => /needs to_x and to_y/.test(w)), JSON.stringify(llm.retries));
+  check('and it still only cost one turn',
+    llm.calls.filter((c) => c.tool === 'act').length === 1,
+    `${llm.calls.filter((c) => c.tool === 'act').length} act turns`);
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

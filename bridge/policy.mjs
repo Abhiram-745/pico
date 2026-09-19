@@ -99,7 +99,7 @@ export function assess(action = {}, windowTitle = '') {
   // does, and the rules below weigh what that text says. Copying takes a
   // reading and changes nothing, so it is weighed like looking.
   const commits = ['click', 'double_click', 'right_click', 'middle_click',
-    'drag', 'type', 'key', 'paste'].includes(action.type);
+    'drag', 'type', 'key', 'paste', 'hold_and_press'].includes(action.type);
   if (!commits) return { ...ALLOW };
 
   for (const rule of RULES) {
@@ -130,6 +130,8 @@ export function describe(action = {}) {
     case 'type': return 'Enter text';            // never the text itself
     case 'key': return `Press ${(action.keys || []).join('+')}`;
     case 'switch_to': return 'Switch to another window';
+    case 'hold_and_press': return 'Hold keys and press others';
+    case 'select_text': return 'Select a span of text';
     case 'copy': return 'Copy the selection';
     case 'paste': return 'Paste what was copied';   // never the text itself
     case 'scroll': return 'Scroll the view';
@@ -156,4 +158,6 @@ export const ACTION_PHASE = {
   copy: 'Keypress',
   paste: 'Type',
   switch_to: 'Move',
+  hold_and_press: 'Keypress',
+  select_text: 'Click',
 };

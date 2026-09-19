@@ -127,10 +127,10 @@ function sameScreen(a, b, factor = 1) {
  */
 const INVISIBLE = new Set(['move', 'wait', 'copy']);
 
-const POINTER = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag']);
+const POINTER = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'select_text']);
 /* copy and paste are ctrl+c and ctrl+v: they go to whatever has keyboard
    focus, so they need the same focus guards as anything else typed. */
-const KEYBOARD = new Set(['type', 'key', 'copy', 'paste']);
+const KEYBOARD = new Set(['type', 'key', 'copy', 'paste', 'hold_and_press']);
 const OPENING = new Set(['open_app', 'open_url', 'switch_to']);
 
 /**
@@ -138,7 +138,7 @@ const OPENING = new Set(['open_app', 'open_url', 'switch_to']);
  * that opens a dialog, Enter on a link, opening an app. After anything else
  * — typing, scrolling, waiting — a new window in front is not Halo's doing.
  */
-const MAY_BRING_WINDOW = new Set(['click', 'double_click', 'right_click', 'middle_click', 'drag', 'key', 'open_app', 'open_url', 'switch_to']);
+const MAY_BRING_WINDOW = new Set(['click', 'double_click', 'right_click', 'middle_click', 'drag', 'key', 'open_app', 'open_url', 'switch_to', 'select_text']);
 
 /** How many identical actions in a row before the run is called stuck. */
 const STUCK_AFTER = 4;
@@ -446,7 +446,7 @@ const ACT_TOOLS = [
             type: 'string',
             enum: ['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag',
               'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste',
-              'switch_to'],
+              'switch_to', 'hold_and_press', 'select_text'],
           },
           target: {
             type: 'string',
@@ -479,6 +479,23 @@ const ACT_TOOLS = [
           },
           app: { type: 'string', description: 'For "open_app": the app\'s name, as the person would say it.' },
           url: { type: 'string', description: 'For "open_url": the full web address, e.g. https://www.youtube.com.' },
+          hold: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'For "hold_and_press": keys held down throughout, e.g. ["shift"] or '
+              + '["ctrl","shift"].',
+          },
+          press: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'For "hold_and_press": keys tapped in order while the others are held, '
+              + 'e.g. ["down"] or ["left","left"].',
+          },
+          times: {
+            type: 'integer',
+            description: 'For "hold_and_press": how many times to repeat the tapped keys, e.g. 4 '
+              + 'to select four lines with shift+down. Defaults to 1.',
+          },
           window: {
             type: 'string',
             description: 'For "switch_to": enough of the target window title to pick it out '
@@ -584,9 +601,10 @@ const ACT_TOOLS = [
    (Apache-2.0, simular-ai/Agent-S); the checks themselves are Halo's, being
    about Halo's tools.
    -------------------------------------------------------------------------- */
-const NEEDS_POINT = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'scroll']);
+const NEEDS_POINT = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'scroll', 'select_text']);
 const KNOWN_ACTIONS = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag',
-  'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste', 'switch_to']);
+  'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste', 'switch_to',
+  'hold_and_press', 'select_text']);
 
 const ACT_CHECKS = [
   (out) => [Boolean(out?.call),
@@ -616,6 +634,17 @@ const ACT_CHECKS = [
       'A "key" action needs "keys", e.g. ["ctrl","l"] or ["enter"].'];
     if (a?.action === 'switch_to') return [Boolean(String(a.window ?? a.app ?? a.target ?? '')),
       'A "switch_to" action needs "window": part of the title of an already-open window.'];
+    if (a?.action === 'hold_and_press') {
+      const press = Array.isArray(a.keys) ? a.keys : a.press;
+      return [Array.isArray(press) && press.length > 0,
+        'A "hold_and_press" action needs "press": the keys to tap, e.g. ["down"], and usually '
+        + '"hold", e.g. ["shift"].'];
+    }
+    if (a?.action === 'select_text') {
+      return [Number.isFinite(a.to_x) && Number.isFinite(a.to_y),
+        'A "select_text" action needs to_x and to_y as well as x and y: where the text ends as '
+        + 'well as where it starts.'];
+    }
     return [true, ''];
   },
 
@@ -657,6 +686,16 @@ const ACT_SYSTEM = (shot, front, windows = []) => [
   'between the windows a job spans — do not open a second copy, and do not',
   'alt-tab blind. Working in two or three windows at once is normal and',
   'nothing is wrong when the front window changes because you changed it.',
+  '',
+  'SELECTING A RUN OF TEXT: use "select_text" with x and y on the first',
+  'character you want and to_x and to_y on the last. That is how you get at',
+  'a sentence, a paragraph or a cell range before copying, deleting or',
+  'replacing it. To select everything in a field, ctrl+a is quicker.',
+  '',
+  'REPEATED KEYS UNDER A MODIFIER: use "hold_and_press", not several "key"',
+  'actions. Selecting four lines is hold ["shift"], press ["down"], times 4.',
+  'Sent as four separate chords the modifier is let go between each one and',
+  'the selection collapses every time, which looks like nothing happening.',
   '',
   'MOVING ANYTHING BETWEEN APPS, USE THE CLIPBOARD — do not read it off the',
   'screen and retype it. Select it, "copy", and give "remember_as" a short',
@@ -2561,6 +2600,47 @@ async function execute({ computer, sense, shot, action, openThing, switchTo, tru
 
     case 'switch_to':
       return switchTo(action.window || action.app || action.target || '');
+
+    case 'hold_and_press': {
+      const hold = Array.isArray(action.hold) ? action.hold : [];
+      const press = Array.isArray(action.keys) ? action.keys : (Array.isArray(action.press) ? action.press : []);
+      if (!press.length) return { said: 'nothing was pressed: "hold_and_press" needs keys to press' };
+      const times = Number.isFinite(action.times) ? action.times : 1;
+      await computer.holdAndPress(hold, press, times);
+      const held = hold.length ? `${hold.join('+')} held while ` : '';
+      return { said: `${held}${press.join(', ')}${times > 1 ? ` ${times} times` : ''}` };
+    }
+
+    /* Selecting a span of text.
+       Two points and a shift-click, not a press-drag between them. Agent-S
+       drags, and a drag across text is the fragile way to do it: it fires
+       an autoscroll the moment it touches the edge of the view, it starts a
+       drag-and-drop instead if it happens to begin inside an existing
+       selection, and it selects nothing at all in a control that treats a
+       drag as a gesture. Click-then-shift-click is what the same span costs
+       in every text control Windows has, and it cannot run away. */
+    case 'select_text': {
+      if (!hasPoint || !Number.isFinite(action.to_x) || !Number.isFinite(action.to_y)) {
+        return { said: 'nothing was selected: "select_text" needs x and y where the text starts, and to_x and to_y where it ends' };
+      }
+      /* The start is settled onto the control the model named, the way any
+         other aimed click is. The end deliberately is not: it is a point
+         inside the same run of text, and snapping it to the centre of
+         whatever element it lands on would move it off the character that
+         was meant and change the size of the selection. */
+      const start = await settle(sense, shot.toPhysical(action.x, action.y), { target: action.target || '' });
+      if (isHaloWindow(start.window?.title)) {
+        return { said: 'nothing was selected: that point is on Halo\'s own bar, not the app behind it' };
+      }
+      const a = shot.physToScreen(start.x, start.y);
+      const endPhysical = shot.toPhysical(action.to_x, action.to_y);
+      const b = shot.physToScreen(endPhysical.x, endPhysical.y);
+
+      await computer.click(a.x, a.y);
+      await computer.wait(60);
+      await computer.shiftClick(b.x, b.y);
+      return { ok: true, said: `selected the text between (${Math.round(action.x)}, ${Math.round(action.y)}) and (${Math.round(action.to_x)}, ${Math.round(action.to_y)})` };
+    }
 
     default:
       return { said: `"${type}" is not something Halo can do` };

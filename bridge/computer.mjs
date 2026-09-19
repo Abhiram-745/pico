@@ -309,6 +309,20 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       await sleep(40);                       // and let it register before moving on
     },
 
+    /** A click with Shift held: extends a selection to here. */
+    async shiftClick(x, y) {
+      if (Number.isFinite(x)) await glide(x, y);
+      await sleep(70);
+      const shift = mapKey('SHIFT');
+      if (shift !== null) await keyboard.pressKey(shift);
+      try {
+        await mouse.click(Button.LEFT);
+      } finally {
+        if (shift !== null) await keyboard.releaseKey(shift).catch?.(() => {});
+      }
+      await sleep(40);
+    },
+
     async doubleClick(x, y) {
       if (Number.isFinite(x)) await glide(x, y);
       await sleep(70);
@@ -441,6 +455,37 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       if (!mapped.length) return;
       await keyboard.pressKey(...mapped);
       await keyboard.releaseKey(...mapped);
+    },
+
+    /**
+     * Hold some keys down, tap others in order underneath them, let go.
+     *
+     * A chord cannot express this. Selecting four lines is Shift held while
+     * Down is tapped four times; stepping back through five words is Ctrl
+     * and Shift held across five taps of Left. Sent as five separate
+     * chords, the modifier is released and re-pressed between each one, and
+     * applications treat that as five unrelated presses — the selection
+     * collapses every time and the run appears to do nothing.
+     */
+    async holdAndPress(hold = [], press = [], times = 1) {
+      const held = hold.map(mapKey).filter((k) => k !== null);
+      const taps = press.map(mapKey).filter((k) => k !== null);
+      if (!taps.length) return;
+      const rounds = Math.min(Math.max(Math.round(times) || 1, 1), 50);
+      if (held.length) await keyboard.pressKey(...held);
+      try {
+        for (let i = 0; i < rounds; i++) {
+          for (const k of taps) {
+            await keyboard.pressKey(k);
+            await keyboard.releaseKey(k);
+            await sleep(12);        // a real key is not instantaneous
+          }
+        }
+      } finally {
+        // Whatever happened, the modifiers must not be left down: a stuck
+        // Ctrl turns the person's next keystroke into a shortcut.
+        if (held.length) await keyboard.releaseKey(...held).catch?.(() => {});
+      }
     },
 
     /** Bring a window to the front, by handle. */
