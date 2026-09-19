@@ -118,13 +118,28 @@ function desktop({ windows, front }) {
 function scripted(script) {
   const calls = [];
   const retries = [];      // what the model was told off for, per re-ask
+  const chats = [];        // plain chat calls, which is how reflection asks
   const llm = {
     tiers: { plan: 'plan-model', see: 'see-model', fast: 'fast-model' },
     calls,
     retries,
+    chats,
+    chat: async (messages) => {
+      chats.push(messages);
+      return 'GOING WRONG - it keeps pressing the same thing and the screen never changes.';
+    },
     respond: async (req) => {
       const tool = req.tools?.[0]?.function?.name;
-      calls.push({ tool, model: req.model, text: req.content?.find((c) => c.type === 'text')?.text ?? '' });
+      calls.push({
+        tool,
+        model: req.model,
+        text: req.content?.find((c) => c.type === 'text')?.text ?? '',
+        history: (req.history ?? []).map((m) => ({
+          role: m.role,
+          text: m.content.filter((c) => c.type === 'text').map((c) => c.text).join(' '),
+          images: m.content.filter((c) => c.type === 'image').length,
+        })),
+      });
       // Mirrors LLM.respond: a scripted answer that fails the caller's
       // checks is re-asked, up to three times, inside this one call.
       let out = null;
@@ -754,6 +769,95 @@ console.log('a bad answer is put right without spending a turn');
     llm.calls.filter((c) => c.tool === 'act').length === 1,
     `${llm.calls.filter((c) => c.tool === 'act').length} act turns`);
   check('the step finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
+}
+
+
+/* --- the run is one conversation, not a series of cold calls -------------
+   Every turn used to restate the task, the plan and a summary of the log,
+   with one screenshot, and the model never saw what it had itself said the
+   turn before. It re-derived its situation from scratch each time, which is
+   slow and is most of why a run could talk itself round in circles.
+   ------------------------------------------------------------------------ */
+console.log('the run is one conversation');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const steps = [];
+  for (let i = 1; i <= 6; i++) steps.push({ do: `Type line ${i}`, kind: 'keyboard' });
+  const llm = scripted([
+    plan(steps),
+    act({ action: 'type', text: 'one ' }),
+    act({ action: 'type', text: 'two ' }),
+    act({ action: 'type', text: 'three ' }),
+    act({ action: 'type', text: 'four ' }),
+    act({ action: 'type', text: 'five ' }),
+    act({ action: 'type', text: 'six ' }),
+    { name: 'report', args: { succeeded: true, summary: 'Typed them.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'type six lines' });
+  await done;
+
+  const acts = llm.calls.filter((c) => c.tool === 'act');
+  const first = acts[0];
+  const last = acts.at(-1);
+
+  check('the first turn carries no history', first.history.length === 0,
+    JSON.stringify(first.history));
+  check('the first turn states the task', /Task: type six lines/.test(first.text), first.text);
+  check('later turns do not restate the task', !/Task: type six lines/.test(last.text), last.text);
+  check('later turns are given the conversation so far', last.history.length >= 4,
+    `${last.history.length} history entries`);
+  check('the history includes what the model itself decided',
+    last.history.some((m) => m.role === 'assistant' && m.text.length > 0),
+    JSON.stringify(last.history.slice(-2)));
+  check('only the newest few screenshots are kept',
+    last.history.reduce((n, m) => n + m.images, 0) <= 3,
+    `${last.history.reduce((n, m) => n + m.images, 0)} images carried`);
+  check('but the older text is still there',
+    last.history.filter((m) => m.role === 'user' && m.images === 0).length > 0,
+    JSON.stringify(last.history.map((m) => `${m.role}:${m.images}`)));
+}
+
+/* --- a second opinion, but only when something is wrong ------------------ */
+console.log('looking back when a run stalls');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clicksChange = false;            // nothing this run does works
+  const stuckAct = act({ action: 'click', x: 25, y: 25, target: 'the toolbar' });
+  const llm = scripted([
+    plan([{ do: 'Click the toolbar', kind: 'pointer' }]),
+    stuckAct, stuckAct, stuckAct, stuckAct,
+    plan([{ do: 'Click the toolbar', kind: 'pointer' }]),
+    stuckAct, stuckAct, stuckAct, stuckAct,
+    { name: 'report', args: { succeeded: false, summary: 'It would not respond.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'click the toolbar' });
+  await done;
+
+  check('it asked for a second opinion once it was stuck', llm.chats.length > 0,
+    `${llm.chats.length} reflection calls`);
+  // The re-plan is what the second opinion is for: it is the decision being
+  // made at the moment the run concluded something was wrong.
+  check('the new plan was made knowing what the second opinion was',
+    llm.calls.some((c) => c.tool === 'replan' && /A second look at the run so far/.test(c.text)),
+    JSON.stringify(llm.calls.filter((c) => c.tool === 'replan').map((c) => c.text.slice(-160))));
+  check('the reflection was recorded', events.audits.some((a) => a.e === 'reflected'),
+    JSON.stringify(events.audits.map((a) => a.e)));
+}
+
+/* --- and not when it is going fine --------------------------------------- */
+console.log('no second opinion on a healthy run');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Type hello', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'hello' }),
+    { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'type hello' });
+  await done;
+
+  check('nothing was spent looking back', llm.chats.length === 0,
+    `${llm.chats.length} reflection calls`);
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

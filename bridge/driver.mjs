@@ -1023,6 +1023,90 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   let corrections = 0;        // after the person said something
   let thefts = 0;             // times another window took the screen
   let pendingExpect = null;   // what the last action said would be true now
+  let reflection = null;      // the last look back over the run, if one was taken
+
+  /* --- the conversation ----------------------------------------------------
+     Every turn used to be a cold call: a fresh prompt restating the task,
+     the plan and a summary of the log, with one screenshot. The model never
+     saw what it had itself said the turn before, so each turn re-derived
+     the situation from scratch — which is slow, and is most of why a run
+     could talk itself round in circles without noticing.
+
+     This is the same alternating user/assistant history Agent-S's worker
+     keeps. What it costs is pictures, so they are what gets trimmed: all
+     the text is kept, and only the newest few screenshots survive. An old
+     screenshot is the least useful thing in the history anyway — it shows
+     a screen that is no longer there — while the reasoning beside it is
+     what stops the same wrong turn being taken twice.
+     -------------------------------------------------------------------- */
+  const KEEP_IMAGES = 3;      // free models pay dearly per picture
+  const KEEP_TURNS = 10;      // and the text is not free either
+  const trajectory = [];      // [{ role, content: [{type:'text'|'image', ...}] }]
+
+  /**
+   * A look back over the run, when something is already going wrong.
+   *
+   * Returns a sentence or two for the next turn to read, or null — never
+   * throws and never stops the run, because a second opinion that can fail
+   * the job is worse than no second opinion.
+   */
+  const lookBack = async (why) => {
+    try {
+      const out = await llm.chat([
+        { role: 'system', content: REFLECT_SYSTEM },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                `The task: ${brief}`,
+                `The plan: ${steps.map((st, i) => `${i + 1}. ${st.do}${st.status === 'pending' ? '' : ` (${st.status})`}`).join(' ')}`,
+                `It is on step ${stepIndex + 1}: ${steps[stepIndex]?.do ?? '(none)'}`,
+                done.length ? `What it has done: ${recent(done, 900)}.` : 'It has done nothing yet.',
+                `Why you are being asked now: ${why}`,
+              ].join('\n'),
+            },
+            {
+              type: 'image_url',
+              image_url: { url: `data:${shot.mime};base64,${shot.b64}`, detail: 'high' },
+            },
+          ],
+        },
+      ], { model: llm.tiers.see, maxTokens: 300 });
+      const said = String(out || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (said) onAudit('reflected', { metadata: { why, said } });
+      debug(`[reflect] ${why} -> ${said}`);
+      return said || null;
+    } catch (err) {
+      debug(`[reflect] skipped: ${err.message}`);
+      return null;      // a critic that breaks the run is worse than none
+    }
+  };
+
+  /** Add this turn to the conversation, then trim it back to size. */
+  const keepTurn = (userContent, assistantText) => {
+    trajectory.push({ role: 'user', content: userContent });
+    trajectory.push({
+      role: 'assistant',
+      content: [{ type: 'text', text: String(assistantText || '(no answer)').slice(0, 600) }],
+    });
+
+    // Oldest whole exchanges first, so the history never opens mid-answer.
+    while (trajectory.length > KEEP_TURNS * 2) trajectory.splice(0, 2);
+
+    // Then the pictures, newest kept — walking backwards exactly as
+    // flush_messages does, and dropping the image while leaving its text.
+    let seen = 0;
+    for (let i = trajectory.length - 1; i >= 0; i--) {
+      const blocks = trajectory[i].content;
+      for (let j = blocks.length - 1; j >= 0; j--) {
+        if (blocks[j].type !== 'image') continue;
+        seen += 1;
+        if (seen > KEEP_IMAGES) blocks.splice(j, 1);
+      }
+    }
+  };
 
   /* --- the windows this job is being done in -------------------------------
      There used to be exactly one, `workWindow`, and any other window coming
@@ -1422,6 +1506,17 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     onAudit('plan_revising', { metadata: { reason: byPerson ? 'person' : 'stalled', count: byPerson ? corrections : replans } });
     debug(`[replan] ${why}`);
 
+    /* A second opinion, taken here rather than on a turn counter, because
+       this is the moment the run has itself concluded something is wrong
+       and is about to decide what to do about it. Asking now means the new
+       plan is made knowing what went wrong, and it is rate-limited to once
+       per re-plan for free. Not for a correction the person typed: they
+       have just said what is wrong, which beats a guess at it. */
+    if (!byPerson) {
+      reflection = await lookBack(why);
+      if (!(await gate())) return 'error';
+    }
+
     const status = (s, i) => (i === stepIndex ? (byPerson ? 'in hand' : 'could not be done')
       : s.status === 'pending' ? 'not started' : s.status);
     let r;
@@ -1437,8 +1532,9 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
               `The plan so far: ${steps.map((s, i) => `${i + 1}. [${status(s, i)}] ${s.do}`).join(' ')}`,
               done.length ? `Done so far: ${done.slice(-10).join('; ')}.` : 'Nothing has been done yet.',
               `What happened: ${why}`,
+              reflection ? `A second look at the run so far: ${reflection}` : null,
               'Plan what is left, from the screen as it is now.',
-            ].join('\n'),
+            ].filter(Boolean).join('\n'),
           },
           image(shot),
         ],
@@ -1646,41 +1742,53 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
 
     onPhase('Thinking');
     let choice;
+    let turnContent = [];
     try {
+      /* --- this turn, as the next thing said in one conversation -------
+         The whole brief used to be restated every turn: the task, the
+         plan, the log, the step. The model was handed a screenshot and a
+         summary and had to work out afresh what it was doing and why,
+         having already worked that out the turn before and not been shown
+         its own answer since.
+
+         Now the first turn sets the scene and every turn after it says
+         only what has changed. The rest is in `trajectory`, which carries
+         what the model itself said — so it can see its own reasoning,
+         and the screens it saw it on. After Agent-S's worker, which keeps
+         the same alternating user/assistant history and trims it with
+         flush_messages. */
+      const firstTurn = trajectory.length === 0;
+      const turnText = [
+        firstTurn ? `Task: ${brief}` : null,
+        firstTurn
+          ? `Plan: ${steps.map((st, i) => `${i + 1}. ${st.do}`).join(' ')}`
+          : null,
+        firstTurn ? 'The screen is as you see it. Nothing has been done yet.' : null,
+        // Said every turn, because it is what the answer has to be about.
+        `CURRENT STEP (${stepIndex + 1} of ${steps.length}, ${step.kind}): ${step.do}`,
+        'Do only that step.',
+        feedback ? `Result of your last action: ${feedback}` : null,
+        pendingExpect
+          ? `Your last action expected: "${pendingExpect}". Look at the screenshot and check `
+            + 'that is what actually happened. If something else did, put it right before going '
+            + 'on rather than carrying on from it.'
+          : null,
+        repeats > 0
+          ? `Your last attempt (${describe(lastAction)}) changed nothing on screen. Do it a `
+            + 'different way, or call step_done if it is already the case.'
+          : null,
+        // Facts outlive the log, so they are restated in full every turn.
+        scratchpad() || null,
+        reflection ? `A look back over the run so far: ${reflection}` : null,
+      ].filter(Boolean).join('\n');
+
+      turnContent = [{ type: 'text', text: turnText }, image(shot)];
+
       choice = await llm.respond({
         model,
         system: ACT_SYSTEM(shot, frontTitle, openTitles(frontTitle)),
-        content: [
-          {
-            type: 'text',
-            text: [
-              `Task: ${brief}`,
-              `Plan: ${steps.map((s, i) => `${i + 1}. ${s.do}${s.status === 'pending' ? '' : ` (${s.status})`}`).join(' ')}`,
-              /* The log is still trimmed — it is a narrative, and the oldest
-                 of it stops mattering. Trimmed by length rather than by a
-                 count of eight, so short actions do not push out the run's
-                 whole history the way they used to. Anything that must
-                 survive regardless is in the scratchpad below, which is not
-                 trimmed at all. */
-              done.length ? `Done so far: ${recent(done)}.` : null,
-              scratchpad() || null,
-              `CURRENT STEP (${stepIndex + 1} of ${steps.length}, ${step.kind}): ${step.do}`,
-              'Do only that step.',
-              feedback ? `Result of your last action: ${feedback}` : null,
-              pendingExpect
-                ? `Your last action expected: "${pendingExpect}". Look at the screenshot and check `
-                  + 'that is what actually happened. If something else did — the wrong thing '
-                  + 'opened, the wrong row, a menu you did not want — put it right before going '
-                  + 'on rather than carrying on from it.'
-                : null,
-              repeats > 0
-                ? `Your last attempt (${describe(lastAction)}) changed nothing on screen. Do it a `
-                  + 'different way, or call step_done if it is already the case.'
-                : null,
-            ].filter(Boolean).join('\n'),
-          },
-          image(shot),
-        ],
+        content: turnContent,
+        history: trajectory,
         tools: ACT_TOOLS,
         effort: 'low',
         maxTokens: 3000,
@@ -1690,6 +1798,15 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       return fail('model_error', err.message);
     }
     pendingExpect = null;      // asked about once, not every turn after
+
+    /* What was asked and what came back, kept as the next exchange. Written
+       as the action rather than as raw JSON, because that is what the model
+       is being asked to read back later, and a tool call rendered as a
+       sentence is what it would have said if it had been talking. */
+    keepTurn(turnContent, choice?.call
+      ? `${describe({ ...choice.call.args, type: choice.call.args?.action })}`
+        + `${choice.call.name === 'act' ? ` [${signature({ ...choice.call.args, type: choice.call.args.action })}]` : ` [${choice.call.name}]`}`
+      : choice?.text);
     if (!(await gate())) return;
 
     // Anything said while the model was deciding outranks what it decided.
@@ -2453,6 +2570,45 @@ async function execute({ computer, sense, shot, action, openThing, switchTo, tru
 /* --------------------------------------------------------------------------
    Checking
    -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   Looking back
+
+   A second opinion on the run so far, from a model that is not the one
+   making the next decision and has nothing invested in the last one. It
+   says which of three things is true — going wrong, going fine, or already
+   finished — and deliberately does not say what to do instead: suggesting
+   an action is the worker's job, and a critic that proposes its own plan
+   just becomes a second worker arguing with the first.
+
+   Agent-S runs this every single turn. Halo does not, and the reason is
+   latency: on the free models this runs on, a call is seconds, and a
+   run that is going fine does not need telling so at the price of doubling
+   every step. It is asked only when something is already off — the same
+   action twice, a step that has missed, a step eating its turns — which is
+   exactly when a fresh pair of eyes is worth waiting for.
+
+   After Agent-S's REFLECTION_ON_TRAJECTORY (Apache-2.0, simular-ai/Agent-S).
+   -------------------------------------------------------------------------- */
+const REFLECT_SYSTEM = [
+  'You are watching another agent work through a task on a Windows desktop,',
+  'and your only job is to say how it is going. You are shown the task, what',
+  'it has done so far, and the screen as it is now.',
+  '',
+  'Say which ONE of these is true, in no more than two sentences:',
+  '',
+  'GOING WRONG — it is repeating itself, or working on the wrong thing, or',
+  'acting on something that is not there. Say plainly what is going wrong and',
+  'why. Do NOT say what it should do instead.',
+  '',
+  'GOING FINE — it is making progress. Say so in one short sentence and stop.',
+  '',
+  'ALREADY DONE — what was asked for is visible on screen now. Say so.',
+  '',
+  'Rules: pick exactly one. Never propose an action, a plan or a next step —',
+  'that is not your job and it is not what is missing. Watch especially for a',
+  'loop: the same thing tried again and again with the screen never changing.',
+].filter(Boolean).join('\n');
+
 const REPORT_TOOL = [{
   type: 'function',
   function: {

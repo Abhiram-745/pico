@@ -490,18 +490,22 @@ export class LLM {
     return { ...out, attempts: MAX_ATTEMPTS, exhausted: true };
   }
 
-  async _respondOnce({ model, system, content, tools, effort = 'low', maxTokens = 3000, signal }) {
+  async _respondOnce({ model, system, content, history = [], tools, effort = 'low', maxTokens = 3000, signal }) {
     const useModel = model || this.tiers.see;
 
+    /* `history` is everything said so far, in Halo's own neutral shape, and
+       it is what turns a sequence of unrelated questions into one
+       conversation. Without it every turn arrived cold: the model was
+       handed a screenshot and a summary and had to work out afresh what it
+       had been doing and why, having already decided that once. */
     if (!this._responses) {
+      const asChat = (blocks) => blocks.map((c) => (c.type === 'image'
+        ? { type: 'image_url', image_url: { url: `data:${c.mime};base64,${c.b64}`, detail: c.detail === 'original' ? 'high' : (c.detail || 'high') } }
+        : { type: 'text', text: c.text }));
       return this.toolCall([
         { role: 'system', content: system },
-        {
-          role: 'user',
-          content: content.map((c) => (c.type === 'image'
-            ? { type: 'image_url', image_url: { url: `data:${c.mime};base64,${c.b64}`, detail: c.detail === 'original' ? 'high' : (c.detail || 'high') } }
-            : { type: 'text', text: c.text })),
-        },
+        ...history.map((m) => ({ role: m.role, content: asChat(m.content) })),
+        { role: 'user', content: asChat(content) },
       ], { model: useModel, tools, maxTokens, signal, effort: 'none' });
     }
 
@@ -511,15 +515,19 @@ export class LLM {
     // take them; an older one is sent the most it will accept instead.
     const detailFor = (d) => (d === 'original' && this._noOriginal.has(useModel) ? 'high' : (d || 'high'));
 
+    /* The Responses API names its content blocks by direction, so what the
+       assistant said has to be tagged output_text, not input_text. */
+    const asInput = (blocks, role) => blocks.map((c) => (c.type === 'image'
+      ? { type: 'input_image', image_url: `data:${c.mime};base64,${c.b64}`, detail: detailFor(c.detail) }
+      : { type: role === 'assistant' ? 'output_text' : 'input_text', text: c.text }));
+
     const body = {
       model: useModel,
       instructions: system,
-      input: [{
-        role: 'user',
-        content: content.map((c) => (c.type === 'image'
-          ? { type: 'input_image', image_url: `data:${c.mime};base64,${c.b64}`, detail: detailFor(c.detail) }
-          : { type: 'input_text', text: c.text })),
-      }],
+      input: [
+        ...history.map((m) => ({ role: m.role, content: asInput(m.content, m.role) })),
+        { role: 'user', content: asInput(content, 'user') },
+      ],
       tools: tools.map(responsesTool),
       tool_choice: 'required',
       parallel_tool_calls: false,
@@ -549,18 +557,18 @@ export class LLM {
       // No Responses API behind this address: use the other one from now on.
       if (res.status === 404 && !/model/i.test(message)) {
         this._responses = false;
-        return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens, signal });
+        return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
       }
       // The effort was refused: step it down and remember what worked.
       if (res.status === 400 && asked && /reasoning|effort/i.test(message)) {
         this._effort.set(useModel, EFFORT_FALLBACK[asked] ?? null);
-        return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens, signal });
+        return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
       }
       // Full detail refused: this model gets high detail from now on.
       if (res.status === 400 && /detail/i.test(message) && !this._noOriginal.has(useModel)
         && content.some((c) => c.type === 'image' && c.detail === 'original')) {
         this._noOriginal.add(useModel);
-        return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens, signal });
+        return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
       }
       throw this._error(res.status, json);
     }
@@ -568,7 +576,7 @@ export class LLM {
     // Reasoning can use the whole budget and leave nothing for the answer.
     // Once, with more room, rather than failing a step over it.
     if (json?.status === 'incomplete' && json?.incomplete_details?.reason === 'max_output_tokens' && maxTokens < 12000) {
-      return this._respondOnce({ model: useModel, system, content, tools, effort, maxTokens: maxTokens * 2, signal });
+      return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens: maxTokens * 2, signal });
     }
 
     const output = Array.isArray(json?.output) ? json.output : [];

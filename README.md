@@ -157,6 +157,21 @@ Apache License 2.0:
 - **A text buffer the agent writes to and is shown every turn**, for things a
   later step needs that the screen will no longer show. After the grounding
   agent's `notes` and `save_to_knowledge`.
+- **The run as one conversation.** The model is given the alternating history
+  of what it was asked and what it answered, with all the text kept and only
+  the newest few screenshots. After the worker's message history and
+  `flush_messages`.
+- **A look back when a run stalls.** A second model, with nothing invested in
+  the last decision, says whether the run is going wrong, going fine, or
+  already done — and is forbidden from proposing an action. After
+  `REFLECTION_ON_TRAJECTORY`. Halo asks only when the run has already
+  concluded something is wrong, where Agent-S asks every turn; on free models
+  a call per turn is the latency the loop exists to avoid.
+
+Not ported: `bbon`. It is offline best-of-N over completed runs — it compares
+whole trajectories from separate result directories and picks a winner, which
+needs the same task run several times over. Halo drives somebody's real
+machine, where the side effects of a run cannot be taken back and tried again.
 
 No Agent-S source is included; both are reimplementations against Halo's own
 tools, screen layer and accessibility grounding.
