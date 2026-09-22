@@ -36,44 +36,34 @@ No dependencies. The WebSocket server and the QR encoder are both implemented he
 
 ## Model provider
 
-The bridge can call an LLM to turn a task into real steps instead of running a
-scripted sequence. It speaks the OpenAI-compatible API, and is configured for
-[BazaarLink](https://bazaarlink.ai):
+Every model call goes to [xkiro](https://xkiro.com), an OpenAI-compatible
+gateway, and every job — planning, driving the desktop, chat, writing — runs on
+**`qwen/qwen3.8-omni-flash:free`**. A free shared key is built in, so nothing
+needs configuring:
 
 ```bash
-cp .env.example .env      # then paste your key
 node bridge/server.mjs
 ```
 
+To use your own key or a different xkiro model, copy `.env.example` to `.env`:
+
 ```
-BAZAARLINK_API_KEY=sk-bl-...
-BAZAARLINK_BASE_URL=https://api.bazaarlink.ai/v1
-PICO_MODEL=auto:free
+XKIRO_API_KEY=sk-xt-...
+PICO_MODEL=qwen/qwen3.8-omni-flash:free
 ```
 
-Without a key the bridge still runs, using the scripted scenarios — the UI is
-always demonstrable.
+Requests go to `POST /v1/chat/completions` and are always streamed: Qwen's Omni
+models only answer streamed requests, and xkiro cuts off blocking requests at
+95 seconds. Tool calls are assembled from the stream's deltas. If the gateway
+refuses `reasoning_effort` or `tool_choice: "required"`, the client drops or
+relaxes them once and remembers.
 
-**The key never leaves the laptop.** It is read from `.env` by
+**A key of your own never leaves the laptop.** It is read from `.env` by
 `bridge/llm.mjs`, used server-side, and scrubbed from any error text by
 `redact()` before it can reach a log or a client. The phone receives the
 resulting steps and nothing else. `.env` is gitignored; `.env.example` is the
 committed template. Never import `llm.mjs` from anything under `phone/` or
-`pico-ui/` — those run in a browser, where any key is readable.
-
-### What it cannot do
-
-BazaarLink does **not** support the Responses API `computer_use_preview` tool —
-verified, it returns `400 The model service rejected the request parameters`.
-That tool is what returns structured click/type/screenshot actions, and it is
-the thing Halo's desktop loop is built on. So BazaarLink can plan and summarise,
-but it cannot drive the mouse and keyboard. Actually controlling the desktop
-still needs a model with the computer tool.
-
-Free-tier keys are limited to 20 requests a minute; `llm.mjs` self-throttles to
-stay under that. Free routing lands on reasoning models that spend most of the
-token budget thinking, so the client retries once with a larger budget when
-`content` comes back empty.
+`pico-ui/` — those run in a browser.
 
 ---
 
@@ -98,4 +88,4 @@ Today the host is the mock agent in `pico-ui/mock/agent.js`, which is what makes
 | `server.mjs` | HTTP + WebSocket, pairing, allowlist, static serving |
 | `ws.mjs` | RFC 6455 server — text frames, ping/pong, fragmentation, close |
 | `qr.mjs` | QR encoder, byte mode, EC level L, versions 1–5. Renders to a terminal or to SVG |
-| `llm.mjs` | BazaarLink client — planning and summaries. Reads `.env`; never client-facing |
+| `llm.mjs` | xkiro client (Qwen3.8 Omni Flash) — planning, desktop turns, chat. Reads `.env`; never client-facing |

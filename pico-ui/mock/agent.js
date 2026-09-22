@@ -48,7 +48,7 @@ export class MockAgent {
     this.phase = 'Idle';
     this.petName = 'Halo';
     this.settings = {
-      model: 'gpt-5.4-nano',
+      model: 'qwen/qwen3.8-omni-flash:free',
       pauseOnPhysicalInput: true,
       maximumComputerTurns: 100,
       // Set true only once a provider is actually attached.

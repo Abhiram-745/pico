@@ -42,6 +42,7 @@ function desktop({ windows, front }) {
     chords: [],          // [{ hold, press, times }]
     screen: 1,           // bumped whenever something visibly changes
     typed: [],           // [{ text, into }]
+    keys: [],            // every chord pressed, e.g. 'enter'
     focusCalls: [],
     onForeground: null,  // (callNumber) => void, to take the screen mid-run
     fgCalls: 0,
@@ -94,6 +95,7 @@ function desktop({ windows, front }) {
     type: async (t) => { state.typed.push({ text: t, into: state.front }); state.value += t; state.screen += 1; },
     keypress: async (keys = []) => {
       const chord = keys.map((k) => String(k).toLowerCase()).join('+');
+      state.keys.push(chord);
       // ctrl+c picks up whatever is "selected"; ctrl+v puts the clipboard
       // into the text field, the way the real ones do.
       if (chord === 'ctrl+c') { state.clipboard = state.selection; return; }
@@ -492,6 +494,68 @@ console.log('a model that talks instead of acting');
   check('and it said why nothing happened',
     events.audits.some((a) => String(a.metadata?.reason || '').includes('described an action')),
     JSON.stringify(events.audits.map((a) => a.metadata?.reason).filter(Boolean)));
+}
+
+/* --- typed text goes through -------------------------------------------
+   Text typed into a chat or search box and left there is not a message sent
+   or a search made. The model can press Enter in the same action, and when
+   it calls a send or search step finished with the text still in the box,
+   Enter is pressed for it. Writing in Notepad is left alone.
+   ------------------------------------------------------------------------ */
+console.log('typed text goes through');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Search for cats', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'cats', submit: true }),
+    { name: 'report', args: { succeeded: true, summary: 'Searched.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'search for cats' });
+  await done;
+  check('submit presses Enter straight after typing',
+    computer.state.typed[0]?.text === 'cats' && computer.state.keys.includes('enter'), JSON.stringify(computer.state.keys));
+}
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Search for cats', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'cats' }),
+    { name: 'step_done', args: {} },
+    { name: 'report', args: { succeeded: true, summary: 'Searched.' } },
+  ]);
+  const { done } = run({ computer, llm, task: 'search for cats' });
+  await done;
+  check('a search step called done with text in the box gets its Enter',
+    computer.state.keys.filter((k) => k === 'enter').length === 1, JSON.stringify(computer.state.keys));
+}
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    plan([{ do: 'Type hello there', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'hello there' }),
+    { name: 'step_done', args: {} },
+    { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+  ]);
+  const { done } = run({ computer, llm });
+  await done;
+  check('plain writing is not sent anywhere', !computer.state.keys.includes('enter'), JSON.stringify(computer.state.keys));
+}
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const asked = [];
+  const llm = scripted([
+    plan([{ do: 'Send the message to Sam', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'on my way', why: 'typing the note' }),
+    { name: 'step_done', args: {} },
+    { name: 'report', args: { succeeded: true, summary: 'Sent.' } },
+  ]);
+  const { done } = run({
+    computer, llm, task: 'message sam on my way',
+    hooks: { onApproval: async (a) => { asked.push(a); return false; } },
+  });
+  await done;
+  check('sending it still asks first', asked.length === 1, `${asked.length} approvals`);
+  check('and a no leaves it unsent', !computer.state.keys.includes('enter'), JSON.stringify(computer.state.keys));
 }
 
 /* --- an opening step costs no model turn ---------------------------------- */

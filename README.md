@@ -23,7 +23,7 @@ The current build runs on Node.js and starts from `Start Halo.cmd`. The older co
 
 ## Use it
 
-1. Download [`Halo-Setup.exe`](https://github.com/Abhiram-745/pico/releases/latest/download/Halo-Setup.exe) and run it. It's a normal Windows installer — pick a folder, it installs, adds Start-menu and Desktop shortcuts, and offers to launch Halo. On first run it asks for your OpenAI key — it goes to Windows Credential Manager, not a JSON file.
+1. Download [`Halo-Setup.exe`](https://github.com/Abhiram-745/pico/releases/latest/download/Halo-Setup.exe) and run it. It's a normal Windows installer — pick a folder, it installs, adds Start-menu and Desktop shortcuts, and offers to launch Halo. There is no key to paste: Halo ships with a free shared xkiro key and runs on Qwen3.8 Omni Flash.
 2. Press **`Ctrl+Shift+P`**, type a narrowly scoped task, press Enter.
 3. Review the orange approval cards before external, destructive, installation, account, or financial actions.
 4. Complete credentials, CAPTCHAs, UAC, and secure-desktop steps yourself when Halo asks.
@@ -65,22 +65,16 @@ The phone is you, so it can *answer* an approval — it can never skip one.
 
 ## Model provider
 
-The Windows app talks to OpenAI directly and stores its key in Windows
-Credential Manager. The **bridge** is separate, and can use any
-OpenAI-compatible gateway — it ships configured for
-[BazaarLink](https://bazaarlink.ai):
+Halo runs every job — planning, driving the desktop, chat — on
+**Qwen3.8 Omni Flash** (`qwen/qwen3.8-omni-flash:free`) through
+[xkiro](https://xkiro.com), an OpenAI-compatible gateway. A free shared key is
+built in, so it works straight after install. To use your own key:
 
 ```bash
-cp .env.example .env      # paste your key, then start the bridge
+cp .env.example .env      # set XKIRO_API_KEY, then start Halo
 ```
 
-Keys live in `.env`, which is gitignored and read only by `bridge/llm.mjs` on
-your own machine. Nothing is ever embedded in a page or sent to the phone.
-
-Note that BazaarLink cannot drive the desktop loop: it does not support the
-Responses API `computer_use_preview` tool. It plans and summarises; moving the
-mouse still needs a model with the computer tool. See
-[`bridge/README.md`](bridge/README.md).
+See [`bridge/README.md`](bridge/README.md) for details.
 
 ---
 
@@ -91,22 +85,19 @@ Requirements:
 - Windows 10 version 2004 or newer, or Windows 11, x64.
 - PowerShell 7 or Windows PowerShell 5.1.
 - .NET 8 SDK when building from source. The packaged application is self-contained.
-- An OpenAI API key with access to a current model that supports the Responses API computer tool.
 - Node 18+ only if you want the phone bridge.
 
 ```powershell
 ./scripts/build-windows.ps1
 ```
 
-The model field accepts custom API model IDs. Use a model that explicitly supports **Computer use** in the [official OpenAI model list](https://developers.openai.com/api/docs/models). GPT-5 nano and GPT-5.4 nano are text/image models and currently do not support computer use; GPT-5.6, GPT-5.4 mini, and `computer-use-preview` are examples of compatible choices.
-
 ---
 
-## Privacy and OpenAI data retention
+## Privacy and data retention
 
-During a task, Halo sends bounded full-desktop screenshots of all attached displays to OpenAI through the Responses API. Halo keeps the local screenshot bytes in memory only long enough to send the request and does not write them to its audit log. Responses API application state may be retained according to your OpenAI organization and project data-control settings; OpenAI currently documents at least 30 days of retention by default. Review [OpenAI's API data controls](https://developers.openai.com/api/docs/guides/your-data) before using Halo with sensitive information.
+During a task, Halo sends bounded full-desktop screenshots of all attached displays to xkiro, which forwards them to Qwen3.8 Omni Flash. Halo keeps the local screenshot bytes in memory only long enough to send the request and does not write them to its audit log. Retention is governed by xkiro and the upstream model provider; review their terms before using Halo with sensitive information.
 
-Halo has no publisher upload, telemetry, cloud relay, or automatic web-deployment path. Its only intentional network traffic is the HTTPS Responses API request required for a task, plus — if you start it — the bridge, which stays on your own network.
+Halo has no publisher upload, telemetry, cloud relay, or automatic web-deployment path. Its only intentional network traffic is the HTTPS model request required for a task, plus — if you start it — the bridge, which stays on your own network.
 
 ---
 

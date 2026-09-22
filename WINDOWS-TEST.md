@@ -61,7 +61,7 @@ Complete this checklist on a Windows 11 VM or non-critical Windows account befor
 ## Privacy and failure recovery
 
 - [ ] Windows Credential Manager contains the key; `settings.json` and logs do not.
-- [ ] First-run Settings discloses full-desktop screenshot transmission and current Responses API retention behavior.
+- [ ] First-run Settings discloses full-desktop screenshot transmission and that screenshots go to xkiro (Qwen3.8 Omni Flash).
 - [ ] Audit JSONL contains no screenshots, coordinates, typed text, clipboard data, or API key.
 - [ ] HTTP 401, 429, 500, timeout, and network loss surface clear, non-secret errors.
 - [ ] Stop during an API request prevents all later returned actions from executing.

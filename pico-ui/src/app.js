@@ -498,7 +498,7 @@ export function mountApp(host = document.body, { demo = false } = {}) {
     kmain.append(el('div', 'row__sub',
       store.state.settings.hasApiKey
         ? 'Configured in .env on this machine'
-        : 'Set OPENAI_API_KEY in the .env file next to Start Halo.cmd'));
+        : 'Using the built-in free xkiro key'));
     krow.append(kmain);
     model.append(krow);
     wrap.append(model);

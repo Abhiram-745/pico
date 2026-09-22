@@ -14,13 +14,9 @@
 import { store } from './store.js';
 import { bridge } from './bridge.js';
 
-/* Free-text: the host accepts any safe model ID. Driving the desktop needs a
-   model with the Responses API computer tool; planning does not. */
+/* Every job runs on Qwen3.8 Omni Flash through xkiro. */
 const KNOWN_MODELS = [
-  'gpt-5.4-nano',
-  'gpt-5.4-mini',
-  'gpt-5.6',
-  'computer-use-preview',
+  'qwen/qwen3.8-omni-flash:free',
 ];
 
 const el = (tag, cls, text) => {
@@ -143,15 +139,15 @@ export function renderSettings(state) {
 
   root.append(field(
     'API key',
-    'Set OPENAI_API_KEY in the .env file next to Start Halo.cmd. It stays on this machine and is never sent to your phone or embedded in a page.',
+    'A free shared xkiro key is built in. To use your own, set XKIRO_API_KEY in the .env file next to Start Halo.cmd. It stays on this machine and is never sent to your phone or embedded in a page.',
     keyWrap,
   ));
 
   // --- privacy note -------------------------------------------------------
   const note = el('div', 'settings__note');
-  note.append(el('strong', null, 'During a task, Halo sends full-desktop screenshots to OpenAI.'));
+  note.append(el('strong', null, 'During a task, Halo sends full-desktop screenshots to xkiro (Qwen3.8 Omni Flash).'));
   note.append(el('span', null,
-    ' Responses API state may be retained per your organisation’s data controls. Screenshots are never written to the local audit log.'));
+    ' Retention is governed by xkiro and the upstream model provider. Screenshots are never written to the local audit log.'));
   root.append(note);
 
   // --- save ---------------------------------------------------------------

@@ -460,6 +460,13 @@ const ACT_TOOLS = [
           to_x: { type: 'integer', description: 'For "drag": where to let go, horizontally, in screenshot pixels.' },
           to_y: { type: 'integer', description: 'For "drag": where to let go, vertically, in screenshot pixels.' },
           text: { type: 'string', description: 'For "type": the text to type.' },
+          submit: {
+            type: 'boolean',
+            description: 'For "type": true to press Enter straight after typing, in the same '
+              + 'action. Set it whenever Enter is how the text goes through — a chat message, a '
+              + 'search box, an address bar, a single-line form field. Leave it off only for '
+              + 'multi-line writing such as an email body or a document.',
+          },
           keys: {
             type: 'array',
             items: { type: 'string' },
@@ -601,6 +608,8 @@ const ACT_TOOLS = [
    (Apache-2.0, simular-ai/Agent-S); the checks themselves are Halo's, being
    about Halo's tools.
    -------------------------------------------------------------------------- */
+const SENDS = /\b(?:send|sending|message|reply|dm|post|search|look\s+up|google|submit)\b/i;
+
 const NEEDS_POINT = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'scroll', 'select_text']);
 const KNOWN_ACTIONS = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag',
   'type', 'key', 'scroll', 'wait', 'open_app', 'open_url', 'copy', 'paste', 'switch_to',
@@ -766,9 +775,11 @@ const ACT_SYSTEM = (shot, front, windows = []) => [
   'The same goes for a reply in mail: check the subject and the recipient on',
   'screen before typing into the box.',
   '',
-  'Sending is the last action, never an incidental one. Type the message,',
-  'look at what is in the box and who it is addressed to, and only then press',
-  'Enter or click Send.',
+  'Check who it is addressed to before you type. Then type the message with',
+  '"submit": true so it is sent in the same action. Never leave text sitting',
+  'in a message, search or address box: if you were asked to send or search',
+  'something, the step is not done until Enter has been pressed or Send',
+  'clicked.',
   '',
   'The black bar at the top centre of the screen is Halo itself. It is not',
   'part of any task — never click or type into it.',
@@ -1240,6 +1251,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   };
   let seenFront = front;      // what was in front when Halo last looked
   let lastActionType = null;
+  let unsent = false;         // the last thing done was typing, with no Enter after it
   let arrivalChecked = false; // a window that arrived after Halo looked, looked at once
   let misfireStep = -1;       // the step a click was last refused on — once each
   const typed = [];           // every piece of text typed, for the verdict
@@ -1895,7 +1907,47 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       continue;
     }
 
+    /* Typed and then called finished, with the text still in the box. A
+       message nobody sent is not a message sent, and the verdict afterwards
+       rightly says so — so when the step or the job was to send or search,
+       Enter is pressed here rather than leaving the run to stall on it. */
     if (name === 'step_done') {
+      const lastStep = stepIndex >= steps.length - 1;
+      if (unsent && !guide && (SENDS.test(step.do) || (lastStep && SENDS.test(task)))) {
+        unsent = false;
+        const enter = { type: 'key', keys: ['enter'], why: `Pressing Enter to ${step.do.replace(/^./, (c) => c.toLowerCase())}` };
+        const enterRisk = assess(enter, frontTitle);
+        if (enterRisk.decision !== 'Allow') {
+          onPhase('AwaitingApproval');
+          const approved = await onApproval({
+            id: `apr_${Date.now()}`,
+            summary: describe(enter),
+            target: frontTitle || 'the active window',
+            risk: enterRisk,
+          });
+          if (!approved) {
+            onAudit('stop_requested', { metadata: { source: 'approval-denied' } });
+            onStep(null);
+            publish({ finished: true, succeeded: false });
+            onPhase('Stopped');
+            onAudit('run_stopped');
+            return;
+          }
+          if (!(await gate())) return;
+        }
+        onPhase('Acting');
+        onAction({ type: 'Keypress', detail: 'Pressing Enter so what was typed goes through' });
+        await computer.keypress(['enter']);
+        pressed.push('enter');
+        done.push('pressed Enter to send what was typed');
+        onAudit('action_executed', { action_type: 'Keypress', risk: enterRisk });
+        await computer.wait(300);
+        onPhase('Observing');
+        try { await observe(); } catch (err) {
+          return fail('screen_unavailable', `Halo could not see the screen: ${err.message}`);
+        }
+        lastGrey = shot.grey;
+      }
       nextStep('done');
       continue;
     }
@@ -2016,7 +2068,11 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       continue;
     }
 
-    const risk = assess(action, frontTitle);
+    // Typing with Enter commits whatever the step was for, so the step is
+    // weighed with it: "send the message to Sam" asks once, before it goes.
+    const risk = assess(action.type === 'type' && action.submit
+      ? { ...action, why: `${action.why ?? ''} (${step.do})` }
+      : action, frontTitle);
     const detail = describe(action);
     const phaseType = ACTION_PHASE[action.type] || 'Move';
     onAudit('action_assessed', { action_type: phaseType, risk });
@@ -2162,10 +2218,13 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       return;
     }
     onAudit('action_executed', { action_type: phaseType, risk });
-    lastActionType = action.type === 'type' && /[\r\n]/.test(action.text ?? '') ? 'key' : action.type;
+    const entered = action.type === 'type' && (action.submit || /[\r\n]/.test(action.text ?? ''));
+    lastActionType = entered ? 'key' : action.type;
     arrivalChecked = false;
     if (action.type === 'type' && action.text) typed.push({ text: String(action.text), window: fg?.title ?? '' });
     if (action.type === 'key') pressed.push((action.keys ?? []).join('+'));
+    if (action.type === 'type' && action.submit) pressed.push('enter');
+    unsent = (action.type === 'type' || action.type === 'paste') && !entered;
 
     /* --- what this turn learned ------------------------------------------
        A copy is only useful if what it picked up outlives the turn, so the
@@ -2264,7 +2323,16 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       || (step.kind === 'open' && OPENING.has(action.type) && result?.ok)
       || (step.kind === 'keyboard' && action.type === 'switch_to' && result?.ok)
       || (step.kind === 'scroll' && action.type === 'scroll' && !SCROLL_WITH_A_PURPOSE.test(step.do));
-    const advance = matches && (changed || result?.ok);
+    /* Typing is not sending. A step to send or search that has only had its
+       text typed stays open, and the model is told the text is waiting —
+       otherwise the step was ticked and the message sat in the box. */
+    const waitingForEnter = unsent && matches
+      && (SENDS.test(step.do) || (stepIndex >= steps.length - 1 && SENDS.test(task)));
+    if (waitingForEnter) {
+      feedback = `${feedback ?? ''} The text is in the box but has not gone through yet: press Enter `
+        + '(or click Send) now.';
+    }
+    const advance = matches && (changed || result?.ok) && !waitingForEnter;
 
     debug(`[turn ${turn}] step ${stepIndex + 1}/${steps.length} "${step.do}" via ${model} -> ${sig}`
       + ` | ${result?.said ?? ''} | screen ${changed ? 'changed' : 'UNCHANGED'} | ${advance ? 'ADVANCE' : 'stay'} | repeats=${repeats} misses=${misses}`);
@@ -2548,6 +2616,11 @@ async function execute({ computer, sense, shot, action, openThing, switchTo, tru
 
     case 'type':
       await computer.type(action.text ?? '');
+      if (action.submit) {
+        await computer.wait(80);
+        await computer.keypress(['enter']);
+        return { said: `typed ${JSON.stringify(String(action.text ?? '').slice(0, 60))} and pressed Enter` };
+      }
       return { said: `typed ${JSON.stringify(String(action.text ?? '').slice(0, 60))}` };
 
     case 'key':

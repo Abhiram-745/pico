@@ -248,7 +248,7 @@ class Bridge {
       ...this.agent.settings,
       // One task uses several: the strongest model plans it, then the
       // cheapest model that can actually do each step carries it out.
-      model: `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
+      model: llm.tiers.see,
       hasApiKey: true,
       provider: PROVIDERS[llm.provider]?.label ?? llm.provider,
     };
@@ -726,14 +726,14 @@ async function saveKey(key) {
   let lines = [];
   try {
     lines = (await readFile(envPath, 'utf8')).split('\n')
-      .filter((l) => !l.trim().startsWith('OPENAI_API_KEY'))
+      .filter((l) => !/^(?:OPENAI_API_KEY|XKIRO_API_KEY)\b/.test(l.trim()))
       .filter((l, i, a) => !(l.trim() === '' && a[i + 1]?.trim() === ''));
   } catch { /* first run, no file yet */ }
 
   const body = [
     ...lines,
     '# Written by Halo setup. Keep this file private.',
-    `OPENAI_API_KEY=${key}`,
+    `XKIRO_API_KEY=${key}`,
     '',
   ].join('\n').replace(/^\s+/, '');
 
@@ -810,21 +810,20 @@ const server = createServer(async (req, res) => {
 
     if (!key) { reply(400, { ok: false, error: 'Paste a key first.' }); return; }
     if (!/^sk-[A-Za-z0-9_-]{20,}$/.test(key)) {
-      reply(400, { ok: false, error: 'That does not look like an OpenAI key. They start with "sk-".' });
+      reply(400, { ok: false, error: 'That does not look like an xkiro key. They start with "sk-".' });
       return;
     }
 
     // Prove it works before writing it, so a typo fails here rather than on
     // the first task.
     try {
-      const probe = await fetch('https://api.openai.com/v1/models', {
+      const probe = await fetch(`${PROVIDERS.xkiro.baseUrl}/usage`, {
         headers: { Authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(15_000),
       });
-      if (probe.status === 401) { reply(400, { ok: false, error: 'OpenAI rejected that key.' }); return; }
-      if (!probe.ok) { reply(400, { ok: false, error: `OpenAI returned ${probe.status}. Try again.` }); return; }
+      if (probe.status === 401 || probe.status === 403) { reply(400, { ok: false, error: 'xkiro rejected that key.' }); return; }
     } catch {
-      reply(502, { ok: false, error: 'Could not reach OpenAI. Check your connection.' });
+      reply(502, { ok: false, error: 'Could not reach xkiro. Check your connection.' });
       return;
     }
 
@@ -838,7 +837,6 @@ const server = createServer(async (req, res) => {
 
     const fresh = await LLM.fromEnv();
     if (fresh) {
-      await fresh.check();      // also picks the best models this key can use
       bridge.attachLLM(fresh);
       console.log('[bridge] key saved; model provider attached');
     }
@@ -1296,9 +1294,9 @@ bridge.onNotchCommand = async (command) => {
 // The model provider is attached before anything is opened. It used to be
 // attached only after a network probe of the provider answered, while the app
 // window opened first: the window asked the bridge "is there a provider?",
-// heard no, and asked for an OpenAI key — even though the shared free models
+// heard no, and asked for a key — even though the shared free models
 // need no key at all. So attach straight away, and let the probe only pick
-// the best models on offer. A probe that fails is retried; it never unplugs
+// that xkiro answers. A probe that fails is retried; it never unplugs
 // the provider.
 const llm = await LLM.fromEnv();
 if (llm) {
@@ -1308,7 +1306,8 @@ if (llm) {
     const status = await llm.check();
     if (status.ok) {
       bridge.attachLLM(llm);   // re-publish the tiers the probe settled on
-      console.log(`[bridge] ${label}: plans with ${llm.tiers.plan}, works with ${llm.tiers.see}, chats with ${llm.tiers.fast}`);
+      console.log(`[bridge] ${label}: every job runs on ${llm.tiers.see}`);
+      if (status.listed === false) console.warn(`[bridge] ${llm.tiers.see} is not in xkiro's model list right now; requests may fail`);
     } else if (attempt < 5) {
       console.warn(`[bridge] ${label} did not answer (${status.reason}); retrying`);
       setTimeout(() => probe(attempt + 1), 5_000 * attempt).unref?.();

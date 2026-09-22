@@ -14,7 +14,7 @@
    Three things matter, in this order:
      1. streaming — steps appear as they are produced instead of after the
         whole response lands. This is most of the perceived speed.
-     2. a small model — nano is built for low latency.
+     2. a fast model — Omni Flash is built for low latency.
      3. not paying for reasoning we throw away — planning a few UI steps does
         not need an extended thinking budget.
    ========================================================================== */
@@ -25,106 +25,37 @@ import { fileURLToPath } from 'node:url';
 const ENV_PATH = fileURLToPath(new URL('../.env', import.meta.url));
 
 /* --------------------------------------------------------------------------
-   Providers. Both speak the OpenAI Chat Completions shape, so they differ
-   only in host, key and model names — except that desktop turns go through
-   the Responses API where the provider has one (see respond()).
-   -------------------------------------------------------------------------- */
-export const PROVIDERS = {
-  openai: {
-    label: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    envKey: 'OPENAI_API_KEY',
-    // Tool calls go through the Responses API. Chat Completions refuses a
-    // reasoning effort alongside function tools for these models, and the
-    // old code quietly retried without one — so every step, every aim and
-    // every plan ran with no reasoning at all.
-    responses: true,
-    // fast  chat, classification
-    // see   operating the desktop: reading the screen, choosing and aiming
-    // plan  deciding what the task actually requires, once per task
-    // hard  writing
-    tiers: {
-      fast: 'gpt-5.4-nano',
-      hard: 'gpt-5.4-mini',
-      see: 'gpt-5.4-mini',
-      plan: 'gpt-5.4',
-    },
-    // Best first, and the first one the key can use wins. Measured on a page
-    // of 51 labelled targets, from a screenshot of a 2560x1440 display sent
-    // 1600 wide at full detail:
-    //
-    //   gpt-5.4-mini   80% of clicks inside the target, median 11.6px out
-    //   gpt-5.6-luna   94-98% inside, median 2px out, about as fast
-    //   gpt-5.6-terra  96% inside, 1.4px out, ten times the price
-    //
-    // For comparison, what Halo did before — mini, a 1024-wide picture, no
-    // reasoning — landed 36% of clicks on the thing it meant, 47px out.
-    prefer: {
-      see: ['gpt-5.6-luna', 'gpt-5.4-mini'],
-      plan: ['gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4'],
-    },
-  },
-  /* xkiro — free models behind one shared key, so Halo works for everyone
-     straight after install with nothing to paste. The key is deliberately
-     built in: the models on it are free, and the owner chose to share it.
-     A key of your own in .env (XKIRO_API_KEY) takes its place.
+   The provider: xkiro, and only xkiro.
 
-     Only models marked free are used, picked per job:
-       see   the step-by-step desktop work: must read a screenshot and call a
-             tool, and must land clicks — Qwen's Plus line is the strongest
-             visual grounding on offer, and quick enough per step.
-       plan  once per task, judgement over speed, and it also reads the
-             screen — the largest Qwen with vision.
-       fast  chat and routing: no picture, lowest latency — MiniMax's
-             highspeed build.
-       hard  longer writing, no picture — the largest text model.
-     Each list is best first; check() takes the first this key can use. */
+   Free models behind one shared key, so Halo works for everyone straight
+   after install with nothing to paste. The key is deliberately built in: the
+   models on it are free, and the owner chose to share it. A key of your own
+   in .env (XKIRO_API_KEY) takes its place.
+
+   Every job runs on Qwen3.8-Omni-Flash. It reads screenshots, calls tools and
+   answers quickly, so one model covers planning, the step-by-step desktop
+   work, chat and writing alike.
+
+   xkiro speaks OpenAI Chat Completions at /v1/chat/completions. Two things
+   shape the requests below:
+     - Qwen's Omni models only answer streamed requests, and xkiro cuts off
+       blocking requests at 95 seconds anyway, so every call streams —
+       tool calls included, assembled from their deltas.
+     - Omni thinks by default. Most of Halo's calls are small decisions made
+       against a screenshot, so the effort is asked for explicitly and
+       dropped if the gateway refuses it.
+   -------------------------------------------------------------------------- */
+export const OMNI = 'qwen/qwen3.8-omni-flash:free';
+
+export const PROVIDERS = {
   xkiro: {
-    label: 'xkiro (free models)',
+    label: 'xkiro · Qwen3.8 Omni Flash',
     baseUrl: 'https://api.xkiro.com/v1',
     envKey: 'XKIRO_API_KEY',
-    defaultKey: 'sk-xt-e9d6403a000bc72438205fdfbc991fad628bc3471f58096f',
-    // Documented as Chat Completions; tool calls go that way.
-    responses: false,
-    tiers: {
-      fast: 'minimax/minimax-m2.7-highspeed:free',
-      hard: 'qwen/qwen3.7-max:free',
-      see: 'qwen/qwen3.7-plus:free',
-      plan: 'qwen/qwen3.8-max:free',
-    },
-    prefer: {
-      see: ['qwen/qwen3.7-plus:free', 'qwen/qwen3-vl-plus:free', 'qwen/qwen3.7-flash:free', 'minimax/minimax-m3:free'],
-      plan: ['qwen/qwen3.8-max:free', 'qwen/qwen3.7-plus:free', 'minimax/minimax-m3:free'],
-      fast: ['minimax/minimax-m2.7-highspeed:free', 'minimax/minimax-m2.5-highspeed:free', 'qwen/qwen3.7-flash:free'],
-      hard: ['qwen/qwen3.7-max:free', 'qwen/qwen3.8-max:free', 'minimax/minimax-m2.7:free'],
-    },
-  },
-  bazaarlink: {
-    label: 'BazaarLink',
-    baseUrl: 'https://api.bazaarlink.ai/v1',
-    envKey: 'BAZAARLINK_API_KEY',
-    responses: false,
-    tiers: {
-      fast: 'auto:free',
-      hard: 'deepseek/deepseek-v4-flash',
-      see: 'deepseek/deepseek-v4-flash',
-      plan: 'deepseek/deepseek-v4-flash',
-    },
-    prefer: {},
+    defaultKey: 'sk-xt-21c439cc2d0ffd1fbacf575bb15a1e5a1201bc42b2af5728',
+    tiers: { fast: OMNI, hard: OMNI, see: OMNI, plan: OMNI },
   },
 };
-
-/** Chat Completions' tool shape, flattened for the Responses API. */
-const responsesTool = (t) => ({
-  type: 'function',
-  name: t.function.name,
-  description: t.function.description,
-  parameters: t.function.parameters,
-  strict: false,
-});
-
-/** A lower effort to try when a model refuses the one asked for. */
-const EFFORT_FALLBACK = { max: 'high', xhigh: 'high', high: 'medium', medium: 'low', low: 'minimal', minimal: 'none', none: null };
 
 /** Minimal .env parser — no dependency for something this small. */
 async function loadEnv() {
@@ -174,52 +105,33 @@ export function classify(task) {
 }
 
 export class LLM {
-  constructor({ apiKey, baseUrl, provider, tiers, pinned = {} }) {
+  constructor({ apiKey, baseUrl, provider, tiers }) {
     this.apiKey = apiKey;
     this.provider = provider;
     this.baseUrl = (baseUrl || '').replace(/\/+$/, '');
     this.tiers = tiers;
-    this.pinned = pinned;          // tiers set explicitly in .env, never replaced
     this.model = tiers.fast;
     this.onDowngrade = null;
-    this._noReasoningEffort = false;
-    this._responses = PROVIDERS[provider]?.responses !== false;
-    this._effort = new Map();      // model -> the effort it last accepted
-    this._noOriginal = new Set();  // models that refuse full-detail pictures
+    this.onRetry = null;
+    this._noEffort = false;        // the gateway refused reasoning_effort once
+    this._toolChoice = 'required'; // falls back to 'auto' if refused
   }
 
   static async fromEnv() {
     const env = { ...(await loadEnv()), ...process.env };
-
-    // Explicit choice wins. Otherwise the shared free models: they need no
-    // key from anyone, so every install works on its first start.
-    const wanted = (env.PICO_PROVIDER || '').toLowerCase();
-    const order = wanted && PROVIDERS[wanted] ? [wanted] : ['xkiro', 'openai', 'bazaarlink'];
-
-    for (const name of order) {
-      const p = PROVIDERS[name];
-      const apiKey = env[p.envKey] || p.defaultKey;
-      if (!apiKey) continue;
-
-      return new LLM({
-        apiKey,
-        baseUrl: env.PICO_BASE_URL || p.baseUrl,
-        provider: name,
-        tiers: {
-          fast: env.PICO_MODEL_FAST || p.tiers.fast,
-          hard: env.PICO_MODEL_HARD || p.tiers.hard,
-          see: env.PICO_MODEL_SEE || p.tiers.see,
-          plan: env.PICO_MODEL_PLAN || p.tiers.plan,
-        },
-        pinned: {
-          fast: Boolean(env.PICO_MODEL_FAST),
-          hard: Boolean(env.PICO_MODEL_HARD),
-          see: Boolean(env.PICO_MODEL_SEE),
-          plan: Boolean(env.PICO_MODEL_PLAN),
-        },
-      });
-    }
-    return null;
+    const p = PROVIDERS.xkiro;
+    const model = env.PICO_MODEL || OMNI;
+    return new LLM({
+      apiKey: env[p.envKey] || p.defaultKey,
+      baseUrl: env.PICO_BASE_URL || p.baseUrl,
+      provider: 'xkiro',
+      tiers: {
+        fast: env.PICO_MODEL_FAST || model,
+        hard: env.PICO_MODEL_HARD || model,
+        see: env.PICO_MODEL_SEE || model,
+        plan: env.PICO_MODEL_PLAN || model,
+      },
+    });
   }
 
   /** Strip the key from anything on its way to a log or a client. */
@@ -228,56 +140,119 @@ export class LLM {
     return this.apiKey ? s.split(this.apiKey).join('sk-***') : s;
   }
 
-  /** GPT-5 family renamed the token cap and fixes temperature at 1. */
-  _body(model, messages, { maxTokens, stream, tools, effort = 'none' }) {
-    const body = { model, messages, stream };
+  _body(model, messages, { maxTokens, tools, effort }) {
+    const body = { model, messages, stream: true, max_tokens: maxTokens, temperature: 0.3 };
     if (tools) {
       body.tools = tools;
-      body.tool_choice = 'required';
+      body.tool_choice = this._toolChoice;
       body.parallel_tool_calls = false;   // one action per turn, then look again
     }
-    if (/^gpt-5/.test(model)) {
-      body.max_completion_tokens = maxTokens;
-      // Chatting and planning need no thinking budget, and asking for one is
-      // most of the latency on a reasoning-capable model. Driving the desktop
-      // is the exception: deciding whether a task is finished is a judgement,
-      // and with no budget at all the model just repeats its last action.
-      // The accepted values differ by model, so `_noReasoningEffort` drops
-      // the parameter entirely if one rejects it.
-      if (!this._noReasoningEffort) body.reasoning_effort = effort;
-    } else {
-      body.max_tokens = maxTokens;
-      body.temperature = 0.3;
-    }
+    if (effort && !this._noEffort) body.reasoning_effort = effort;
     return body;
-  }
-
-  _post(model, messages, opts) {
-    return fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(this._body(model, messages, opts)),
-      signal: opts.signal ?? AbortSignal.timeout(90_000),
-    });
-  }
-
-  /** Models disagree on which reasoning_effort values they accept. */
-  _rejectsReasoningEffort(status, body) {
-    return status === 400
-      && !this._noReasoningEffort
-      && /reasoning_effort/i.test(body?.error?.message || '');
   }
 
   _error(status, body) {
     const msg = body?.error?.message || `HTTP ${status}`;
-    if (status === 401) return new Error('The API key was rejected. Check your key in .env.');
-    if (status === 402) return new Error('Out of credits with this provider.');
+    if (status === 401 || status === 403) return new Error('The xkiro key was rejected. Check XKIRO_API_KEY in .env.');
+    if (status === 402) return new Error('Out of free tokens with xkiro for today.');
     if (status === 429) return new Error('Rate limited. Try again in a moment.');
     if (status === 404) return new Error(`Model not available to this key: ${this.redact(msg)}`);
     return new Error(this.redact(msg));
+  }
+
+  /**
+   * One streamed request. Text arrives through `onDelta` as it is written;
+   * tool calls arrive in pieces and are put back together here.
+   *
+   * @returns {Promise<{text:string, calls:Array<{name:string, arguments:string}>}>}
+   */
+  async _request(model, messages, { maxTokens = 400, tools = null, effort = 'none', onDelta, signal } = {}) {
+    let res;
+    try {
+      res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify(this._body(model, messages, { maxTokens, tools, effort })),
+        signal: signal ?? AbortSignal.timeout(120_000),
+      });
+    } catch (err) {
+      throw new Error(`Could not reach xkiro: ${this.redact(err.message)}`);
+    }
+
+    if (!res.ok) {
+      let body = null;
+      try { body = JSON.parse(await res.text()); } catch { /* non-JSON error body */ }
+      const message = String(body?.error?.message || '');
+      const retry = () => this._request(model, messages, { maxTokens, tools, effort, onDelta, signal });
+
+      if (res.status === 400 && !this._noEffort && effort && /reasoning|effort|thinking/i.test(message)) {
+        this._noEffort = true;
+        return retry();
+      }
+      if (res.status === 400 && tools && this._toolChoice === 'required' && /tool_choice|required/i.test(message)) {
+        this._toolChoice = 'auto';
+        return retry();
+      }
+      throw this._error(res.status, body);
+    }
+
+    // A gateway that ignores `stream` and answers in one piece is read as-is.
+    if (!/event-stream/i.test(res.headers.get('content-type') || '')) {
+      const raw = await res.text();
+      let body = null;
+      try { body = JSON.parse(raw); } catch { /* not JSON either */ }
+      const m = body?.choices?.[0]?.message ?? {};
+      const text = String(m.content || '');
+      if (text) onDelta?.(text);
+      return {
+        text: text.trim(),
+        calls: (m.tool_calls || []).map((c) => ({ name: c.function?.name, arguments: c.function?.arguments || '' })),
+      };
+    }
+
+    // Server-sent events: lines of `data: {json}`, terminated by `data: [DONE]`.
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    const calls = [];
+
+    const take = (payload) => {
+      let frame;
+      try { frame = JSON.parse(payload); } catch { return; }
+      if (frame?.error) throw this._error(500, frame);
+      const delta = frame?.choices?.[0]?.delta ?? frame?.choices?.[0]?.message;
+      if (!delta) return;
+      if (delta.content) { text += delta.content; onDelta?.(delta.content); }
+      for (const tc of delta.tool_calls || []) {
+        const i = Number.isInteger(tc.index) ? tc.index : calls.length;
+        calls[i] ??= { name: '', arguments: '' };
+        if (tc.function?.name) calls[i].name = tc.function.name;
+        if (tc.function?.arguments) calls[i].arguments += tc.function.arguments;
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';          // keep the partial line for next read
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith('data:')) continue;
+        const payload = t.slice(5).trim();
+        if (payload && payload !== '[DONE]') take(payload);
+      }
+    }
+    const tail = buffer.trim();
+    if (tail.startsWith('data:') && tail.slice(5).trim() !== '[DONE]') take(tail.slice(5).trim());
+
+    return { text: text.trim(), calls: calls.filter((c) => c?.name) };
   }
 
   /**
@@ -285,84 +260,14 @@ export class LLM {
    * with the full text.
    */
   async stream(messages, { model, maxTokens = 400, onDelta, signal } = {}) {
-    const useModel = model || this.model;
-    let res;
-    try {
-      res = await this._post(useModel, messages, { maxTokens, stream: true, signal });
-    } catch (err) {
-      throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
-    }
-
-    if (!res.ok) {
-      let body = null;
-      try { body = JSON.parse(await res.text()); } catch { /* non-JSON error body */ }
-
-      // Paid tier unreachable — drop to the fast tier once rather than failing.
-      if (res.status === 402 && useModel !== this.tiers.fast) {
-        this.onDowngrade?.(useModel, this.tiers.fast);
-        return this.stream(messages, { model: this.tiers.fast, maxTokens, onDelta, signal });
-      }
-      if (this._rejectsReasoningEffort(res.status, body)) {
-        this._noReasoningEffort = true;
-        return this.stream(messages, { model: useModel, maxTokens, onDelta, signal });
-      }
-      throw this._error(res.status, body);
-    }
-
-    // Server-sent events: lines of `data: {json}`, terminated by `data: [DONE]`.
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let full = '';
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';          // keep the partial line for next read
-
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith('data:')) continue;
-        const payload = t.slice(5).trim();
-        if (payload === '[DONE]') continue;
-        try {
-          const piece = JSON.parse(payload).choices?.[0]?.delta?.content;
-          if (piece) { full += piece; onDelta?.(piece); }
-        } catch { /* a partial frame; the next read completes it */ }
-      }
-    }
-    return full.trim();
+    const out = await this._request(model || this.model, messages, { maxTokens, onDelta, signal });
+    return out.text;
   }
 
-  /** Non-streaming, for short calls where streaming buys nothing. */
+  /** A short reply, when nothing needs to watch it arrive. */
   async chat(messages, { model, maxTokens = 300, signal } = {}) {
-    const useModel = model || this.model;
-    let res;
-    try {
-      res = await this._post(useModel, messages, { maxTokens, stream: false, signal });
-    } catch (err) {
-      throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
-    }
-
-    const raw = await res.text();
-    let body = null;
-    try { body = JSON.parse(raw); } catch { /* non-JSON */ }
-
-    if (!res.ok) {
-      if (res.status === 402 && useModel !== this.tiers.fast) {
-        this.onDowngrade?.(useModel, this.tiers.fast);
-        return this.chat(messages, { model: this.tiers.fast, maxTokens, signal });
-      }
-      if (this._rejectsReasoningEffort(res.status, body)) {
-        this._noReasoningEffort = true;
-        return this.chat(messages, { model: useModel, maxTokens, signal });
-      }
-      throw this._error(res.status, body);
-    }
-    return (body?.choices?.[0]?.message?.content || '').trim();
+    const out = await this._request(model || this.model, messages, { maxTokens, signal });
+    return out.text;
   }
 
   /* ------------------------------------------------------------------------
@@ -371,91 +276,46 @@ export class LLM {
 
   /**
    * One turn of the desktop loop: a screenshot in, a single tool call out.
-   *
-   * Not streamed on purpose. A tool call is only useful once its arguments
-   * are complete, so streaming it would buy nothing but complexity — the
-   * perceived speed here comes from acting between turns, not from watching
-   * JSON arrive.
-   *
-   * @returns {Promise<{call:{name,args,raw}|null, text:string}>}
+   * @returns {Promise<{call:{name,args,raw}|null, text:string, why?:string}>}
    */
   async toolCall(messages, { model, tools, maxTokens = 1400, signal, effort = 'low' } = {}) {
-    const useModel = model || this.tiers.see || this.model;
-    let res;
-    try {
-      res = await this._post(useModel, messages, { maxTokens, stream: false, signal, tools, effort });
-    } catch (err) {
-      throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
-    }
-
-    const raw = await res.text();
-    let body = null;
-    try { body = JSON.parse(raw); } catch { /* non-JSON error body */ }
-
-    if (!res.ok) {
-      if (this._rejectsReasoningEffort(res.status, body)) {
-        this._noReasoningEffort = true;
-        return this.toolCall(messages, { model: useModel, tools, maxTokens, signal, effort });
-      }
-      throw this._error(res.status, body);
-    }
-
-    const message = body?.choices?.[0]?.message ?? {};
-    const call = message.tool_calls?.[0];
+    const out = await this._request(model || this.tiers.see, messages, { maxTokens, tools, effort, signal });
+    const call = out.calls[0];
     /* No call, and why, because the caller has to tell the difference.
        `tool_choice: 'required'` asks for an action and nothing else, but a
        model is free to answer with prose anyway — "I'll click the search bar
-       next" — and the smaller and cheaper it is, the more often it does. That
-       is not a decision, and the loop above must not read it as one. */
-    if (!call) return { call: null, text: (message.content || '').trim(), why: 'no_call' };
+       next" — and the loop above must not read that as a decision. */
+    if (!call) return { call: null, text: out.text, why: 'no_call' };
 
     let args = {};
     try {
-      args = JSON.parse(call.function?.arguments || '{}');
+      args = JSON.parse(call.arguments || '{}');
     } catch {
       // Malformed arguments are the model's fault, not the user's. Treat the
       // turn as a no-op rather than crashing a run halfway through.
-      return { call: null, text: '', why: 'bad_args' };
+      return { call: null, text: out.text, why: 'bad_args' };
     }
-
-    return {
-      call: { name: call.function?.name, args, raw: call },
-      text: (message.content || '').trim(),
-    };
+    return { call: { name: call.name, args, raw: call }, text: out.text };
   }
 
   /**
-   * One turn of the desktop loop, with reasoning: text and pictures in, a
-   * single tool call out.
+   * One turn, and it has to come back usable.
    *
-   * Through the Responses API, which is the only way these models take a
-   * reasoning effort and function tools in the same request. Falls back to
-   * Chat Completions (without the effort) for a provider that has no
-   * Responses API, so nothing that worked before stops working.
+   * Asking for a tool and being handed prose instead is the commonest way a
+   * model fails, and it used to cost a whole round trip to find out. So the
+   * answer is checked before it is returned, and a failed check is put back
+   * to the model with the specific complaint attached — up to three
+   * attempts, inside the one turn the caller asked for. Adapted from
+   * Agent-S's call_llm_formatted (Apache-2.0, simular-ai/Agent-S).
    *
    * @param {object} req
    * @param {string} req.model
    * @param {string} req.system
    * @param {Array}  req.content  [{type:'text', text} | {type:'image', b64, mime, detail}]
+   * @param {Array}  req.history  earlier turns, [{role, content: same shape}]
    * @param {Array}  req.tools    function tools, in the Chat Completions shape
    * @param {string} [req.effort] reasoning effort
-   * @returns {Promise<{call:{name,args}|null, text:string, usage:object|null}>}
-   */
-  /**
-   * One turn, and it has to come back usable.
-   *
-   * Asking for a tool and being handed prose instead is the commonest way a
-   * smaller model fails, and it used to cost a whole round trip to find
-   * out: the loop noticed next turn, said so, and asked again from the top
-   * with a fresh screenshot. Two calls and several seconds to recover from
-   * a mistake the model would have fixed immediately if anyone had told it.
-   *
-   * So the answer is checked before it is returned, and a failed check is
-   * put back to the model with the specific complaint attached — up to
-   * three attempts, inside the one turn the caller asked for. Adapted from
-   * Agent-S's call_llm_formatted (Apache-2.0, simular-ai/Agent-S).
-   *
-   * @param {Array<(out:object) => [boolean, string]>} checks
+   * @param {Array<(out:object) => [boolean, string]>} [req.checks]
    *   each returns [ok, what to say if not]
    */
   async respond({ checks = [], ...req }) {
@@ -491,112 +351,20 @@ export class LLM {
   }
 
   async _respondOnce({ model, system, content, history = [], tools, effort = 'low', maxTokens = 3000, signal }) {
-    const useModel = model || this.tiers.see;
-
-    /* `history` is everything said so far, in Halo's own neutral shape, and
-       it is what turns a sequence of unrelated questions into one
-       conversation. Without it every turn arrived cold: the model was
-       handed a screenshot and a summary and had to work out afresh what it
-       had been doing and why, having already decided that once. */
-    if (!this._responses) {
-      const asChat = (blocks) => blocks.map((c) => (c.type === 'image'
-        ? { type: 'image_url', image_url: { url: `data:${c.mime};base64,${c.b64}`, detail: c.detail === 'original' ? 'high' : (c.detail || 'high') } }
+    /* `history` is everything said so far, and it is what turns a sequence
+       of unrelated questions into one conversation. What the assistant said
+       goes back as plain text: a picture only ever comes from the user. */
+    const asChat = (blocks, role) => {
+      if (role === 'assistant') return blocks.filter((c) => c.type !== 'image').map((c) => c.text).join('\n');
+      return blocks.map((c) => (c.type === 'image'
+        ? { type: 'image_url', image_url: { url: `data:${c.mime};base64,${c.b64}` } }
         : { type: 'text', text: c.text }));
-      return this.toolCall([
-        { role: 'system', content: system },
-        ...history.map((m) => ({ role: m.role, content: asChat(m.content) })),
-        { role: 'user', content: asChat(content) },
-      ], { model: useModel, tools, maxTokens, signal, effort: 'none' });
-    }
-
-    // A model that turned an effort down before is asked for what it took.
-    const asked = this._effort.has(useModel) ? this._effort.get(useModel) : effort;
-    // Full-detail pictures are what make clicks land, but only newer models
-    // take them; an older one is sent the most it will accept instead.
-    const detailFor = (d) => (d === 'original' && this._noOriginal.has(useModel) ? 'high' : (d || 'high'));
-
-    /* The Responses API names its content blocks by direction, so what the
-       assistant said has to be tagged output_text, not input_text. */
-    const asInput = (blocks, role) => blocks.map((c) => (c.type === 'image'
-      ? { type: 'input_image', image_url: `data:${c.mime};base64,${c.b64}`, detail: detailFor(c.detail) }
-      : { type: role === 'assistant' ? 'output_text' : 'input_text', text: c.text }));
-
-    const body = {
-      model: useModel,
-      instructions: system,
-      input: [
-        ...history.map((m) => ({ role: m.role, content: asInput(m.content, m.role) })),
-        { role: 'user', content: asInput(content, 'user') },
-      ],
-      tools: tools.map(responsesTool),
-      tool_choice: 'required',
-      parallel_tool_calls: false,
-      max_output_tokens: maxTokens,
-      store: false,
     };
-    if (asked) body.reasoning = { effort: asked };
-
-    let res;
-    try {
-      res = await fetch(`${this.baseUrl}/responses`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: signal ?? AbortSignal.timeout(90_000),
-      });
-    } catch (err) {
-      throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
-    }
-
-    const raw = await res.text();
-    let json = null;
-    try { json = JSON.parse(raw); } catch { /* non-JSON */ }
-
-    if (!res.ok) {
-      const message = json?.error?.message || '';
-      // No Responses API behind this address: use the other one from now on.
-      if (res.status === 404 && !/model/i.test(message)) {
-        this._responses = false;
-        return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
-      }
-      // The effort was refused: step it down and remember what worked.
-      if (res.status === 400 && asked && /reasoning|effort/i.test(message)) {
-        this._effort.set(useModel, EFFORT_FALLBACK[asked] ?? null);
-        return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
-      }
-      // Full detail refused: this model gets high detail from now on.
-      if (res.status === 400 && /detail/i.test(message) && !this._noOriginal.has(useModel)
-        && content.some((c) => c.type === 'image' && c.detail === 'original')) {
-        this._noOriginal.add(useModel);
-        return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
-      }
-      throw this._error(res.status, json);
-    }
-
-    // Reasoning can use the whole budget and leave nothing for the answer.
-    // Once, with more room, rather than failing a step over it.
-    if (json?.status === 'incomplete' && json?.incomplete_details?.reason === 'max_output_tokens' && maxTokens < 12000) {
-      return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens: maxTokens * 2, signal });
-    }
-
-    const output = Array.isArray(json?.output) ? json.output : [];
-    const text = output
-      .filter((o) => o.type === 'message')
-      .flatMap((o) => o.content || [])
-      .map((c) => c.text || '')
-      .join('')
-      .trim();
-    const usage = json?.usage ?? null;
-    const call = output.find((o) => o.type === 'function_call');
-    if (!call) return { call: null, text, usage, why: 'no_call' };
-
-    let args = {};
-    try {
-      args = JSON.parse(call.arguments || '{}');
-    } catch {
-      return { call: null, text, usage, why: 'bad_args' };
-    }
-    return { call: { name: call.name, args, raw: call }, text, usage };
+    return this.toolCall([
+      { role: 'system', content: system },
+      ...history.map((m) => ({ role: m.role, content: asChat(m.content, m.role) })),
+      { role: 'user', content: asChat(content, 'user') },
+    ], { model: model || this.tiers.see, tools, maxTokens, signal, effort });
   }
 
   /* ------------------------------------------------------------------------
@@ -704,12 +472,7 @@ export class LLM {
     );
   }
 
-  /**
-   * Liveness probe used at start-up, which also picks the best model this
-   * key can use for each job. The list of models comes back with the probe
-   * anyway, and a key that can use a model measured to click more accurately
-   * should not be left on one that clicks less accurately.
-   */
+  /** Liveness probe used at start-up: is xkiro there, and does it list the model. */
   async check() {
     try {
       const res = await fetch(`${this.baseUrl}/models`, {
@@ -717,25 +480,14 @@ export class LLM {
         signal: AbortSignal.timeout(12_000),
       });
       if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+      let listed = null;
       try {
-        const body = await res.json();
-        this.adopt((body?.data || []).map((m) => m.id));
-      } catch { /* a probe that answers but lists nothing keeps the defaults */ }
-      return { ok: true, provider: this.provider, tiers: this.tiers };
+        const ids = ((await res.json())?.data || []).map((m) => m.id);
+        if (ids.length) listed = ids.includes(this.tiers.see);
+      } catch { /* answered, but listed nothing readable */ }
+      return { ok: true, provider: this.provider, tiers: this.tiers, listed };
     } catch (err) {
       return { ok: false, reason: this.redact(err.message) };
-    }
-  }
-
-  /** Move each unpinned tier to the first preferred model on offer. */
-  adopt(available = []) {
-    const have = new Set(available);
-    if (!have.size) return;
-    const prefer = PROVIDERS[this.provider]?.prefer ?? {};
-    for (const [tier, list] of Object.entries(prefer)) {
-      if (this.pinned[tier]) continue;
-      const pick = list.find((m) => have.has(m));
-      if (pick) this.tiers[tier] = pick;
     }
   }
 }

@@ -97,7 +97,7 @@ const initial = () => ({
 
   guardian: { ready: false },
   settings: {
-    model: 'gpt-5.4-mini',
+    model: 'qwen/qwen3.8-omni-flash:free',
     pauseOnPhysicalInput: true,
     maximumComputerTurns: 100,
     hasApiKey: false,

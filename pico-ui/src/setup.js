@@ -2,7 +2,7 @@
    First run
 
    Shown until a model provider is configured. The key is pasted here rather
-   than into a file, and the bridge validates it against OpenAI before saving
+   than into a file, and the bridge validates it against xkiro before saving
    — so a typo fails in front of you instead of on your first task.
 
    The endpoint behind this is loopback-only. Entering a key is safe from the
@@ -48,7 +48,7 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
   const step = el('div', 'setup__step');
   step.append(el('div', 'setup__steplabel', 'One thing first'));
   step.append(el('p', 'setup__stephelp',
-    'Paste an OpenAI API key. It is saved on this computer only, and is never ' +
+    'Paste an xkiro API key. It is saved on this computer only, and is never ' +
     'sent to your phone or put in a web page.'));
 
   const row = el('div', 'setup__row');
@@ -57,7 +57,7 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
   input.autocomplete = 'off';
   input.spellcheck = false;
   input.placeholder = 'sk-…';
-  input.setAttribute('aria-label', 'OpenAI API key');
+  input.setAttribute('aria-label', 'xkiro API key');
 
   const reveal = el('button', 'setup__reveal', 'Show');
   reveal.type = 'button';
@@ -76,15 +76,15 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
   go.type = 'button';
   go.disabled = true;
 
-  const link = el('a', 'setup__link', 'Get a key from OpenAI');
-  link.href = 'https://platform.openai.com/api-keys';
+  const link = el('a', 'setup__link', 'Get a free key from xkiro');
+  link.href = 'https://xkiro.com/';
   link.target = '_blank';
   link.rel = 'noreferrer';
 
   step.append(row, error, go, link);
 
   const foot = el('p', 'setup__foot',
-    'During a task Halo sends screenshots of your desktop to OpenAI. ' +
+    'During a task Halo sends screenshots of your desktop to xkiro (Qwen3.8 Omni Flash). ' +
     'Passwords and CAPTCHAs always come back to you.');
 
   card.append(pet, title, lede, step, foot);
