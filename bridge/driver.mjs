@@ -251,11 +251,19 @@ const PLAN_TOOL = [{
         },
         question: {
           type: 'string',
-          description: 'Ask ONE short question instead of planning, but only when '
-            + 'the answer changes what you would actually do and you cannot tell '
-            + 'from the screen — which file, which of two windows, what to write. '
-            + 'Never ask to confirm something already clear. Leave empty to just '
-            + 'get on with it.',
+          description: 'Ask ONE short question instead of planning whenever the task '
+            + 'leaves a real choice open that the person would care about — which of '
+            + 'several people, chats, files, windows, songs, products, accounts or '
+            + 'dates they mean. Never pick one of those for them. Do not ask about '
+            + 'wording you were asked to write, or to confirm something already '
+            + 'clear. Leave empty to just get on with it.',
+        },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'With a question: the choices you can see or know about, each a '
+            + 'few words, e.g. ["Sam Carter", "Sam (Work)"]. Shown to the person as '
+            + 'buttons. Leave empty for an open question.',
         },
       },
       required: ['steps', 'done_when', 'already_done'],
@@ -280,7 +288,7 @@ const PLAN_TOOL_DECIDE = [{
     parameters: {
       ...PLAN_TOOL[0].function.parameters,
       properties: (() => {
-        const { question, ...rest } = PLAN_TOOL[0].function.parameters.properties;
+        const { question, options, ...rest } = PLAN_TOOL[0].function.parameters.properties;
         return rest;
       })(),
     },
@@ -369,17 +377,19 @@ ${facts.precedent}` : '',
     'outcome that is certainly wrong.',
   ] : [
     '',
-    'If one detail would genuinely change what you do, ask for it instead of',
-    'guessing: which of two real files, which of two open windows, which',
-    'person out of several. One short question, and only when the answer',
-    'really decides something.',
+    'WHEN THERE IS MORE THAN ONE REAL OPTION, ASK. Do not pick your favourite.',
+    'If the task could mean several different things the person would care',
+    'about — which of several open windows or files, which person when more',
+    'than one fits the name, which account, which song, product, flight or',
+    'date — ask, and list the options you can see in "options". A guess that',
+    'picks the wrong one does the wrong job on their computer, which is worse',
+    'than a two-second question.',
     '',
-    'You only get the one, so do not spend it on something you could settle',
-    'yourself. Wording you were not given is yours to write from what was',
-    'asked: a subject line, a search, a short message, a note. Picking a',
-    'sensible one and getting on with it is what was wanted. And if the task',
-    'already tells you what to write, that is the answer - do not ask for it',
-    'again in other words.',
+    'Only settle it yourself when the choice does not matter to them or the',
+    'task already decides it. Wording you were asked to write is yours: a',
+    'subject line, a search, a short message, a note. And if the task already',
+    'tells you what to write, that is the answer - do not ask for it again in',
+    'other words.',
   ]),
 ].filter(Boolean).join('\n');
 
@@ -566,12 +576,22 @@ const ACT_TOOLS = [
       description:
         'Ask the person one short question, when the step cannot be carried out '
         + 'as planned and the answer decides what to do instead: something the '
-        + 'step needs is not there, or there are two things it could mean. Never '
-        + 'to confirm something already clear, and never instead of looking '
-        + 'properly first.',
+        + 'step needs is not there, or the screen shows more than one thing that '
+        + 'fits — two contacts with the name, several search results, files or '
+        + 'versions that could all be it. Never choose between those yourself. '
+        + 'Never to confirm something already clear, and never instead of '
+        + 'looking properly first.',
       parameters: {
         type: 'object',
-        properties: { question: { type: 'string' } },
+        properties: {
+          question: { type: 'string' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'The choices on screen, each a few words as they appear, e.g. '
+              + '["Sam Carter", "Sam - Work"]. Shown as buttons.',
+          },
+        },
         required: ['question'],
       },
     },
@@ -608,6 +628,15 @@ const ACT_TOOLS = [
    (Apache-2.0, simular-ai/Agent-S); the checks themselves are Halo's, being
    about Halo's tools.
    -------------------------------------------------------------------------- */
+/** The model's list of choices, as the buttons the interface shows. */
+const asOptions = (list) => {
+  const labels = (Array.isArray(list) ? list : [])
+    .map((o) => String(o ?? '').replace(/\s+/g, ' ').trim().slice(0, 60))
+    .filter((o, i, a) => o && a.indexOf(o) === i)
+    .slice(0, 6);
+  return labels.length >= 2 ? labels.map((label, i) => ({ id: `opt_${i + 1}`, label })) : null;
+};
+
 const SENDS = /\b(?:send|sending|message|reply|dm|post|search|look\s+up|google|submit)\b/i;
 
 const NEEDS_POINT = new Set(['click', 'double_click', 'right_click', 'middle_click', 'move', 'drag', 'scroll', 'select_text']);
@@ -736,6 +765,13 @@ const ACT_SYSTEM = (shot, front, windows = []) => [
   'scroll_to "top" or "bottom" to go all the way. After a scroll you are told',
   'how far it really moved and whether it reached the end; do not keep',
   'scrolling past an end.',
+  '',
+  'SEVERAL THINGS FIT? ASK. If the screen shows more than one thing the',
+  'task could mean — two contacts called Sam, several search results for the',
+  'same name, a few files or versions, more than one matching chat — and the',
+  'task does not say which, call ask with them listed in "options". Do not',
+  'pick the first, the top result, or the one you think is likeliest. When',
+  'exactly one thing fits, just use it.',
   '',
   'When the step is to click something you can see, click it. Never press',
   'ctrl+f to look for it — finding text on a page does not click anything. If',
@@ -958,12 +994,15 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     if (!(await gate())) return;
 
     const asked = String(plan?.question || '').trim();
-    // A question alongside a usable plan is a model hedging. Take the plan.
-    const hasSteps = Array.isArray(plan?.steps) && plan.steps.some((st) => st?.do);
-    if (!asked || attempt > 0 || hasSteps || plan?.already_done) break;
+    /* A question with a plan beside it used to be read as hedging, and the
+       plan was taken - which is exactly how Halo came to pick its own
+       favourite of several options instead of asking. The question wins. */
+    if (!asked || attempt > 0 || plan?.already_done) break;
 
-    const answer = await askPerson(asked);
+    const offered = asOptions(plan?.options);
+    const answer = await askPerson(asked, offered);
     if (!(await gate())) return;
+    if (!answer.text && answer.choice) answer.text = offered?.find((o) => o.id === answer.choice)?.label ?? '';
     if (!answer.text) {
       onPhase('Stopped');
       onAudit('run_stopped', { metadata: { failure_class: 'unanswered' } });
@@ -1957,8 +1996,10 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       if (!question || asked.has(question)) { nextStep('done'); continue; }
       asked.add(question);
 
-      const answer = await askPerson(question);
+      const offered = asOptions(args.options);
+      const answer = await askPerson(question, offered);
       if (!(await gate())) return;
+      if (!answer.text && answer.choice) answer.text = offered?.find((o) => o.id === answer.choice)?.label ?? '';
       if (!answer.text) {
         onStep(null);
         publish({ finished: true, succeeded: false });
@@ -1976,7 +2017,10 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       done.push(`you said: ${answer.text}`);
       repeats = 0;
       lastSignature = null;
-      feedback = null;
+      // Only the first turn restates the brief, so the answer is said here
+      // too - otherwise the model asked, and never heard what came back.
+      feedback = `You asked "${question}" and they answered: "${answer.text}". Do what they said.`;
+      note(`they answered "${question}" with: ${answer.text}`);
       turnsOnStep = 0;
       onPhase('Observing');
       try { await observe(); } catch (err) {

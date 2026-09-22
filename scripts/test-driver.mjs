@@ -558,6 +558,51 @@ console.log('typed text goes through');
   check('and a no leaves it unsent', !computer.state.keys.includes('enter'), JSON.stringify(computer.state.keys));
 }
 
+/* --- more than one option: ask, do not pick -----------------------------
+   The planner used to answer with a question and a plan together, and the
+   plan was taken - so Halo picked its own favourite of several options.
+   ------------------------------------------------------------------------ */
+console.log('more than one option');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const questions = [];
+  const llm = scripted([
+    plan([{ do: 'Type hi', kind: 'keyboard' }], { question: 'Which Sam?', options: ['Sam Carter', 'Sam - Work'] }),
+    plan([{ do: 'Type hi', kind: 'keyboard' }]),
+    act({ action: 'type', text: 'hi' }),
+    { name: 'report', args: { succeeded: true, summary: 'Done.' } },
+  ]);
+  const { done } = run({
+    computer, llm, task: 'say hi to sam',
+    hooks: { onQuestion: async (q) => { questions.push(q); return { text: 'Sam - Work', choice: 'opt_2' }; } },
+  });
+  await done;
+  check('a question with a plan beside it is still asked', questions.length === 1, `${questions.length} questions`);
+  check('with the options as buttons',
+    JSON.stringify(questions[0]?.options?.map((o) => o.label)) === '["Sam Carter","Sam - Work"]', JSON.stringify(questions[0]?.options));
+  check('and the answer reaches the planner',
+    llm.calls.filter((c) => c.tool === 'plan').length === 2, JSON.stringify(llm.calls.map((c) => c.tool)));
+}
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const questions = [];
+  const llm = scripted([
+    plan([{ do: 'Click the right result', kind: 'pointer' }]),
+    { name: 'ask', args: { question: 'Two results match - which one?', options: ['Report 2024', 'Report 2025'] } },
+    act({ action: 'click', x: 10, y: 10, target: 'Report 2025' }),
+    { name: 'report', args: { succeeded: true, summary: 'Done.' } },
+  ]);
+  computer.state.clicksChange = true;
+  const { done } = run({
+    computer, llm, task: 'open the report',
+    hooks: { onQuestion: async (q) => { questions.push(q); return { text: '', choice: 'opt_2' }; } },
+  });
+  await done;
+  check('asking mid-run offers the options on screen', questions[0]?.options?.length === 2, JSON.stringify(questions[0]));
+  check('and a tapped option counts as the answer',
+    llm.calls.some((c) => c.tool === 'act' && /Report 2025/.test(c.text)), 'the choice never reached the model');
+}
+
 /* --- an opening step costs no model turn ---------------------------------- */
 console.log('opening from the plan');
 {
