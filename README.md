@@ -32,6 +32,12 @@ Prefer a portable copy with nothing installed? Download and unzip [`Halo-latest.
 
 This personal build is not code-signed, so Windows SmartScreen may show an unknown-publisher warning. Verify the package hash before running it; do not weaken SmartScreen globally.
 
+### Talk to it
+
+Say **"hey Halo"** and then the job — "hey Halo, open Notepad and type hello" — or say "hey Halo", wait for "Yes?", and then say it. Whatever Halo asks, it says out loud (reading out the options when there are several), and the next thing you say is the answer; approvals take a yes or a no. While a task runs, "hey Halo, stop" stops it. The notch animates while Halo speaks and while it is listening for you.
+
+Voice needs an ElevenLabs key: add `ELEVENLABS_API_KEY=...` to the `.env` file next to `Start Halo.cmd` and restart Halo. Listening happens on your machine: only the stretches where someone is speaking are sent to ElevenLabs to be transcribed. The mic button at the top of the open notch turns it off.
+
 ### Shortcuts
 
 | Shortcut | Effect |

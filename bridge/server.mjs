@@ -32,6 +32,7 @@ import { encode, toTerminal, toSVG } from './qr.mjs';
 import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
 import { LLM, PROVIDERS } from './llm.mjs';
+import { Voice } from './voice.mjs';
 import { NotchWindow } from './notch-window.mjs';
 /* The one list of chords, shared with the pages that teach and show them.
    A .js module of plain data, imported by Node and the bundler alike. */
@@ -777,6 +778,8 @@ try {
   console.warn(`[bridge] the interface could not be rebuilt (${String(err.message).split('\n')[0]}); serving the last build`);
 }
 const bridge = new Bridge();
+const voice = await Voice.fromEnv();
+console.log(voice ? '[bridge] voice: listening for "hey Halo" (ElevenLabs)' : '[bridge] voice: off — set ELEVENLABS_API_KEY in .env to talk to Halo');
 
 const server = createServer(async (req, res) => {
   const ip = req.socket.remoteAddress || '';
@@ -946,6 +949,57 @@ const server = createServer(async (req, res) => {
       return reply(500, { error: String(err.message) });
     }
     res.writeHead(404).end('Not found');
+    return;
+  }
+
+  // --- voice ---------------------------------------------------------------
+  // "Hey Halo": the notch records, this transcribes; Halo's questions are
+  // spoken from here. Local only, and only for the island this bridge
+  // opened, because each call spends the ElevenLabs key.
+  if (url.pathname === '/voice/state') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ ready: Boolean(voice) }));
+    return;
+  }
+  if ((url.pathname === '/voice/stt' || url.pathname === '/voice/tts') && req.method === 'POST') {
+    const isLocal = /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''));
+    if (!isLocal) { res.writeHead(403).end('Local only.'); return; }
+    if (bridge.notch && url.searchParams.get('k') !== bridge.notch.token) { res.writeHead(403).end('Not the island.'); return; }
+    if (!voice) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'No ElevenLabs key: set ELEVENLABS_API_KEY in .env' }));
+      return;
+    }
+
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 4 * 1024 * 1024) { res.writeHead(413).end('{}'); return; }
+      chunks.push(chunk);
+    }
+    const body = Buffer.concat(chunks);
+    const fail = (err) => {
+      res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: voice.redact(err.message) }));
+    };
+
+    if (url.pathname === '/voice/stt') {
+      try {
+        const text = await voice.transcribe(body, String(req.headers['content-type'] || 'audio/wav'));
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ text }));
+      } catch (err) { fail(err); }
+      return;
+    }
+    let text = '';
+    try { text = String(JSON.parse(body.toString('utf8')).text || '').trim(); } catch { /* handled below */ }
+    if (!text) { res.writeHead(400).end('{}'); return; }
+    try {
+      const audio = await voice.speak(text);
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' });
+      res.end(audio);
+    } catch (err) { fail(err); }
     return;
   }
 

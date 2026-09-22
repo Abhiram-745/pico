@@ -25,13 +25,14 @@
    on someone and looking idle is the failure this exists to prevent.
    ========================================================================== */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { store, isActive, PHASE_COPY } from '../src/store.js';
 import { bridge, connect } from '../src/bridge.js';
 import { chats } from '../src/chats.js';
 import { permissions, LEVELS } from '../src/permissions.js';
 import { TAUGHT, written } from '../src/keybinds.js';
+import { voice } from '../src/voice.js';
 import { useStore, useStoreEvent, sel, usePetName, ago } from './hooks.js';
 import { Beam, MetalButton } from './fx.jsx';
 import {
@@ -56,6 +57,29 @@ const SHORT = {
 };
 
 const SUGGESTIONS = ['What can you do?', 'Open Notepad and type hello', 'Remember I use Chrome'];
+
+/* --------------------------------------------------------------------------
+   Voice: "hey Halo", and Halo answering out loud (src/voice.js).
+   -------------------------------------------------------------------------- */
+const voiceSub = (fn) => voice.subscribe(fn);
+const voiceNow = () => voice.state;
+function useVoice() {
+  useEffect(() => { voice.start(); }, []);
+  return useSyncExternalStore(voiceSub, voiceNow, voiceNow);
+}
+
+/** Modes worth growing the island for. Hearing alone is not: that is anyone
+    talking in the room, and most of it is not for Halo. */
+const VOICE_SHOWN = new Set(['speaking', 'waiting', 'thinking']);
+const VOICE_WORDS = { speaking: 'Speaking', waiting: 'Listening…', thinking: 'Got it', hearing: 'Hearing you' };
+
+function VoiceWave({ mode }) {
+  return (
+    <span className="h-voice" data-mode={mode} aria-hidden="true">
+      <i /><i /><i /><i /><i />
+    </span>
+  );
+}
 
 /* --------------------------------------------------------------------------
    Hovering
@@ -210,6 +234,8 @@ function Island({ onMeasure }) {
   const routines = useStore(sel.routines);
   const chatState = useStore(sel.chats);
   const hover = useHover();
+  const heard = useVoice();
+  const voiceUp = VOICE_SHOWN.has(heard.mode);
 
   const shell = useStore(sel.shell);
   const [pinned, setPinned] = useState(false);
@@ -262,7 +288,7 @@ function Island({ onMeasure }) {
     if (card) return 'card';
     if (decision && !(decision.kind === 'question' && decision.item.id === dismissed)) return 'open';
     if (pinned) return 'open';
-    if (running || streaming || flash) return 'live';
+    if (running || streaming || flash || voiceUp) return 'live';
     if (hover) return 'peek';
     return 'compact';
   })();
@@ -342,9 +368,12 @@ function Island({ onMeasure }) {
   let line = SHORT[phase] || 'Ready';
   let mark = running ? 'busy' : 'dot';
   if (view === 'peek') {
-    line = guardian.canAct === false ? 'Chat only' : 'Click to type · Esc to hide';
+    line = guardian.canAct === false ? 'Chat only' : heard.mode !== 'off' ? `Say "hey ${petName}" · or click to type` : 'Click to type · Esc to hide';
   } else if (view === 'live') {
-    if (running) {
+    if (voiceUp && !(running && heard.mode === 'thinking')) {
+      head = heard.mode === 'waiting' ? 'Listening…' : heard.text || 'Listening…';
+      line = [VOICE_WORDS[heard.mode], petName].join(' · ');
+    } else if (running) {
       head = step?.do || doing || PHASE_COPY[phase]?.title || SHORT[phase];
       line = [doing && doing !== head ? doing : null, total > 1 && step ? `Step ${plan.index + 1} of ${total}` : SHORT[phase]].filter(Boolean).join(' · ');
     } else if (streaming) {
@@ -394,7 +423,7 @@ function Island({ onMeasure }) {
 
   return (
     <Beam active={running && view !== 'compact'} size="md" color="colorful" strength={0.55} radius={view === 'compact' ? 18 : 26} className="h-island-beam">
-      <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'}>
+      <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'} data-voice={heard.mode}>
         {/* --- the bar ---------------------------------------------------- */}
         <div className="h-island__bar" onClick={onBarClick}
           onPointerDown={onGrab} onPointerMove={onDrag} onPointerUp={onDrop} onPointerCancel={onDrop}>
@@ -406,8 +435,9 @@ function Island({ onMeasure }) {
           </div>
 
           <div className="h-island__trail">
+            {view !== 'compact' && (voiceUp || heard.mode === 'hearing') && <VoiceWave mode={heard.mode} />}
             {view !== 'compact' && running && <RunControls size={14} />}
-            {(view === 'compact' || !running) && (
+            {(view === 'compact' || !running) && !(view !== 'compact' && (voiceUp || heard.mode === 'hearing')) && (
               <span className="h-glyph" data-mark={mark}>
                 {mark === 'tick' && <Icon name="check" size={11} />}
                 {mark === 'cross' && <Icon name="x" size={11} />}
@@ -420,6 +450,10 @@ function Island({ onMeasure }) {
                   onClick={() => { const order = ['ask', 'smart', 'all']; permissions.set(order[(order.indexOf(level) + 1) % order.length]); }}>
                   <Icon name="shield" size={13} /><span>{lvl.label}</span>
                 </button>
+                <IconButton icon={heard.enabled ? 'mic' : 'micOff'} className={heard.enabled ? 'is-on' : ''}
+                  label={!heard.available ? (heard.error || 'Voice is not set up')
+                    : heard.enabled ? `Listening for "hey ${petName}" — click to stop` : `Voice is off — click to listen for "hey ${petName}"`}
+                  onClick={() => voice.toggle()} />
                 {messages.length > 0 && <IconButton icon="plus" label="New chat" onClick={() => { chats.newChat(); open(); }} />}
                 <IconButton icon="expand" label="Open the Halo window" onClick={() => bridge.send('openApp', {})} />
                 {view === 'card'
@@ -489,6 +523,12 @@ function Island({ onMeasure }) {
               </section>
             )}
 
+            {decision && voiceUp && (
+              <div className="h-voicebar" data-mode={heard.mode}>
+                <VoiceWave mode={heard.mode} />
+                <span>{heard.mode === 'speaking' ? 'Speaking…' : heard.mode === 'thinking' ? 'Got it…' : 'Listening — just say your answer'}</span>
+              </div>
+            )}
             {decision && <Decision decision={decision} />}
 
             {showEmpty && (

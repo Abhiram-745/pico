@@ -351,6 +351,12 @@ export class NotchWindow {
          could not be built, where the least Chrome can do is not draw a
          light grey one. */
       '--force-dark-mode',
+      /* "Hey Halo": the island listens for its name and speaks its
+         questions. This window only ever loads Halo's own page on
+         localhost, so the microphone is granted without a prompt, and
+         speech plays without waiting for a click. */
+      '--use-fake-ui-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
       `--window-position=${r.x},0`,
       `--window-size=${r.width},${r.height}`,
     ], { detached: true, stdio: 'ignore' });
