@@ -133,21 +133,26 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
      The pauses that matter, around a click and through a drag, are asked
      for deliberately further down. */
   try { libnut?.setMouseDelay(0); } catch { /* an older build: moves stay coarse */ }
+  /* The keyboard has the same built-in delay, and the same 15.6ms rounding:
+     every character of every field paid for it twice, down and up. */
+  try { libnut?.setKeyboardDelay(0); } catch { /* an older build: typing stays slower */ }
 
   const { mouse, keyboard, Point, Button, Key } = nut;
   mouse.config.autoDelayMs = 1;
-  keyboard.config.autoDelayMs = 1;
+  keyboard.config.autoDelayMs = 0;
 
   const KEY_MAP = buildKeyMap(Key);
   const mapKey = (name) => KEY_MAP[String(name).toUpperCase().trim()] ?? null;
   const BUTTON = { left: Button.LEFT, right: Button.RIGHT, middle: Button.MIDDLE };
 
   const bounds = local.bounds;
-  const clampX = (x) => Math.round(Math.max(0, Math.min(bounds.width - 1, x)));
-  const clampY = (y) => Math.round(Math.max(0, Math.min(bounds.height - 1, y)));
+  /* Anywhere on any display — the work may be on a second screen. */
+  const reach = local.virtual ?? { minX: 0, minY: 0, maxX: bounds.width - 1, maxY: bounds.height - 1 };
+  const clampX = (x) => Math.round(Math.max(reach.minX, Math.min(reach.maxX, x)));
+  const clampY = (y) => Math.round(Math.max(reach.minY, Math.min(reach.maxY, y)));
 
   // Where Halo last put the pointer, for when Windows cannot be asked.
-  let at = { x: Math.round(bounds.width / 2), y: Math.round(bounds.height / 2) };
+  let at = { x: Math.round((bounds.x ?? 0) + (bounds.width / 2)), y: Math.round((bounds.y ?? 0) + (bounds.height / 2)) };
 
   /** Where the pointer really is now, in mouse units. */
   function whereIsPointer() {
@@ -242,7 +247,9 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
 
     const duration = ms > 0
       ? ms
-      : Math.max(70, Math.min(360, 55 + (46 * Math.log2(1 + (dist / 14)))));
+      /* Still a visible reach, just a quicker one: under a quarter of a
+         second across a screen, where it used to be over a third. */
+      : Math.max(60, Math.min(240, 40 + (32 * Math.log2(1 + (dist / 14)))));
 
     await trace(duration, (t) => {
       const e = minimumJerk(t);

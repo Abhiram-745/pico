@@ -51,7 +51,7 @@ parentPort.on('message', async (msg) => {
 
     if (op === 'raw') {
       parentPort.postMessage(
-        { id, ok: true, value: { raw, width: desktop.width, height: desktop.height, scale: desktop.scale } },
+        { id, ok: true, value: { raw, width: desktop.width, height: desktop.height, scale: desktop.scale, originX: desktop.originX, originY: desktop.originY, mouseScale: desktop.mouseScale } },
         [raw.buffer],
       );
       return;
@@ -73,6 +73,9 @@ parentPort.on('message', async (msg) => {
         width: desktop.width,
         height: desktop.height,
         scale: desktop.scale,
+        originX: desktop.originX,
+        originY: desktop.originY,
+        mouseScale: desktop.mouseScale,
       },
     }, [grey.buffer, raw.buffer]);
   } catch (err) {

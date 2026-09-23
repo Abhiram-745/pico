@@ -36,6 +36,8 @@ import { Sense } from '../bridge/sense.mjs';
 import { loadComputer } from '../bridge/computer.mjs';
 import { runTask } from '../bridge/driver.mjs';
 import { findBrowser } from '../bridge/notch-window.mjs';
+import { chooseMonitor } from '../bridge/screen.mjs';
+import { createRequire } from 'node:module';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PAGES_DIR = join(ROOT, 'pico-ui', 'fixtures', 'qa');
@@ -51,11 +53,16 @@ const opt = (name, fallback) => {
 };
 const repeat = Math.max(1, Number(opt('n', 1)) || 1);
 const label = opt('label', new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-'));
-const skip = new Set([opt('n'), opt('label')].filter(Boolean));
+const skip = new Set([opt('n'), opt('label'), opt('display')].filter(Boolean));
 const wanted = argv.filter((a) => !a.startsWith('-') && !skip.has(a));
 const pages = wanted.length ? wanted.filter((p) => ALL.includes(p)) : ALL;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* Which screen to test on. The second display by default, so the primary
+   stays free for whoever is working on it. Set before Halo's own screen code
+   starts, which reads it. */
+process.env.HALO_DISPLAY = opt('display', process.env.HALO_DISPLAY || 'secondary');
 
 /* --- the pages ------------------------------------------------------------ */
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
@@ -85,6 +92,35 @@ if (!running) {
   ], { detached: true, stdio: 'ignore' }).unref();
 }
 
+/* The QA window, maximised on the display being tested. Chrome's own window
+   API does it without touching the pointer: unmaximise, move onto that
+   display, maximise there. */
+async function placeOnDisplay(targetId, browserWsUrl) {
+  const { Monitor } = createRequire(import.meta.url)('node-screenshots');
+  const all = Monitor.all();
+  const m = chooseMonitor(all);
+  const primary = all.find((d) => d.isPrimary()) ?? all[0];
+  const ms = primary.scaleFactor() || 1;
+  const ws2 = new WebSocket(browserWsUrl);
+  await new Promise((r) => ws2.addEventListener('open', r, { once: true }));
+  let n = 0;
+  const call = (method, params) => new Promise((resolve) => {
+    const id = ++n;
+    const on = (e) => { const msg = JSON.parse(e.data); if (msg.id === id) { ws2.removeEventListener('message', on); resolve(msg.result ?? null); } };
+    ws2.addEventListener('message', on);
+    ws2.send(JSON.stringify({ id, method, params }));
+    setTimeout(() => resolve(null), 3000);
+  });
+  const win = await call('Browser.getWindowForTarget', { targetId });
+  if (win?.windowId) {
+    await call('Browser.setWindowBounds', { windowId: win.windowId, bounds: { windowState: 'normal' } });
+    await call('Browser.setWindowBounds', { windowId: win.windowId, bounds: { left: Math.round(m.x() / ms) + 40, top: Math.round(m.y() / ms) + 40, width: 1000, height: 700 } });
+    await call('Browser.setWindowBounds', { windowId: win.windowId, bounds: { windowState: 'maximized' } });
+  }
+  ws2.close();
+  await sleep(500);
+}
+
 /* Exactly one QA tab. A profile that has been used before comes back with the
    tabs it had, and reading one of those while Halo works in another measures
    nothing — so every earlier one is closed and a fresh one opened. */
@@ -105,6 +141,7 @@ async function pageSocket() {
       pages.forEach((p, i) => browserWs.send(JSON.stringify({ id: i + 1, method: 'Target.closeTarget', params: { targetId: p.id } })));
       await sleep(400);
       browserWs.close();
+      await placeOnDisplay(fresh.id, version.webSocketDebuggerUrl);
       await fetch(`${base}/json/activate/${fresh.id}`).catch(() => {});
       const left = (await (await fetch(`${base}/json/list`)).json()).filter((t) => t.type === 'page');
       if (left.length !== 1) console.warn(`[qa] ${left.length} tabs open, expected 1`);
@@ -151,13 +188,14 @@ if (!computer) { console.error('Desktop control unavailable.'); process.exit(1);
 
 /* Every model call, counted and timed, by kind. */
 const calls = [];
+let taskStart = null;
 for (const name of ['respond', 'chat', 'stream', 'evaluate']) {
   const original = llm[name].bind(llm);
   llm[name] = async (...args) => {
     const t0 = performance.now();
     try { return await original(...args); } finally {
       const model = name === 'evaluate' ? 'jev' : (args[0]?.model || args[1]?.model || '?');
-      calls.push({ kind: name, model, ms: Math.round(performance.now() - t0) });
+      calls.push({ kind: name, model, ms: Math.round(performance.now() - t0), at: Math.round(t0 - (taskStart ?? t0)) });
     }
   };
 }
@@ -210,6 +248,7 @@ for (let round = 1; round <= repeat; round++) {
     calls.length = 0;
     const actions = [];
     const t0 = performance.now();
+    taskStart = t0;
     let firstAction = null;
     let stopped = false;
     const timer = setTimeout(() => { stopped = true; }, TASK_LIMIT_MS);
@@ -251,6 +290,7 @@ for (let round = 1; round <= repeat; round++) {
       actions: actions.length, repeats,
       firstActionMs: firstAction, totalMs: total, timedOut: stopped && !outcome,
       calls: calls.length,
+      callLog: calls.map((c) => ({ ...c })),
       byKind: calls.reduce((m, c) => ({ ...m, [c.model]: (m[c.model] || 0) + 1 }), {}),
       modelMs: calls.reduce((s, c) => s + c.ms, 0),
       error,

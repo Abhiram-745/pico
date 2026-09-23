@@ -152,6 +152,24 @@ function blit(dst, dw, dh, src, sw, sh, dx, dy) {
   }
 }
 
+/**
+ * Which display Halo works on.
+ *
+ * HALO_DISPLAY = "primary" (the default), "secondary" (the first display
+ * that is not the primary), a number counting displays left to right from
+ * 1, or part of a display's name. Anything that matches nothing is the
+ * primary: a wrong setting must never leave Halo blind.
+ */
+export function chooseMonitor(all, want = process.env.HALO_DISPLAY) {
+  const primary = all.find((m) => m.isPrimary()) || all[0];
+  const w = String(want ?? '').trim().toLowerCase();
+  if (!w || w === 'primary') return primary;
+  if (w === 'secondary' || w === 'second') return all.find((m) => !m.isPrimary()) ?? primary;
+  const ordered = [...all].sort((a, b) => a.x() - b.x());
+  if (/^\d+$/.test(w)) return ordered[Number(w) - 1] ?? primary;
+  return all.find((m) => String(m.name?.() ?? '').toLowerCase().includes(w)) ?? primary;
+}
+
 export class Screen {
   constructor() {
     this.mode = null;            // 'monitor' | 'composite'
@@ -169,6 +187,13 @@ export class Screen {
     return m;
   }
 
+  /** The display Halo is working on — see chooseMonitor. */
+  target() {
+    const all = Monitor.all();
+    if (!all.length) throw new Error('no display found');
+    return chooseMonitor(all);
+  }
+
   /**
    * Work out which capture path this machine supports, once.
    * @returns {Promise<{mode:string, width:number, height:number, scale:number}>}
@@ -176,15 +201,30 @@ export class Screen {
   async detect() {
     if (!Screen.available()) throw new Error('the capture module is not installed');
 
-    const m = this.primary();
+    const m = this.target();
     this.scale = m.scaleFactor() || 1;
+    /* The mouse, in a process that is not DPI aware, works in the primary
+       display's units on every display — measured with two screens at 125%
+       and 150%: every position on both was exactly physical / 1.25. */
+    this.mouseScale = this.primary().scaleFactor() || 1;
+    this.origin = { x: m.x(), y: m.y() };
 
     // Monitor geometry is physical; the mouse and window geometry are not.
     const physW = m.width();
     const physH = m.height();
     this.bounds = {
-      width: Math.round(physW / this.scale),
-      height: Math.round(physH / this.scale),
+      x: Math.round(this.origin.x / this.mouseScale),
+      y: Math.round(this.origin.y / this.mouseScale),
+      width: Math.round(physW / this.mouseScale),
+      height: Math.round(physH / this.mouseScale),
+    };
+    // Everywhere the pointer can go, across every display, in mouse units.
+    const all = Monitor.all();
+    this.virtual = {
+      minX: Math.floor(Math.min(...all.map((d) => d.x())) / this.mouseScale),
+      minY: Math.floor(Math.min(...all.map((d) => d.y())) / this.mouseScale),
+      maxX: Math.ceil(Math.max(...all.map((d) => d.x() + d.width())) / this.mouseScale) - 1,
+      maxY: Math.ceil(Math.max(...all.map((d) => d.y() + d.height())) / this.mouseScale) - 1,
     };
 
     try {
@@ -208,14 +248,16 @@ export class Screen {
 
   /** Full desktop as raw RGBA, in physical pixels. */
   async rawDesktop() {
-    const m = this.primary();
+    const m = this.target();
     const scale = m.scaleFactor() || 1;
     const width = m.width();
     const height = m.height();
+    // Where this display sits on the desktop, and the mouse's own scale.
+    const where = { originX: m.x(), originY: m.y(), mouseScale: this.mouseScale || this.primary().scaleFactor() || 1 };
 
     if (this.mode === 'monitor') {
       const img = await m.captureImage();
-      return { data: Buffer.from(await img.toRaw()), width: img.width, height: img.height, scale };
+      return { data: Buffer.from(await img.toRaw()), width: img.width, height: img.height, scale, ...where };
     }
 
     // Desktop grey behind everything, so an uncovered region reads as empty
@@ -245,7 +287,7 @@ export class Screen {
       }
     }
 
-    return { data: canvas, width, height, scale };
+    return { data: canvas, width, height, scale, ...where };
   }
 
   /**
@@ -361,30 +403,36 @@ export function shotFrom({ b64, bytes, grey, shotW, shotH }, desktop, mode = nul
     // it — so every coordinate came back biased up and to the left by half a
     // block. On a 2560-wide screen shown to the model 1024 wide that is more
     // than a pixel in each axis, for free, on every single click.
-    const kx = desktop.width / shotW / desktop.scale;
-    const ky = desktop.height / shotH / desktop.scale;
-    const maxX = Math.round(desktop.width / desktop.scale) - 1;
-    const maxY = Math.round(desktop.height / desktop.scale) - 1;
-    const toScreen = (x, y) => ({
-      x: Math.round(Math.max(0, Math.min(maxX, ((Number(x) + 0.5) * kx) - 0.5))),
-      y: Math.round(Math.max(0, Math.min(maxY, ((Number(y) + 0.5) * ky) - 0.5))),
-    });
+    /* A display that is not the primary sits somewhere on the desktop, and
+       everything Windows reports — window and control rectangles — is in
+       desktop pixels. So "physical" here means desktop pixels, the picture is
+       of this display only, and the mouse works in the primary's scale on
+       every display. */
+    const ox = desktop.originX ?? 0;
+    const oy = desktop.originY ?? 0;
+    const ms = desktop.mouseScale ?? desktop.scale;
 
     // The picture -> physical pixels, unrounded: the centre of the block of
     // screen pixels a picture pixel stands for.
     const px = desktop.width / shotW;
     const py = desktop.height / shotH;
     const toPhysical = (x, y) => ({
-      x: Math.max(0, Math.min(desktop.width - 1, ((Number(x) + 0.5) * px) - 0.5)),
-      y: Math.max(0, Math.min(desktop.height - 1, ((Number(y) + 0.5) * py) - 0.5)),
+      x: ox + Math.max(0, Math.min(desktop.width - 1, ((Number(x) + 0.5) * px) - 0.5)),
+      y: oy + Math.max(0, Math.min(desktop.height - 1, ((Number(y) + 0.5) * py) - 0.5)),
+    });
+    /** Desktop pixels -> the picture: where a control Windows reported is drawn. */
+    const fromPhysical = (x, y) => ({
+      x: Math.round(((Number(x) - ox) * shotW) / desktop.width),
+      y: Math.round(((Number(y) - oy) * shotH) / desktop.height),
     });
     // Physical pixels -> the units the mouse takes. SetCursorPos in a process
     // that is not DPI aware works in scaled units; one of those is 1.25
     // physical pixels here, so this is as close as the mouse can be put.
     const physToScreen = (x, y) => ({
-      x: Math.round(Math.max(0, Math.min(maxX, Number(x) / desktop.scale))),
-      y: Math.round(Math.max(0, Math.min(maxY, Number(y) / desktop.scale))),
+      x: Math.round(Math.max(ox / ms, Math.min((ox + desktop.width - 1) / ms, Number(x) / ms))),
+      y: Math.round(Math.max(oy / ms, Math.min((oy + desktop.height - 1) / ms, Number(y) / ms))),
     });
+    const toScreen = (x, y) => { const p = toPhysical(x, y); return physToScreen(p.x, p.y); };
 
     return {
       b64,
@@ -396,9 +444,12 @@ export function shotFrom({ b64, bytes, grey, shotW, shotH }, desktop, mode = nul
       mode,
       scale: desktop.scale,
       physical: { width: desktop.width, height: desktop.height },
+      origin: { x: ox, y: oy },
+      centre: { x: ox + (desktop.width / 2), y: oy + (desktop.height / 2) },
       raw: desktop,
       toScreen,
       toPhysical,
+      fromPhysical,
       physToScreen,
     };
   }

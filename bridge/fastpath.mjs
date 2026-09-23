@@ -63,7 +63,7 @@ export const ENOUGH = 4;
 export function targetNamedInGoal(goal, picked) {
   const label = String(picked?.option || picked?.row?.label || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const words = label.split(' ').filter(Boolean);
-  if (label.length < 3 || words.length > 4) return false;
+  if (label.length < 3 || words.length > 6) return false;
   const text = ` ${String(goal).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
   let at = text.indexOf(` ${label} `);
   /* The same words close together count too: "save the project" names the
@@ -173,7 +173,7 @@ export function actionSpace(elements = []) {
     const options = Array.isArray(el.options) && el.options.length ? el.options.slice(0, 40) : null;
     if (options) for (const o of options) if (o?.label) seen.add(`ListItem|${o.label}|${Math.round(o.rect?.[0] ?? -1)},${Math.round(o.rect?.[1] ?? -1)}`);
 
-    const editable = el.readOnly !== true && (EDITABLE.has(el.type) || el.how === 'value');
+    const editable = el.type !== 'Slider' && el.readOnly !== true && (EDITABLE.has(el.type) || el.how === 'value');
     const clickable = el.operable === true || Boolean(el.how);
     if (!editable && !clickable && !options) continue;
 

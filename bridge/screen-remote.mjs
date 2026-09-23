@@ -95,7 +95,7 @@ export class RemoteScreen {
 
   async rawDesktop() {
     const v = await this.ask('raw');
-    return { data: Buffer.from(v.raw.buffer, v.raw.byteOffset, v.raw.byteLength), width: v.width, height: v.height, scale: v.scale };
+    return { data: Buffer.from(v.raw.buffer, v.raw.byteOffset, v.raw.byteLength), width: v.width, height: v.height, scale: v.scale, originX: v.originX, originY: v.originY, mouseScale: v.mouseScale };
   }
 
   async capture(opts = {}) {
@@ -111,6 +111,9 @@ export class RemoteScreen {
           width: v.width,
           height: v.height,
           scale: v.scale,
+          originX: v.originX,
+          originY: v.originY,
+          mouseScale: v.mouseScale,
         };
         return shotFrom(
           { b64: v.b64, bytes: v.bytes, grey: Buffer.from(v.grey.buffer, v.grey.byteOffset, v.grey.byteLength), shotW: v.shotW, shotH: v.shotH },

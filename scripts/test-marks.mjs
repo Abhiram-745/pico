@@ -4,7 +4,7 @@
    Run with: node scripts/test-marks.mjs */
 import assert from 'node:assert/strict';
 import { buildMarks, describeMarks, resolveMarks, drawMarks, markPoint } from '../bridge/marks.mjs';
-import { cropBox, fromZoom, zoomImage, SHOWN } from '../bridge/zoom.mjs';
+import { cropBox, fromZoom, zoomImage, SHOWN, shapesIn } from '../bridge/zoom.mjs';
 
 /* A 2256x1504 screen shown to the model 1280 wide — the laptop's numbers. */
 const physical = { width: 2256, height: 1504 };
@@ -100,5 +100,16 @@ assert.ok(Math.abs(corner.x - mid.x) < 1 && Math.abs(corner.y - mid.y) < 1);
 
 const zi = zoomImage(shot.raw, mid);
 assert.ok(zi && zi.width === SHOWN, 'the zoomed picture is the promised size');
+
+/* Shapes in a drawing: found by colour against the background, neighbours
+   kept apart, and the frame's place on the desktop respected. */
+{
+  const W = 600; const H = 300; const d = Buffer.alloc(W * H * 4, 255);
+  const paint = (x0, y0, w, h, c) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) { const i = ((y * W) + x) * 4; d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; } };
+  paint(50, 50, 40, 40, [220, 40, 40]); paint(300, 200, 30, 30, [40, 170, 70]); paint(340, 200, 30, 30, [40, 170, 70]);
+  const found = shapesIn({ data: d, width: W, height: H, originX: 2560, originY: -63 }, { x: 2560, y: -63, width: W, height: H });
+  assert.equal(found.length, 3, 'three shapes, the two green ones apart');
+  assert.ok(found.every((s) => s.rect[0] >= 2560), 'rectangles are in desktop pixels');
+}
 
 console.log('Marks and zoom: numbering, filtering, click/drag/select resolution, drawing and zoom mapping passed.');

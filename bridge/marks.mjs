@@ -119,6 +119,7 @@ export function markPoint(mark, shot, where = 'centre') {
   const [x, y, w, h] = mark.rect;
   const px = where === 'start' ? x + Math.min(3, w / 4) : where === 'end' ? x + w - Math.min(3, w / 4) : x + (w / 2);
   const py = y + (h / 2);
+  if (shot.fromPhysical) return shot.fromPhysical(px, py);
   return {
     x: Math.round((px * shot.width) / shot.physical.width),
     y: Math.round((py * shot.height) / shot.physical.height),
@@ -205,8 +206,9 @@ export function drawMarks(shot, marks, { quality = 80, width = null } = {}) {
   const order = [...marks].sort((a, b) => (a.kind === 'place' ? 0 : 1) - (b.kind === 'place' ? 0 : 1));
   for (const m of order) {
     const colour = m.kind === 'text' ? TEXT_COLOUR : m.kind === 'place' ? PLACE_COLOUR : CONTROL_COLOURS[m.n % CONTROL_COLOURS.length];
-    const x = m.rect[0] * sx;
-    const y = m.rect[1] * sy;
+    // Rectangles are in desktop pixels; the picture is of one display.
+    const x = (m.rect[0] - (shot.origin?.x ?? 0)) * sx;
+    const y = (m.rect[1] - (shot.origin?.y ?? 0)) * sy;
     const w = Math.max(3, m.rect[2] * sx);
     const h = Math.max(3, m.rect[3] * sy);
     outline(img, x, y, w, h, colour, m.kind === 'control' ? 2 : 1, m.kind !== 'control');

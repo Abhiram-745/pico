@@ -37,8 +37,9 @@ export async function upgradeDropdownClick(action, { goal, shot, sense, windowHw
     type: 'select_option', text: option, target: `${control.name} dropdown`,
     why: `Set ${control.name} to ${option}`,
     expect: `${control.name} shows ${option}`,
-    x: Math.round(((rect[0] + rect[2] / 2) * shot.width) / shot.physical.width),
-    y: Math.round(((rect[1] + rect[3] / 2) * shot.height) / shot.physical.height),
+    ...(shot.fromPhysical
+      ? shot.fromPhysical(rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
+      : { x: Math.round(((rect[0] + rect[2] / 2) * shot.width) / shot.physical.width), y: Math.round(((rect[1] + rect[3] / 2) * shot.height) / shot.physical.height) }),
     observedTarget: control,
   };
 }

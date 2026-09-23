@@ -375,7 +375,7 @@ async function stillFrame(frame, region, first = 170) {
  * @param {boolean} [req.toEnd]   keep going until nothing moves
  * @returns {Promise<{moved:number, requested:number, atEnd:boolean, view:number, percent:number|null, how:string, frame:object}>}
  */
-export async function scrollBy({ wheel, frame, sense = null }, { point, axis = 'y', distance: asked, screens = false, toEnd = false, scale = 1 }) {
+export async function scrollBy({ wheel, frame, sense = null, origin = { x: 0, y: 0 } }, { point, axis = 'y', distance: asked, screens = false, toEnd = false, scale = 1 }) {
   const vertical = axis !== 'x';
   const sign = Math.sign(asked) || 1;
 
@@ -389,9 +389,12 @@ export async function scrollBy({ wheel, frame, sense = null }, { point, axis = '
      has one here; the window under the pointer if not; and within that, a
      band around the pointer — the part most likely to be the thing that
      moves, and least likely to include a sidebar that does not. */
-  const box = (uia?.found && Array.isArray(uia.rect) && uia.rect[2] > 60 && uia.rect[3] > 60)
+  const boxOnDesktop = (uia?.found && Array.isArray(uia.rect) && uia.rect[2] > 60 && uia.rect[3] > 60)
     ? uia.rect
-    : (winRect ?? [0, 0, 4000, 4000]);
+    : (winRect ?? [origin.x, origin.y, 4000, 4000]);
+  // Rectangles and the point are in desktop pixels; the frames are of one display.
+  const box = [boxOnDesktop[0] - origin.x, boxOnDesktop[1] - origin.y, boxOnDesktop[2], boxOnDesktop[3]];
+  const at = { x: point.x - origin.x, y: point.y - origin.y };
   const frame0 = await frame();
   const screenW = frame0.width;
   const screenH = frame0.height;
@@ -402,16 +405,16 @@ export async function scrollBy({ wheel, frame, sense = null }, { point, axis = '
   const HALF = 360;
   const region = vertical
     ? {
-      x: Math.max(bx0, point.x - HALF),
+      x: Math.max(bx0, at.x - HALF),
       y: by0 + (uia?.found ? 0 : Math.min(90, (by1 - by0) * 0.07)),
-      width: Math.min(bx1, point.x + HALF) - Math.max(bx0, point.x - HALF),
+      width: Math.min(bx1, at.x + HALF) - Math.max(bx0, at.x - HALF),
       height: (by1 - by0) - (uia?.found ? 0 : Math.min(90, (by1 - by0) * 0.07)),
     }
     : {
       x: bx0,
-      y: Math.max(by0, point.y - HALF),
+      y: Math.max(by0, at.y - HALF),
       width: bx1 - bx0,
-      height: Math.min(by1, point.y + HALF) - Math.max(by0, point.y - HALF),
+      height: Math.min(by1, at.y + HALF) - Math.max(by0, at.y - HALF),
     };
   let view = vertical ? region.height : region.width;
   let distance = screens ? asked * view : asked;
