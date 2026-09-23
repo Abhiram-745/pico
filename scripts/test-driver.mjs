@@ -524,7 +524,10 @@ console.log('opening from the words of the task');
     { name: 'report', args: { succeeded: true, summary: 'Searched.' } },
       finish,
   ]);
-  const { done, events } = run({ computer, llm, task: 'open reports.example.com and search ssuazo' });
+  /* The "browser" is node itself, which exits on an address it cannot run:
+     the launch succeeds on any machine and no real tab opens — on CI there
+     is no explorer.exe, and on a desktop a test should not open a page. */
+  const { done, events } = run({ computer, llm, task: 'open reports.example.com and search ssuazo', context: { browser: { exe: process.execPath } } });
   await done;
 
   /* An address in the words of the task is opened before any model is asked
