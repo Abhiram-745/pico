@@ -18,6 +18,7 @@
 
 import { store, isActive } from './store.js';
 import { bridge } from './bridge.js';
+import { stopEverything } from './voice-session.js';
 
 const MOD_KEYS = { Control: 'ctrl', Shift: 'shift', Alt: 'alt' };
 
@@ -54,11 +55,12 @@ export function installHotkeys({ palette, onModifiers } = {}) {
       return;
     }
 
-    // --- Esc : emergency stop, but only when a run is live ----------------
+    // --- Esc : the Stop button, from the keyboard -------------------------
+    // Ends a live run and any voice at once, the way the Stop button does.
     // When the palette is open and handling its own Escape, it stops
     // propagation itself; this is the unfocused/global path.
-    if (e.key === 'Escape' && isActive(store.state.phase) && !store.state.paletteOpen) {
-      bridge.send('stop');
+    if (e.key === 'Escape' && (isActive(store.state.phase) || store.state.voice?.active) && !store.state.paletteOpen) {
+      stopEverything();
     }
   }, true);
 

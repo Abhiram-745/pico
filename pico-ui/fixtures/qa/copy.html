@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Receipt</title>
+<link rel="stylesheet" href="qa.css">
+<style>
+.receipt { background: #fff; border-radius: 12px; padding: 18px 22px; width: 420px; }
+.receipt dt { color: #666; font-size: 14px; margin-top: 10px; }
+.receipt dd { margin: 2px 0 0; font-size: 18px; }
+form { margin-top: 26px; }
+</style>
+<h1>Returns</h1>
+<p class="lead">Start a return using the order number on your receipt.</p>
+<dl class="receipt">
+  <dt>Store</dt><dd>Northgate Hardware</dd>
+  <dt>Order number</dt><dd id="order" data-qa="order number">NH-48213-KQ7</dd>
+  <dt>Total</dt><dd>£37.40</dd>
+</dl>
+<form id="f">
+  <label>Order number for the return<br><input type="text" id="field" aria-label="Order number for the return" autocomplete="off"></label>
+  <button type="submit">Confirm return</button>
+</form>
+<output id="out">No return started.</output>
+<script src="qa.js"></script>
+<script>
+let confirmed = '';
+document.getElementById('f').addEventListener('submit', (e) => {
+  e.preventDefault();
+  confirmed = document.getElementById('field').value.trim();
+  document.getElementById('out').textContent = `Return started for ${confirmed}.`;
+});
+qa.task = 'On the Returns page, put the order number from the receipt into the "Order number for the return" field and confirm the return.';
+qa.check = () => ({ pass: confirmed === 'NH-48213-KQ7', detail: confirmed || 'not confirmed' });
+</script>
+</html>

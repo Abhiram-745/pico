@@ -48,7 +48,7 @@ export class MockAgent {
     this.phase = 'Idle';
     this.petName = 'Halo';
     this.settings = {
-      model: 'gpt-5.4-nano',
+      model: 'gpt-4.1-mini',
       pauseOnPhysicalInput: true,
       maximumComputerTurns: 100,
       // Set true only once a provider is actually attached.
@@ -113,6 +113,8 @@ export class MockAgent {
     this.emit('settings', this.settings);
     this.emit('memory', { facts: this.previewMemory });
     this.emit('routines', { items: this.previewRoutines });
+    // As the real bridge does once Windows accepts Ctrl+Alt+V.
+    this.emit('voiceShortcut', { available: true });
     this.setPhase('Idle');
   }
 
@@ -389,12 +391,13 @@ export class MockAgent {
     const name = app.charAt(0).toUpperCase() + app.slice(1);
     const typed = String(task).match(/type\s+(.+)$/i)?.[1];
     let steps = [
-      { do: `Open ${name}`, kind: 'open', status: 'pending', why: `Opening ${name}` },
-      { do: 'Click into the page', kind: 'pointer', status: 'pending', why: 'Putting the cursor where the text should go' },
-      { do: typed ? `Type ${typed}` : 'Type a short note', kind: 'keyboard', status: 'pending', why: 'Typing it in' },
+      { id: 'm0_1', do: `Open ${name}`, doneWhen: `${name} is in front`, kind: 'milestone', status: 'pending', why: `Opening ${name}` },
+      { id: 'm0_2', do: 'Find the place to write', doneWhen: 'A blank page has the cursor', kind: 'milestone', status: 'pending', why: 'Putting the cursor where the text should go' },
+      { id: 'm0_3', do: typed ? `Write ${typed}` : 'Write a short note', doneWhen: 'The text is on the page', kind: 'milestone', status: 'pending', why: 'Typing it in' },
     ];
     let index = 0;
-    const publish = (extra = {}) => this.emit('plan', { steps: steps.map(({ why, ...st }) => st), index, doneWhen: 'the text is on screen', ...extra });
+    // The shape the real driver sends in milestone mode: ids, a done-when each, and the live line.
+    const publish = (extra = {}) => this.emit('plan', { steps: steps.map(({ why, ...st }) => st), index, doneWhen: 'the text is on screen', revision: 0, live: steps[index]?.why, ...extra });
     publish();
 
     while (index < steps.length) {

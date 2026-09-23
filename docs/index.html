@@ -34,7 +34,7 @@
   </p>
 
   <div class="actions">
-    <a class="btn" id="download" href="https://github.com/Abhiram-745/pico/releases/latest/download/Pico-Setup.exe">
+    <a class="btn" id="download" href="https://github.com/Abhiram-745/pico/releases/latest/download/Halo-Setup.exe">
       Download for Windows
     </a>
     <span class="meta" id="meta">v0.1.7 · Windows 10 2004+ / 11</span>
@@ -48,10 +48,10 @@
     <h2>Setup</h2>
     <ol class="steps">
       <li>Install <a href="https://nodejs.org">Node.js</a> if you don't have it.</li>
-      <li>Run <code>Pico-Setup.exe</code>. It's a normal installer: pick a folder, it installs, and offers to launch Halo.</li>
+      <li>Run <code>Halo-Setup.exe</code>. It's a normal installer: pick a folder, it installs, and offers to launch Halo.</li>
       <li>Paste your OpenAI key when Halo asks. That's the whole setup.</li>
     </ol>
-    <p class="hint">Prefer a portable copy with nothing installed? Grab <code>Pico-latest.zip</code> from <a href="https://github.com/Abhiram-745/pico/releases/latest">Releases</a> instead.</p>
+    <p class="hint">Prefer a portable copy with nothing installed? Grab <code>Halo-latest.zip</code> from <a href="https://github.com/Abhiram-745/pico/releases/latest">Releases</a> instead.</p>
   </section>
 
   <section>
@@ -103,7 +103,7 @@
       if (!res.ok) return;
       const rel = await res.json();
       const assets = rel.assets || [];
-      const exe = assets.find(a => /^Pico-Setup\.exe$/i.test(a.name))
+      const exe = assets.find(a => /^Halo-Setup\.exe$/i.test(a.name))
                || assets.find(a => /\.exe$/i.test(a.name));
       if (!exe) return;
 

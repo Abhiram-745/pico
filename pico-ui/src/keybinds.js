@@ -87,6 +87,14 @@ export const KEYBINDS = [
     taught: true,
     demo: 'guide',
   },
+  {
+    id: 'toggleVoice',
+    label: 'Start or end voice chat',
+    hint: 'Starts or ends hands-free voice in the island when Windows accepts this shortcut.',
+    keys: ['Ctrl', 'Alt', 'V'],
+    code: 'KeyV',
+    ctrl: true, alt: true, shift: false, taught: false,
+  },
 
   /* Already registered by the guardian, listed here so settings and
      onboarding show the whole picture rather than half of it. */

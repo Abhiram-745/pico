@@ -17,11 +17,29 @@
    "click Send to deliver the email" tells you everything.
    ========================================================================== */
 
-/** Things that leave the machine and cannot be recalled. */
+/** Somewhere a message could actually be sent from. */
+const MESSAGING = new RegExp(
+  '\\b(?:whatsapp|messenger|telegram|signal|discord|slack|teams|gmail|outlook|mail|inbox'
+  + '|imessage|instagram|twitter|linkedin|facebook|reddit|compose|new message|to:|subject)\\b', 'i');
+
+/**
+ * Things that leave the machine and cannot be recalled.
+ *
+ * Narrow on purpose. This used to fire on the word "submit" wherever it
+ * appeared, so pressing Enter in a Wikipedia search box was weighed as
+ * sending a message and stopped the run to ask — for a keystroke that does
+ * nothing but run a search. An interruption that is usually wrong teaches
+ * people to wave the next one through, which is the opposite of the point.
+ *
+ * So it now takes both: a verb that really is sending, and somewhere it
+ * could really be sent from. "Send" in WhatsApp still asks. "Submit" on a
+ * search page does not.
+ */
 const EXTERNAL = {
   categories: 'ExternalCommunication',
   level: 'High',
-  test: /\b(?:send|sending|reply|replying|forward|post|posting|publish|tweet|submit|share|deliver|dm)\b/i,
+  test: /\b(?:send|sending|reply|replying|forward|post|posting|publish|tweet|dm)\b/i,
+  needs: MESSAGING,
   reason: 'Sending a message is externally visible and cannot be undone.',
 };
 
@@ -99,10 +117,12 @@ export function assess(action = {}, windowTitle = '') {
   // does, and the rules below weigh what that text says. Copying takes a
   // reading and changes nothing, so it is weighed like looking.
   const commits = ['click', 'double_click', 'right_click', 'middle_click',
-    'drag', 'type', 'key', 'paste', 'hold_and_press'].includes(action.type);
+    'drag', 'type', 'key', 'paste', 'hold_and_press', 'select_option', 'set_value'].includes(action.type);
   if (!commits) return { ...ALLOW };
 
   for (const rule of RULES) {
+    // A rule with `needs` applies only where that context is present too.
+    if (rule.needs && !rule.needs.test(context)) continue;
     if (rule.test.test(context)) {
       return {
         decision: 'RequireConfirmation',
@@ -132,6 +152,8 @@ export function describe(action = {}) {
     case 'switch_to': return 'Switch to another window';
     case 'hold_and_press': return 'Hold keys and press others';
     case 'select_text': return 'Select a span of text';
+    case 'select_option': return 'Choose a dropdown option';
+    case 'set_value': return 'Set a slider';
     case 'copy': return 'Copy the selection';
     case 'paste': return 'Paste what was copied';   // never the text itself
     case 'scroll': return 'Scroll the view';
@@ -160,4 +182,6 @@ export const ACTION_PHASE = {
   switch_to: 'Move',
   hold_and_press: 'Keypress',
   select_text: 'Click',
+  select_option: 'Click',
+  set_value: 'Click',
 };

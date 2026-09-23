@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Sound</title>
+<link rel="stylesheet" href="qa.css">
+<style>
+label { display: block; margin: 30px 0 8px; font-weight: 600; }
+input[type=range] { width: 520px; }
+</style>
+<h1>Sound settings</h1>
+<p class="lead">Adjust the levels.</p>
+<label for="volume">Volume</label>
+<input id="volume" type="range" min="0" max="100" value="20" aria-label="Volume">
+<label for="bass">Bass</label>
+<input id="bass" type="range" min="0" max="100" value="50" aria-label="Bass">
+<output id="levels"></output>
+<script src="qa.js"></script>
+<script>
+const v = document.getElementById('volume'), b = document.getElementById('bass');
+const show = () => { document.getElementById('levels').textContent = `Volume ${v.value} · Bass ${b.value}`; };
+v.addEventListener('input', show); b.addEventListener('input', show); show();
+qa.task = 'On the Sound settings page, set the Volume slider to 70. Leave Bass alone.';
+qa.check = () => ({ pass: Math.abs(v.value - 70) <= 3 && Number(b.value) === 50, detail: `volume ${v.value}, bass ${b.value}` });
+</script>
+</html>

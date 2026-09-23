@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Board</title>
+<link rel="stylesheet" href="qa.css">
+<style>
+body { max-width: 1000px; }
+.board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.col { background: #e9e9e4; border-radius: 12px; padding: 12px; min-height: 340px; }
+.col h2 { font-size: 16px; margin: 4px 6px 12px; }
+.col.hot { outline: 3px solid #3b82f6; }
+.card { background: #fff; border: 1px solid #ccc; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; cursor: grab; user-select: none; touch-action: none; }
+.card.lifted { opacity: .85; box-shadow: 0 8px 24px rgba(0,0,0,.18); position: fixed; pointer-events: none; z-index: 9; }
+</style>
+<h1>Team board</h1>
+<p class="lead">Drag a card from one column to another.</p>
+<div class="board">
+  <section class="col" id="todo" aria-label="To do"><h2>To do</h2>
+    <div class="card" data-qa="Write report">Write report</div>
+    <div class="card" data-qa="Book venue">Book venue</div>
+  </section>
+  <section class="col" id="doing" aria-label="Doing"><h2>Doing</h2>
+    <div class="card" data-qa="Fix login bug">Fix login bug</div>
+  </section>
+  <section class="col" id="done" aria-label="Done"><h2>Done</h2>
+    <div class="card" data-qa="Send invoices">Send invoices</div>
+  </section>
+</div>
+<script src="qa.js"></script>
+<script>
+/* Pointer-event dragging, the way most web boards (Trello, Jira, Linear) do
+   it rather than HTML5 drag and drop: needs the button held through a real
+   path of moves, and drops on whichever column is under the pointer. */
+let lifted = null, from = null, off = null;
+document.addEventListener('pointerdown', (e) => {
+  const card = e.target.closest('.card');
+  if (!card) return;
+  from = { card, x: e.clientX, y: e.clientY };
+});
+document.addEventListener('pointermove', (e) => {
+  if (!from) return;
+  if (!lifted && Math.hypot(e.clientX - from.x, e.clientY - from.y) > 5) {
+    lifted = from.card;
+    const r = lifted.getBoundingClientRect();
+    off = { x: from.x - r.left, y: from.y - r.top, w: r.width };
+    lifted.classList.add('lifted');
+    lifted.style.width = r.width + 'px';
+  }
+  if (!lifted) return;
+  lifted.style.left = (e.clientX - off.x) + 'px';
+  lifted.style.top = (e.clientY - off.y) + 'px';
+  document.querySelectorAll('.col').forEach((c) => c.classList.remove('hot'));
+  document.elementFromPoint(e.clientX, e.clientY)?.closest('.col')?.classList.add('hot');
+});
+document.addEventListener('pointerup', (e) => {
+  if (lifted) {
+    const col = document.elementFromPoint(e.clientX, e.clientY)?.closest('.col');
+    lifted.classList.remove('lifted');
+    lifted.style.cssText = '';
+    if (col) col.appendChild(lifted);
+    document.querySelectorAll('.col').forEach((c) => c.classList.remove('hot'));
+  }
+  lifted = null; from = null;
+});
+qa.task = 'On the Team board, move the card "Write report" into the Done column.';
+qa.check = () => {
+  const inDone = [...document.querySelectorAll('#done .card')].map((c) => c.dataset.qa);
+  return { pass: inDone.includes('Write report'), detail: 'Done: ' + inDone.join(', ') };
+};
+</script>
+</html>

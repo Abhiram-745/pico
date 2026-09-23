@@ -32,10 +32,12 @@ import { encode, toTerminal, toSVG } from './qr.mjs';
 import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
 import { LLM, PROVIDERS } from './llm.mjs';
+import { handleVoice } from './voice.mjs';
 import { NotchWindow } from './notch-window.mjs';
 /* The one list of chords, shared with the pages that teach and show them.
    A .js module of plain data, imported by Node and the bundler alike. */
-import { TAUGHT as CHORDS } from '../pico-ui/src/keybinds.js';
+import { TAUGHT, byId } from '../pico-ui/src/keybinds.js';
+const CHORDS = [...TAUGHT, byId('toggleVoice')].filter(Boolean);
 import * as autostart from './autostart.mjs';
 import { IslandHost } from './island-host.mjs';
 import { Sense } from './sense.mjs';
@@ -125,6 +127,7 @@ const ALLOWED_COMMANDS = new Set([
   // chat history, shared by every window
   'openChat', 'chatRename', 'chatDelete', 'chatSearch', 'chatsImport',
   'openApp',
+  'voiceSession',
   'setShell',        // { mode?: 'island'|'card', hidden?, guide? } — the shape
   'moveCard',        // { x, y } — the card has been dragged
   'onboarded',       // { done: true } — the three chords have been practised
@@ -132,6 +135,11 @@ const ALLOWED_COMMANDS = new Set([
 ]);
 
 const MAX_TASK_LENGTH = 2000;   // mirrors the desktop app's own task limit
+
+/* The phases in which Halo has the mouse and the island should not. Waiting
+   on a person is not one of them: an approval card is answered by clicking
+   the island. */
+const WORKING = new Set(['Starting', 'Observing', 'Thinking', 'Acting']);
 
 /* ---------------------------------------------------------------------------
    Pairing
@@ -205,6 +213,8 @@ class Bridge {
          connected — or reloaded mid-session — must come back as the shape
          the person left it in, not as an island every time. */
       shell: { mode: 'island', hidden: false, guide: false },
+      voiceSession: { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null },
+      voiceShortcut: { available: false },
     };
 
     // The conversation so far, so a phone joining mid-thread sees it rather
@@ -231,6 +241,7 @@ class Bridge {
     this.llm = null;
     this.screenSize = null;
     this.notch = null;        // set once the server knows its own address
+    this.voiceOwnerClient = null;
   }
 
   /**
@@ -248,7 +259,7 @@ class Bridge {
       ...this.agent.settings,
       // One task uses several: the strongest model plans it, then the
       // cheapest model that can actually do each step carries it out.
-      model: `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
+      model: llm.singleModel ? llm.model : `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
       hasApiKey: true,
       provider: PROVIDERS[llm.provider]?.label ?? llm.provider,
     };
@@ -313,6 +324,12 @@ class Bridge {
       // decision cards do not survive a phase change
       if (payload.phase !== 'AwaitingApproval') this.snapshot.approval = null;
       if (payload.phase !== 'AwaitingTakeover') this.snapshot.takeover = null;
+      /* While a run is working, the island lets the mouse through it. It
+         hangs over the top centre of the screen, which on a browser is the
+         tab strip, and a click meant for a tab was landing on Halo — the one
+         window a run must never click. It takes the mouse again the moment
+         the run is over, or is waiting on the person. */
+      this.notch?.listen(WORKING.has(payload.phase) === false).catch?.(() => {});
     }
     this.broadcast({ type, payload });
   }
@@ -351,6 +368,8 @@ class Bridge {
     send('plan', s.plan);
     send('runFinished', s.runFinished);
     send('shell', s.shell);
+    send('voiceSession', s.voiceSession);
+    send('voiceShortcut', s.voiceShortcut);
     send('runbook', runbookSummary());
     // Not part of the snapshot, because it is not the agent's state — but it
     // has to be replayed for the same reason everything else here is: a page
@@ -418,6 +437,10 @@ class Bridge {
         // A counter rather than a flag: pressing it twice must reach the page
         // twice, and a page that reloads must not act on a stale one.
         this.broadcast({ type: 'focusChat', payload: { at: Date.now() } });
+        break;
+      case 'toggleVoice':
+        this.setShell({ show: true });
+        this.broadcast({ type: 'voiceToggle', payload: { at: Date.now() } });
         break;
       default:
         return;
@@ -494,6 +517,33 @@ class Bridge {
 
     if (!ALLOWED_COMMANDS.has(command)) {
       console.warn(`[bridge] rejected command "${command}" from ${client.ip}`);
+      return;
+    }
+
+    // The app and notch have separate Chrome profiles. The bridge owns the
+    // single microphone session and relays its state across both windows.
+    if (command === 'voiceSession') {
+      if (!/^(127\.0\.0\.1|::1)$/.test(String(client.ip).replace(/^::ffff:/, ''))) return;
+      const action = String(payload.action || '');
+      const owner = String(payload.owner || '').slice(0, 80);
+      const current = this.snapshot.voiceSession;
+      if (!owner || !/^[\w-]+$/.test(owner)) return;
+      if (action === 'end') {
+        if (owner !== current.owner) return;
+        this.snapshot.voiceSession = { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null };
+        this.voiceOwnerClient = null;
+      } else if (action === 'claim' || (action === 'update' && owner === current.owner)) {
+        const incoming = payload.state || {};
+        this.snapshot.voiceSession = {
+          active: true, owner,
+          phase: ['requesting', 'recording', 'transcribing', 'thinking', 'speaking', 'error', 'idle'].includes(incoming.phase) ? incoming.phase : 'requesting',
+          level: Math.max(0, Math.min(1, Number(incoming.level) || 0)),
+          message: String(incoming.message || '').slice(0, 240),
+          transcript: String(incoming.transcript || '').slice(0, 240),
+        };
+        if (action === 'claim') this.voiceOwnerClient = client;
+      } else return;
+      this.broadcast({ type: 'voiceSession', payload: this.snapshot.voiceSession });
       return;
     }
 
@@ -758,6 +808,41 @@ process.on('unhandledRejection', (err) => {
   console.error('[bridge] unhandled rejection:', err);
 });
 
+/* --- and when the bridge goes, the island goes with it ---------------------
+   The island is a browser window of its own, started detached so it survives
+   a crash of this process — which is right while the bridge is coming back,
+   and wrong the moment it is not coming back at all. Closing the terminal
+   left a window on screen that looks exactly like Halo and is not: nothing
+   answers its hover, so it never opens; nothing takes its measurements, so
+   it sits at whatever size it was, its words clipped against a frame that
+   will not move again. Every report of "hovering stopped working" has been
+   this, and from the outside it is indistinguishable from a bug in the
+   island itself.
+
+   So every ordinary way out of this process takes the window with it. Ctrl+C
+   and a closed console window both arrive here as signals, and Windows gives
+   a few seconds before it stops waiting — long enough for the close, which
+   is also what makes the next start clean rather than an adoption. */
+let leaving = false;
+const leave = async (why) => {
+  if (leaving) return;
+  leaving = true;
+  try { await bridge?.notch?.close(); } catch { /* going anyway */ }
+  try { islandHost?.stop?.(); } catch { /* likewise */ }
+  if (process.env.PICO_DEBUG) console.log(`[bridge] closing (${why})`);
+  process.exit(0);
+};
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+  try { process.on(sig, () => { leave(sig); }); } catch { /* not on this platform */ }
+}
+/* The last resort: a kill this process cannot answer, or a straight exit.
+   Nothing async can run here, so the window's own process is killed by
+   handle — which covers every case but a Chrome that handed the window to a
+   browser it did not start, and that one is caught on the next start. */
+process.on('exit', () => {
+  try { bridge?.notch?.proc?.kill(); } catch { /* already gone */ }
+});
+
 const BUILD = await localBuild();
 
 /* Anything the old name left in %LOCALAPPDATA%\Pico comes across first, so
@@ -786,6 +871,11 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname.startsWith('/voice/')) {
+    try { await handleVoice(req, res, url.pathname); }
+    catch { if (!res.headersSent) res.writeHead(500); res.end(); }
+    return;
+  }
 
   // --- setup -------------------------------------------------------------
   // Loopback only, like updates. Entering a key is safe from the machine the
@@ -1056,8 +1146,15 @@ server.on('upgrade', (req, socket, head) => {
   }
 
   conn.on('message', (raw) => bridge.handleMessage(client, raw));
-  conn.on('close', () => bridge.clients.delete(client));
-  conn.on('error', () => bridge.clients.delete(client));
+  const disconnected = () => {
+    bridge.clients.delete(client);
+    if (bridge.voiceOwnerClient !== client) return;
+    bridge.voiceOwnerClient = null;
+    bridge.snapshot.voiceSession = { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null };
+    bridge.broadcast({ type: 'voiceSession', payload: bridge.snapshot.voiceSession });
+  };
+  conn.on('close', disconnected);
+  conn.on('error', disconnected);
 
   // A client has a short window to pair before it is dropped.
   setTimeout(() => { if (!client.paired) conn.close(1008, 'not paired'); }, 30_000);
@@ -1093,8 +1190,13 @@ server.on('error', (err) => {
   if (err.code === 'EADDRINUSE' && OPEN_APP) {
     // Halo is already running: the shortcut was only ever asking for its
     // window, so open that and leave the running copy alone.
+    /* Long enough for Chrome to have taken the window on. It is spawned
+       detached, so it is not this process exiting that would close it — but
+       when the browser is being started from cold, exiting while it is still
+       reading its arguments is a window that appears and goes again, which
+       is what "it opens the app and closes it" was. */
     openAppWindow();
-    setTimeout(() => process.exit(0), 400);
+    setTimeout(() => process.exit(0), 1500);
     return;
   }
   if (err.code === 'EADDRINUSE') {
@@ -1108,16 +1210,29 @@ server.on('error', (err) => {
 
 await new Promise((resolve) => {
   server.listen(PORT, '0.0.0.0', () => {
-    const line = '─'.repeat(52);
-    console.log(`\n${line}`);
-    console.log(`  Halo bridge is running${BUILD.sha ? `  (build ${BUILD.sha})` : ''}`);
-    console.log(line);
-    console.log(`\n  Phone:   ${pairingUrl()}`);
-    console.log(`  Code:    ${bridge.pairCode}`);
-    console.log(`  Desktop: http://localhost:${PORT}/pico-ui/app.html\n`);
-    console.log(toTerminal(encode(pairingUrl())));
-    console.log('  Scan with your phone camera, on the same Wi-Fi.');
-    console.log('  Local network only — nothing is exposed to the internet.\n');
+    /* What somebody sees while Halo is starting. It is a console window, so
+       there is not much to work with — but there is enough: one mark, the
+       two addresses in a column, the code beside the thing it pairs, and the
+       one instruction that matters said plainly rather than left to be found
+       out. Colour only where a terminal will take it. */
+    const tty = process.stdout.isTTY;
+    const c = (code, text) => (tty ? `[${code}m${text}[0m` : text);
+    const dim = (t) => c('2;37', t);
+    const key = (t) => c('38;5;141', t);        // the island's violet
+    const val = (t) => c('1;97', t);
+
+    console.log('');
+    console.log(`  ${key('◍')}  ${val('Halo')}${BUILD.sha ? `   ${dim(`build ${BUILD.sha}`)}` : ''}`);
+    console.log(`  ${dim('─'.repeat(50))}`);
+    console.log('');
+    console.log(`  ${dim('Desktop')}   ${val(`http://localhost:${PORT}/pico-ui/app.html`)}`);
+    console.log(`  ${dim('Phone')}     ${val(pairingUrl())}`);
+    console.log(`  ${dim('Code')}      ${key(bridge.pairCode)}   ${dim('— scan below, on the same Wi-Fi')}`);
+    console.log('');
+    console.log(dim(toTerminal(encode(pairingUrl()))));
+    console.log(`  ${dim('Local network only — nothing is exposed to the internet.')}`);
+    console.log(`  ${dim('Keep this window open. Closing it stops Halo.')}`);
+    console.log('');
     resolve();
   });
 });
@@ -1216,12 +1331,23 @@ try {
    register, says so in the log, and changes nothing else.
    --------------------------------------------------------------------------- */
 const MOD = { alt: 1, ctrl: 2, shift: 4 };
-const VK = { KeyA: 0x41, KeyF: 0x46, KeyG: 0x47, KeyH: 0x48, KeyK: 0x4B, Space: 0x20 };
+const VK = { KeyA: 0x41, KeyF: 0x46, KeyG: 0x47, KeyH: 0x48, KeyK: 0x4B, KeyV: 0x56, Space: 0x20 };
 
 if (islandHost) {
+  islandHost.onRegistered = (id) => {
+    if (id !== 'toggleVoice') return;
+    bridge.snapshot.voiceShortcut = { available: true };
+    bridge.broadcast({ type: 'voiceShortcut', payload: bridge.snapshot.voiceShortcut });
+  };
   islandHost.onFired = (id) => {
     if (process.env.PICO_DEBUG) console.log(`[chord] ${id}`);
     bridge.onChord(id);
+  };
+  /* Hold to talk: the voice chord held down and let go. The page decides
+     what a hold is; this only says how long the key was down. */
+  islandHost.onReleased = (id, ms) => {
+    if (id !== 'toggleVoice') return;
+    bridge.broadcast({ type: 'voiceRelease', payload: { at: Date.now(), ms } });
   };
   for (const b of CHORDS) {
     const vk = VK[b.code];

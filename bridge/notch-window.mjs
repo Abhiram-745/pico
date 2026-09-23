@@ -113,6 +113,7 @@ export class NotchWindow {
     this.token = randomBytes(9).toString('base64url');
     this.size = { ...COMPACT };       // content size currently on screen
     this.placed = null;               // last rectangle actually placed
+    this.deaf = false;                // true while a run is working (see listen())
     // Whether the pointer is on the island. Kept here rather than inside the
     // watcher because it is only ever sent on a change, and a page that
     // connects between two changes would otherwise never be told at all —
@@ -503,6 +504,22 @@ export class NotchWindow {
     clearInterval(this.hoverTimer);
     this.hoverTimer = null;
     this.over = false;
+  }
+
+  /**
+   * While a run is working, the island stops taking the mouse.
+   *
+   * It sits over the top centre of the screen, which is where a browser
+   * keeps its tabs, so a click aimed at a tab landed on Halo instead — the
+   * one window on screen that must never be clicked by the run it is
+   * reporting on. Deaf, the click goes through to the tab.
+   */
+  async listen(on) {
+    if (this.deaf === !on) return;
+    this.deaf = !on;
+    const h = this.hwnd ?? this.findWindow();
+    if (!h || !this.host?.ready) return;
+    try { await this.host.deaf(h, !on); } catch { /* it keeps its ears */ }
   }
 
   raise() {

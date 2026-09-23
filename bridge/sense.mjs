@@ -160,19 +160,40 @@ export class Sense {
    * the tree is ready by the time the first click needs it rather than the
    * click waiting on it.
    */
-  wake(x, y) { return this.request(`wake ${Math.round(x)} ${Math.round(y)}`, 2500); }
+  wake(x, y, { force = false } = {}) {
+    return this.request(`wake ${Math.round(x)} ${Math.round(y)}${force ? ' force' : ''}`, 2500);
+  }
   /** `{ name, usable }` — usable is false while locked, behind a screen saver, or at a UAC prompt. */
   desktop() { return this.request('desktop', 800); }
   /** Milliseconds since the last keyboard or mouse input, from anyone. */
   async idle() { return (await this.request('idle', 800))?.ms ?? null; }
   cursor() { return this.request('cursor', 800); }
+  /** `{ caps, num }` — a stuck Caps Lock inverts everything typed after it. */
+  keystate() { return this.request('keystate', 800); }
   foreground() { return this.request('fg', 800); }
   /** What really holds keyboard focus — the title, the element, and its own
       value. Facts for the verdict, rather than a model's reading of a JPEG. */
   focused() { return this.request('focused', 1800); }
   async windows() { return (await this.request('windows', 1500))?.windows ?? null; }
   focus(hwnd) { return this.request(`focus ${hwnd}`, 1800); }
-  async elements(hwnd, max = 200) { return (await this.request(`elements ${hwnd} ${max}`, 6000))?.elements ?? null; }
+  /**
+   * The controls in a window.
+   *
+   * With `ontop`, each one also carries whether it is the thing you would
+   * actually hit at its own centre — false when a dialog or a menu is over
+   * it. Costs one hit test per control inside the helper, which is where it
+   * is cheap; without the flag nothing extra is done.
+   */
+  async elements(hwnd, max = 200, { ontop = false } = {}) {
+    const cmd = `elements ${hwnd} ${max}${ontop ? ' ontop' : ''}`;
+    return (await this.request(cmd, 2000))?.elements ?? null;
+  }
+
+  /** The controls AND what the window says — one call, see Cached(). */
+  async look(hwnd, max = 200) {
+    const r = await this.request(`elements ${hwnd} ${max}`, 2000);
+    return r ? { elements: r.elements ?? [], says: r.says ?? [], texts: r.texts ?? [], places: r.places ?? [] } : null;
+  }
 
   stop() {
     try { this.proc?.stdin.end(); } catch { /* gone */ }

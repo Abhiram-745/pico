@@ -37,7 +37,13 @@ body {
 .h-island[data-view="compact"] { --w: 232px; --r: 18px; }
 .h-island[data-view="peek"]    { --w: 380px; --r: 26px; }
 .h-island[data-view="live"]    { --w: 460px; --r: 26px; }
+.h-island[data-view="voice"]   { --w: 550px; --r: 28px; }
 .h-island[data-view="open"]    { --w: 620px; --r: 28px; }
+.h-island[data-view="voice"] .h-island__bar { display: none; }
+.h-island__composer { padding: 3px 6px 7px; }
+.h-island__composer[hidden] { display: none !important; }
+.h-island[data-view="open"] .h-island__composer, .h-island[data-view="card"] .h-island__composer { padding: 0 14px 14px; }
+.h-island[data-view="voice"] .h-composer { height: 52px; border-radius: 25px; }
 
 /* Folded into the room the window really has — see useMeasure. */
 .h-island.is-capped { width: min(var(--w), 100vw); max-height: 100vh; overflow: hidden; }
@@ -87,7 +93,8 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  animation: h-title-in .35s var(--h-out) both;
+  /* Text updates every working step; animating each change made it flicker. */
+  animation: none;
 }
 @keyframes h-title-in { from { opacity: 0; transform: translateY(3px); filter: blur(3px); } to { opacity: 1; transform: none; filter: none; } }
 .h-island[data-view="peek"] .h-island__title { font-size: 19px; letter-spacing: -.03em; }
@@ -305,6 +312,9 @@ body {
 .h-island[data-view="card"] { position: relative; }
 .h-island[data-view="card"] .h-island__panel { max-height: 52vh; }
 .h-island[data-view="card"] .h-island__thread { max-height: 40vh; }
+.h-island[data-view="card"] .h-composer { gap: 5px; }
+.h-island[data-view="card"] .h-composer__mode { padding-inline: 9px; }
+.h-island[data-view="card"] .h-link { padding-inline: 3px; white-space: nowrap; font-size: 11px; }
 
 /* ==========================================================================
    Guiding, rather than doing

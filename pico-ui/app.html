@@ -7,7 +7,8 @@
 <meta name="description" content="Halo reads your Windows desktop and works it, and stops to ask before anything it cannot undo.">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex">
-<link rel="icon" href="../phone/icons/icon-192.png">
+<link rel="icon" href="assets/halo-192.png">
+<link rel="apple-touch-icon" href="assets/halo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -25,6 +26,144 @@
 </head>
 <body>
 <div id="app"></div>
+<!-- ==========================================================================
+     The splash
+
+     The window opens before the bundle has parsed, the fonts have arrived or
+     the bridge has said hello — a second or two on a cold start, and every
+     bit of it used to be an empty white rectangle with a title bar. This is
+     what fills it: painted from the markup itself, with no stylesheet, no
+     font and no script to wait for, so it is on screen in the first frame.
+
+     It takes itself away the moment React puts something in #app. If that
+     never happens — no bridge on the port, a bundle that failed to build —
+     it says so plainly and offers the one thing that helps, rather than
+     leaving a person watching an animation that means nothing.
+     ========================================================================== -->
+<div id="splash" role="status" aria-live="polite">
+  <div class="sp__glow"></div>
+  <div class="sp__mark">
+    <div class="sp__ring"></div>
+    <img src="assets/halo.png" alt="" width="96" height="96" decoding="async">
+  </div>
+  <div class="sp__name">Halo</div>
+  <div class="sp__bar"><i></i></div>
+  <div class="sp__say" id="splash-say">Starting up</div>
+  <button type="button" class="sp__do" id="splash-do" hidden>Try again</button>
+</div>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #07070a; }
+  #splash {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; background: #07070a;
+    font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #f4f4f6;
+    transition: opacity .45s cubic-bezier(.2,.7,.2,1), transform .45s cubic-bezier(.2,.7,.2,1);
+  }
+  #splash.is-gone { opacity: 0; transform: scale(1.015); pointer-events: none; }
+  /* One warm light behind it all, so the black has somewhere to come from. */
+  .sp__glow {
+    position: absolute; width: 620px; height: 620px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(124,92,255,.20), rgba(124,92,255,0) 62%);
+    filter: blur(14px); animation: sp-breathe 4.8s ease-in-out infinite;
+  }
+  .sp__mark { position: relative; display: grid; place-items: center; width: 132px; height: 132px; }
+  .sp__mark img {
+    width: 96px; height: 96px; object-fit: contain;
+    filter: drop-shadow(0 6px 26px rgba(124,92,255,.45));
+    animation: sp-rise .7s cubic-bezier(.2,.8,.2,1) both;
+  }
+  /* A ring that travels rather than spins on the spot: it reads as something
+     being made ready, not as a browser waiting on the network. */
+  .sp__ring {
+    position: absolute; inset: 0; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.07);
+    border-top-color: rgba(124,92,255,.85);
+    border-right-color: rgba(61,220,132,.45);
+    animation: sp-spin 1.5s cubic-bezier(.5,.15,.35,.9) infinite;
+  }
+  .sp__name {
+    font-size: 15px; font-weight: 600; letter-spacing: .34em; text-transform: uppercase;
+    color: rgba(255,255,255,.92); margin-left: .34em;
+    animation: sp-rise .7s .06s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .sp__bar {
+    position: relative; width: 132px; height: 2px; border-radius: 2px;
+    background: rgba(255,255,255,.07); overflow: hidden;
+  }
+  .sp__bar i {
+    position: absolute; inset: 0 auto 0 0; width: 42%; border-radius: 2px;
+    background: linear-gradient(90deg, rgba(124,92,255,0), #7c5cff 45%, #3ddc84);
+    animation: sp-sweep 1.35s cubic-bezier(.65,0,.35,1) infinite;
+  }
+  .sp__say { font-size: 12.5px; color: rgba(255,255,255,.45); min-height: 19px; text-align: center; }
+  .sp__do {
+    margin-top: 2px; padding: 7px 16px; border-radius: 999px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.06);
+    color: #fff; font: inherit; font-size: 12.5px;
+  }
+  .sp__do:hover { background: rgba(255,255,255,.12); }
+  @keyframes sp-spin { to { transform: rotate(360deg); } }
+  @keyframes sp-sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(345%); } }
+  @keyframes sp-breathe { 0%, 100% { opacity: .55; transform: scale(.94); } 50% { opacity: 1; transform: scale(1.04); } }
+  @keyframes sp-rise { from { opacity: 0; transform: translateY(7px) scale(.96); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    #splash *, #splash { animation: none !important; transition: none !important; }
+  }
+</style>
+<script>
+  (function () {
+    var splash = document.getElementById('splash');
+    var say = document.getElementById('splash-say');
+    var doIt = document.getElementById('splash-do');
+    var app = document.getElementById('app');
+    var gone = false;
+    var t0 = Date.now();
+
+    function finish() {
+      if (gone) return;
+      gone = true;
+      clearInterval(tick);
+      watch.disconnect();
+      /* A beat on screen even when everything was instant: a splash that
+         flickers for 80ms is worse than none at all. */
+      setTimeout(function () {
+        splash.classList.add('is-gone');
+        setTimeout(function () { splash.remove(); }, 500);
+      }, Math.max(0, 420 - (Date.now() - t0)));
+    }
+
+    /* Two ways in, because there are two things that can come up first:
+       the window itself, or the first-run setup, which mounts on <body>
+       rather than into #app. Both set data-ready when they are on screen. */
+    var ready = function () { return app.childElementCount > 0 || document.body.dataset.ready === '1'; };
+    var watch = new MutationObserver(function () { if (ready()) finish(); });
+    watch.observe(app, { childList: true });
+    watch.observe(document.body, { attributes: true, attributeFilter: ['data-ready'] });
+    if (ready()) finish();
+
+    /* What it says while it waits. The words change because the reason
+       changes: a bundle still parsing is not a bridge that is not there. */
+    var tick = setInterval(function () {
+      if (gone) return;
+      var waited = Date.now() - t0;
+      var conn = document.body.dataset.conn;
+      if (conn === 'offline' || conn === 'connecting') {
+        say.textContent = waited > 9000 ? 'Halo is not answering on this computer' : 'Connecting to Halo';
+      } else if (waited > 9000) {
+        say.textContent = 'Still starting — this is longer than it should take';
+      } else if (waited > 3500) {
+        say.textContent = 'Getting the window ready';
+      }
+      if (waited > 9000) doIt.hidden = false;
+    }, 500);
+
+    doIt.addEventListener('click', function () { location.reload(); });
+  }());
+</script>
+
 <script type="module" src="build/app.js"></script>
 </body>
 </html>

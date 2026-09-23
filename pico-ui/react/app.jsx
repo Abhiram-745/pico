@@ -34,7 +34,7 @@ import { Beam, MetalButton, Orb } from './fx.jsx';
 import { Onboard } from './onboard.jsx';
 import { KEYBINDS } from '../src/keybinds.js';
 import {
-  Composer, Decision, Icon, IconButton, MascotView, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
+  ActivityLog, Composer, Decision, Icon, IconButton, MascotView, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
 } from './parts.jsx';
 
 const SECTIONS = [
@@ -218,6 +218,7 @@ function ChatView({ petName }) {
                   <RunControls size={14} />
                 </header>
                 <PlanSteps limit={8} />
+                <ActivityLog />
                 {plan.finished && <div className="h-runcard__after"><SaveShortcut /></div>}
               </section>
             </Beam>
@@ -426,6 +427,7 @@ function DesktopView({ demo }) {
 function SettingsView({ demo, petName, setPetName }) {
   const settings = useStore(sel.settings);
   const learnt = useStore(sel.runbook);
+  const voiceShortcut = useStore(sel.voiceShortcut);
   const [level, setLevel] = useState(permissions.level);
   const [name, setName] = useState(petName);
   const [startup, setStartup] = useState(null);
@@ -509,7 +511,7 @@ function SettingsView({ demo, petName, setPetName }) {
       <div className="h-card">
         <div className="h-card__title">Keyboard</div>
         <div className="h-card__sub">Every one of these works while you are in something else — Windows hands them to Halo directly.</div>
-        {KEYBINDS.map((b) => (
+        {KEYBINDS.filter((b) => b.id !== 'toggleVoice' || voiceShortcut).map((b) => (
           <div className="h-kv h-kv--keys" key={b.id}>
             <span>{b.label}<i>{b.hint}</i></span>
             <span className="h-keys__chord">{b.keys.map((k) => <kbd key={k}>{k}</kbd>)}</span>
@@ -519,7 +521,7 @@ function SettingsView({ demo, petName, setPetName }) {
 
       <div className="h-card">
         <div className="h-card__title">Model</div>
-        <div className="h-card__sub">A task is planned once by the strongest model, then each step is carried out by the one measured to click most accurately. A screenshot of the desktop is sent to the provider on each step.</div>
+        <div className="h-card__sub">Jev makes most decisions from what Windows reports, in about a third of a second. gpt-4.1-mini reads the screen only when it has to, picking numbered controls rather than guessing pixels; gpt-4o-mini plans and writes. Multi-step jobs get a short timeline.</div>
         <div className="h-kv"><span>In use</span><code>{settings.model || 'not configured'}</code></div>
         <div className="h-kv"><span>Provider</span><span>{settings.hasApiKey ? (settings.provider || 'Connected') : 'Starting…'}</span></div>
       </div>
@@ -759,18 +761,26 @@ function Root({ demo }) {
   return <App demo={demo} conn={conn} />;
 }
 
-const { mode, transport } = connect({ onStatus: (s) => setConn(s) });
+/* The splash in app.html reads both of these: the connection, for what it
+   says while it waits, and data-ready, for when to take itself away. */
+const { mode, transport } = connect({
+  onStatus: (s) => { document.body.dataset.conn = s; setConn(s); },
+});
 chats.attach({ mode });
 
 // First run: nothing else is usable without a provider, so ask once here
 // rather than sending people to edit a file.
 if (mode !== 'mock') {
   const { needsSetup, mountSetup } = await import('../src/setup.js');
-  if (await needsSetup()) mountSetup(document.body, { onDone: () => location.reload() });
+  if (await needsSetup()) {
+    mountSetup(document.body, { onDone: () => location.reload() });
+    document.body.dataset.ready = '1';
+  }
 }
 
 const host = document.getElementById('app') ?? document.body.appendChild(document.createElement('div'));
 createRoot(host).render(<Root demo={mode === 'mock'} />);
+document.body.dataset.ready = '1';
 
 // The palette is a second always-available surface on the desktop. In the
 // hosted preview it would only show the same card twice.

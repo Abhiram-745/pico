@@ -142,6 +142,7 @@ export class HostAgent extends MockAgent {
   }
 
   handle(msg) {
+    if (['stop', 'newChat'].includes(msg?.command)) this._chatAbort?.abort();
     const payload = msg?.payload ?? {};
     switch (msg?.command) {
       case 'setName':
@@ -282,11 +283,12 @@ export class HostAgent extends MockAgent {
 
     // Cancel anything still in flight. Without this a second message leaves
     // the first run's loop going and the two interleave phase changes.
+    this._chatAbort?.abort();
     this.cancelled = true;
     this.paused = false;
     this._heldPhase = null;
     const token = ++this.runToken;
-    await new Promise((r) => setTimeout(r, 160));
+    await Promise.resolve();
     if (token !== this.runToken) return;          // a newer message arrived meanwhile
     this.cancelled = false;
     this.steering = [];
@@ -371,6 +373,9 @@ export class HostAgent extends MockAgent {
      Talking
      ---------------------------------------------------------------------- */
   async converse(text, token = this.runToken) {
+    this._chatAbort?.abort();
+    const abort = new AbortController();
+    this._chatAbort = abort;
     const id = `msg_${Date.now()}`;
     this.history.push({ role: 'user', content: text });
     this.history = this.history.slice(-CHAT_MEMORY);
@@ -391,8 +396,11 @@ export class HostAgent extends MockAgent {
     let full = '';
     // A reply that starts "TASK:" is a hand-off, not something to show.
     const maybeTask = () => /^\s*T(?:A(?:S(?:K(?::.*)?)?)?)?$/is.test(full) || /^\s*TASK:/i.test(full);
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, 90_000);
     try {
       full = await this.llm.converse(this.history, {
+        signal: abort.signal,
         name: this.petName,
         facts: this.memory.forPrompt(),
         onDelta: (piece) => {
@@ -403,12 +411,18 @@ export class HostAgent extends MockAgent {
         },
       });
     } catch (err) {
+      if ((!timedOut && abort.signal.aborted) || this.superseded(token)) {
+        this.emit('message', { id, text: '', done: true, remove: true });
+        return;
+      }
       this.emit('message', {
         id,
-        text: `I couldn't reach the model just then — ${err.message}`,
+        text: timedOut ? 'The reply took too long. Please try again.' : `I couldn't reach the model just then — ${err.message}`,
         done: true,
       });
       return;
+    } finally {
+      clearTimeout(deadline);
     }
 
     if (this.superseded(token)) return;
@@ -642,6 +656,7 @@ export class HostAgent extends MockAgent {
         memory: this.memory.forPrompt(),
         guide: await this.guideFor(),
         browser: helpers.browser,
+        milestonePlanning: true,
       },
       maxTurns: Math.max(1, Number(this.settings.maximumComputerTurns) || 24),
       hooks: {

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Agent Lab</title>
+<link rel="stylesheet" href="qa.css">
+<style>label{display:block;margin:20px 0}input[type=text]{display:block;width:90%;margin-top:8px}select{font:inherit;padding:8px}</style>
+<h1>Halo Agent Lab</h1><p class="lead">A local test form. Nothing is sent to another website.</p>
+<form id="request">
+<label>Project name<input id="project" name="project" type="text" autocomplete="off"></label>
+<label>Search topic<input id="topic" name="topic" type="text" autocomplete="off"></label>
+<label>Priority <select name="priority" id="priority"><option>Normal</option><option>High</option><option>Low</option></select></label>
+<label><input name="notifications" type="checkbox" id="notifications"> Enable notifications</label>
+<button type="submit">Save project</button> <button type="reset">Reset form</button>
+</form><output id="result">No project saved yet.</output>
+<script src="qa.js"></script>
+<script>
+let saved = null;
+const form = document.getElementById('request');
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const d = new FormData(form);
+  saved = { project: d.get('project'), topic: d.get('topic'), priority: d.get('priority'), notifications: d.has('notifications') };
+  document.getElementById('result').textContent = `Saved project: ${saved.project}. Topic: ${saved.topic}. Priority: ${saved.priority}. Notifications: ${saved.notifications ? 'enabled' : 'disabled'}.`;
+});
+qa.task = 'On the Halo Agent Lab page, fill in project name Halo QA, search topic desktop agents, set priority to High, enable notifications, and save the project.';
+qa.check = () => {
+  const ok = saved && saved.project === 'Halo QA' && /desktop agents/i.test(saved.topic) && saved.priority === 'High' && saved.notifications;
+  return { pass: Boolean(ok), detail: saved ? JSON.stringify(saved) : 'not saved' };
+};
+</script>
+</html>

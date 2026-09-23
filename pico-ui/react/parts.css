@@ -321,6 +321,14 @@
   border-radius: 50%;
 }
 .h-step__mark i { width: 6px; height: 6px; border-radius: 50%; background: var(--h-faint); }
+/* A timeline: the marks joined by a line, filled in as each milestone is proven. */
+.h-steps.is-timeline .h-step { position: relative; }
+.h-steps.is-timeline .h-step:not(:last-child)::after {
+  content: ''; position: absolute; left: 14.5px; top: 29px; bottom: -9px; width: 2px; border-radius: 1px;
+  background: var(--h-line-hi, rgba(255,255,255,.14));
+}
+.h-steps.is-timeline .h-step[data-status="done"]:not(:last-child)::after { background: color-mix(in oklab, var(--h-good, #4ade80) 55%, transparent); }
+.h-step__live { color: var(--h-ink, #e8e8ee); opacity: .8; }
 .h-step[data-status="done"] .h-step__mark { background: color-mix(in oklab, var(--h-good) 22%, #000); color: var(--h-good); animation: h-pop .4s var(--h-spring) both; }
 .h-step[data-status="skipped"] .h-step__mark { background: var(--h-well-hi); color: var(--h-dim); }
 .h-step[data-status="failed"] .h-step__mark,
@@ -354,6 +362,8 @@
 @keyframes h-pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
 .h-controls { display: flex; align-items: center; gap: 6px; }
+.h-stop-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 0 11px; border: 1px solid rgba(255,105,116,.35); border-radius: 16px; background: rgba(185,45,61,.16); color: #ffb5bb; font: inherit; font-size: 12px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.h-stop-button:hover { background: rgba(185,45,61,.28); color: #fff; }
 
 /* --- the composer ---------------------------------------------------------- */
 .h-composer-beam { display: block; border-radius: 24px; }
@@ -404,6 +414,133 @@
 }
 .h-composer__input::placeholder { color: var(--h-faint); }
 .h-composer.is-big .h-composer__input { font-size: 16px; }
+.h-composer.is-voice { gap: 10px; padding: 0 9px; min-width: 0; background: #111115; border: 1px solid rgba(140,170,255,.22); }
+.h-voice__start, .h-voice__end { border: 0; cursor: pointer; font: inherit; }
+.h-voice__start, .h-voice__mic { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 50%; color: #101521; background: #a6c7ff; }
+.h-voice__start:hover { background: #d4e3ff; }
+.h-voice__mic[data-phase="speaking"] { background: #a88bff; }
+.h-voice__mic[data-phase="transcribing"], .h-voice__mic[data-phase="thinking"] { background: #81d7bc; }
+.h-voice__wave { height: 30px; display: flex; align-items: center; gap: 3px; flex: none; }
+.h-voice__wave i { width: 3px; min-height: 5px; border-radius: 4px; background: linear-gradient(#b1d4ff,#699afa); transition: height .12s ease; }
+.h-voice__status { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c8c9d4; font-size: 13px; }
+.h-voice__end { background: transparent; color: #a5a5b1; font-size: 11px; white-space: nowrap; }
+.h-voice__end:hover { color: #fff; }
+.h-stop-button--voice { min-height: 32px; }
+
+/* --- the voice bar, after HeyClicky ---------------------------------------
+   One dark pill: a glowing round mic on the left, a waveform, a line of hint,
+   and the chord as keycaps on the right. Blue leans toward Halo's own ocean
+   rather than copying HeyClicky's. Everything else the old composer carried
+   (mode, read-aloud) only appears once you are typing. */
+.h-composer.h-clicky {
+  --clicky-blue: #9cc4ff;
+  --clicky-blue-deep: #5f8ff5;
+  gap: 10px;
+  height: 58px;
+  padding: 0 9px 0 7px;
+  border-radius: 29px;
+  background: linear-gradient(180deg, #202024 0%, #18181b 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07), inset 0 1px 0 rgba(255, 255, 255, .05), 0 10px 30px -12px rgba(0, 0, 0, .6);
+}
+.h-composer.h-clicky:focus-within { box-shadow: inset 0 0 0 1px rgba(156, 196, 255, .28), inset 0 1px 0 rgba(255, 255, 255, .05), 0 0 0 4px rgba(156, 196, 255, .05); }
+.h-composer.h-clicky.is-voice { border: 0; background: linear-gradient(180deg, #1d1f26 0%, #16171c 100%); box-shadow: inset 0 0 0 1px rgba(156, 196, 255, .22), 0 10px 30px -12px rgba(0, 0, 0, .6); }
+.h-composer.h-clicky .h-composer__input { font-size: 15px; }
+.h-composer.h-clicky .h-composer__input::placeholder { color: #8b8b94; }
+
+/* The orb. Pale blue with a soft light behind it; the glow grows with your voice. */
+.h-orb {
+  --level: 0;
+  position: relative;
+  width: 44px; height: 44px; flex: none;
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%; cursor: pointer;
+  color: #0e1422;
+  background: radial-gradient(circle at 36% 30%, #ffffff 0%, #d9e8ff 32%, #a9c9ff 68%, #7fa9f7 100%);
+  box-shadow:
+    0 0 0 calc(3px + var(--level) * 7px) rgba(156, 196, 255, calc(.14 + var(--level) * .2)),
+    0 0 calc(16px + var(--level) * 22px) rgba(127, 169, 247, calc(.45 + var(--level) * .35)),
+    inset 0 -3px 6px rgba(40, 80, 170, .25);
+  transition: box-shadow .09s linear, transform .18s var(--h-spring, ease), filter .2s;
+}
+.h-orb:hover { transform: scale(1.05); filter: brightness(1.05); }
+.h-orb:active { transform: scale(.96); }
+.h-orb:focus-visible { outline: 2px solid var(--clicky-blue); outline-offset: 3px; }
+.h-orb .h-icon { stroke-width: 2.4; }
+.h-orb[data-phase="recording"] { animation: h-orb-breathe 1.6s ease-in-out infinite; }
+.h-orb[data-phase="requesting"], .h-orb[data-phase="transcribing"], .h-orb[data-phase="thinking"] {
+  background: radial-gradient(circle at 36% 30%, #ffffff 0%, #d6f5ea 32%, #9fe3c9 68%, #62c7a4 100%);
+  box-shadow: 0 0 0 3px rgba(129, 215, 188, .16), 0 0 18px rgba(98, 199, 164, .5);
+}
+.h-orb[data-phase="requesting"]::after, .h-orb[data-phase="transcribing"]::after, .h-orb[data-phase="thinking"]::after {
+  content: ''; position: absolute; inset: -5px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: #9fe3c9; border-right-color: rgba(159, 227, 201, .4);
+  animation: h-orb-spin .9s linear infinite;
+}
+.h-orb[data-phase="speaking"] {
+  background: radial-gradient(circle at 36% 30%, #ffffff 0%, #e6ddff 32%, #c3b0ff 68%, #9a82f5 100%);
+  box-shadow: 0 0 0 4px rgba(184, 166, 255, .16), 0 0 20px rgba(154, 130, 245, .55);
+  animation: h-orb-breathe 1.2s ease-in-out infinite;
+}
+.h-orb[data-phase="error"] {
+  background: radial-gradient(circle at 36% 30%, #fff 0%, #ffd9dc 40%, #ff9aa3 100%);
+  box-shadow: 0 0 0 3px rgba(255, 120, 130, .16), 0 0 16px rgba(255, 110, 120, .45);
+}
+@keyframes h-orb-breathe { 50% { transform: scale(1.045); } }
+@keyframes h-orb-spin { to { transform: rotate(360deg); } }
+
+/* The waveform. Thin rounded bars: blue where there is sound, grey where not. */
+.h-wave { height: 30px; display: flex; align-items: center; gap: 3px; flex: none; padding: 0 2px; }
+.h-wave i {
+  width: 3px; min-height: 4px; border-radius: 3px;
+  background: #56565e;
+  transition: height .1s ease-out, background-color .2s;
+}
+.h-wave i[data-on="true"] { background: linear-gradient(180deg, var(--clicky-blue, #9cc4ff), var(--clicky-blue-deep, #5f8ff5)); }
+.h-wave[data-phase="idle"] i[data-on="true"] { opacity: .9; }
+.h-wave[data-phase="speaking"] i { background: linear-gradient(180deg, #d0c3ff, #9a82f5); animation: h-wave-talk .9s ease-in-out infinite; }
+.h-wave[data-phase="transcribing"] i, .h-wave[data-phase="thinking"] i, .h-wave[data-phase="requesting"] i { background: #6fcfae; animation: h-wave-talk 1.3s ease-in-out infinite; opacity: .7; }
+@keyframes h-wave-talk { 0%, 100% { transform: scaleY(.45); } 50% { transform: scaleY(1); } }
+
+.h-composer.h-clicky .h-voice__status { color: #d6d7de; font-size: 14.5px; }
+
+/* Keycaps: the chord, drawn the way the keyboard has it. */
+.h-keycaps {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 5px; border-radius: 14px;
+  background: rgba(255, 255, 255, .03);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+}
+.h-keycaps kbd {
+  min-width: 28px; height: 28px; padding: 0 7px;
+  display: inline-grid; place-items: center;
+  border-radius: 8px;
+  font: 600 12.5px/1 var(--font, system-ui);
+  color: #e3e3e8;
+  background: linear-gradient(180deg, #34343a 0%, #26262b 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .13), inset 0 1px 0 rgba(255, 255, 255, .12), 0 2px 0 rgba(0, 0, 0, .45);
+}
+
+/* Read replies aloud: a quiet icon, only while typing. */
+.h-clicky__speak {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border: 0; border-radius: 50%; cursor: pointer; background: transparent; color: #7c7c86;
+}
+.h-clicky__speak:hover { color: #e3e3e8; background: rgba(255, 255, 255, .06); }
+.h-clicky__speak[aria-pressed="true"] { color: var(--clicky-blue, #9cc4ff); }
+
+/* Stop: always the same place, always the same red, never hidden while
+   anything is happening. */
+.h-clicky__stop { min-height: 36px; padding: 0 14px; border-radius: 18px; font-size: 13px; flex: none; }
+.h-clicky__note { display: block; padding: 5px 16px 0; color: #ffb5bb; font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .h-orb, .h-orb::after, .h-wave i { animation: none !important; transition: none !important; }
+}
+.h-step__why { display: block; }
+.h-activity { margin: 8px 6px 2px; color: var(--h-dim); font-size: 11px; }
+.h-activity summary { cursor: pointer; }
+.h-activity ol { margin: 8px 0 0; padding-left: 20px; max-height: 140px; overflow: auto; line-height: 1.5; }
+.h-activity li { padding: 2px 0; }
 
 /* --- the face: mascot at rest, orb at work --------------------------------- */
 .h-presence { position: relative; display: inline-block; flex: none; vertical-align: middle; }

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Sort</title>
+<link rel="stylesheet" href="qa.css">
+<style>
+ul { list-style: none; padding: 0; width: 360px; }
+li { padding: 14px 18px; margin: 8px 0; background: #fff; border: 1px solid #ccc; border-radius: 10px; cursor: grab; user-select: none; }
+li.over { border-color: #3b82f6; box-shadow: 0 -3px 0 #3b82f6; }
+</style>
+<h1>Shopping order</h1>
+<p class="lead">Drag a row to reorder the list.</p>
+<ul id="list" aria-label="Shopping list">
+  <li draggable="true" data-item="Apples">Apples</li>
+  <li draggable="true" data-item="Bananas">Bananas</li>
+  <li draggable="true" data-item="Cherries">Cherries</li>
+  <li draggable="true" data-item="Dates">Dates</li>
+  <li draggable="true" data-item="Elderberries">Elderberries</li>
+</ul>
+<output id="order"></output>
+<script src="qa.js"></script>
+<script>
+/* Real HTML5 drag and drop: the browser only starts it after the button has
+   been held and the pointer has travelled, and only drops when dragover has
+   been seen on the target. That is exactly what Halo's drag has to produce. */
+const list = document.getElementById('list');
+const show = () => { document.getElementById('order').textContent = 'Order: ' + [...list.children].map((li) => li.dataset.item).join(', '); };
+let dragged = null;
+list.addEventListener('dragstart', (e) => { dragged = e.target; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragged.dataset.item); });
+list.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  const li = e.target.closest('li');
+  list.querySelectorAll('.over').forEach((x) => x.classList.remove('over'));
+  if (li && li !== dragged) li.classList.add('over');
+});
+list.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const li = e.target.closest('li');
+  list.querySelectorAll('.over').forEach((x) => x.classList.remove('over'));
+  if (li && dragged && li !== dragged) list.insertBefore(dragged, li);
+  show();
+});
+list.addEventListener('dragend', () => list.querySelectorAll('.over').forEach((x) => x.classList.remove('over')));
+show();
+qa.task = 'On the Shopping order page, drag Dates to the top of the list.';
+qa.check = () => {
+  const order = [...list.children].map((li) => li.dataset.item);
+  return { pass: order[0] === 'Dates', detail: order.join(', ') };
+};
+</script>
+</html>

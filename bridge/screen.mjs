@@ -62,7 +62,7 @@ function fromRaw(data, width, height) {
  * figures were measured with, in a tight loop over typed arrays instead of
  * through Jimp, which took three times as long.
  */
-function downscale(src, sw, sh, dw) {
+export function downscale(src, sw, sh, dw) {
   const dh = Math.max(1, Math.round((sh * dw) / sw));
   const out = Buffer.allocUnsafe(dw * dh * 4);
   const fx = sw / dw;
@@ -278,7 +278,13 @@ export class Screen {
    */
   async capture({ width = null, quality = 80, raw = null } = {}) {
     const desktop = raw ?? await this.rawDesktop();
-    return shotFrom(encodeFrame(desktop, { width, quality }), desktop, this.mode);
+    /* Awaited. Without it a Promise was handed to shotFrom, which destructures
+       its argument — so every field came back undefined and this returned a
+       shot with no picture in it, no width and no thumbnail. It went unnoticed
+       because the run captures through the worker thread (screen-remote.mjs),
+       which does await; this path is the fallback for when that thread cannot
+       start, which is exactly when a blank screenshot is least affordable. */
+    return shotFrom(await encodeFrame(desktop, { width, quality }), desktop, this.mode);
   }
 
   /** Title of whatever is in front, for the activity log. */

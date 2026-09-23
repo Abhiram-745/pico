@@ -19,7 +19,11 @@ import { store, isActive } from '../src/store.js';
 import { bridge } from '../src/bridge.js';
 import { Mascot } from '../src/mascot.js';
 import { Beam, MetalButton, Orb, orbStateFor } from './fx.jsx';
-import { useStore, sel } from './hooks.js';
+import { useStore, useStoreEvent, sel } from './hooks.js';
+import { speak, stopVoice, setVoiceEnabled } from '../src/voice.js';
+import { createMicrophone } from '../src/microphone.js';
+import { claimVoice, updateVoice, endVoice, releaseVoice, stopEverything, onVoiceSession, isSpokenStop, voiceOwner } from '../src/voice-session.js';
+import { byId as keybind } from '../src/keybinds.js';
 
 /* --------------------------------------------------------------------------
    Icons — Lucide-style paths on a 24 unit grid, 2px round stroke.
@@ -27,6 +31,8 @@ import { useStore, sel } from './hooks.js';
 const PATHS = {
   send: 'M12 19V5 M5 12l7-7 7 7',
   stop: 'M7 7h10v10H7z',
+  mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5 11a7 7 0 0 0 14 0 M12 18v3 M8 21h8',
+  volume: 'M11 5 6 9H3v6h3l5 4z M15.5 8.5a5 5 0 0 1 0 7 M18.5 5.5a9 9 0 0 1 0 13',
   pause: 'M9 5v14 M15 5v14',
   play: 'M8 5.5v13l10.5-6.5z',
   skip: 'M5 5.5v13l9-6.5z M18 5v14',
@@ -136,6 +142,7 @@ const Message = memo(function Message({ id, from, text, done, memoryId, remember
   return (
     <div className={`h-msg h-msg--${from}${done ? '' : ' is-streaming'}`} data-id={id}>
       {text}
+      {from === 'pico' && done && text && <button type="button" className="h-link" onClick={() => speak(text)} aria-label="Listen to this reply"> Listen</button>}
     </div>
   );
 });
@@ -298,7 +305,6 @@ const STATUS_WORD = { done: 'Done', skipped: 'Skipped', failed: 'Did not work', 
 export function PlanSteps({ limit = 12, dense = false }) {
   const plan = useStore(sel.plan);
   const phase = useStore(sel.phase);
-  const action = useStore(sel.action);
   if (!plan?.steps?.length) return null;
   const running = !plan.finished && isActive(phase);
   const steps = plan.steps.map((s, i) => ({ ...s, i }));
@@ -307,13 +313,13 @@ export function PlanSteps({ limit = 12, dense = false }) {
   const visible = steps.slice(from, from + limit);
 
   return (
-    <ol className={`h-steps${dense ? ' is-dense' : ''}`} aria-label="Plan">
+    <ol className={`h-steps${dense ? ' is-dense' : ''}${plan.revision !== undefined && steps.length > 1 ? ' is-timeline' : ''}`} aria-label="Plan">
       {from > 0 && <li className="h-steps__more">{from} earlier step{from === 1 ? '' : 's'}</li>}
       {visible.map((s) => {
         const current = running && s.i === plan.index;
         const status = current ? 'current' : s.status;
         return (
-          <li key={`${s.i}:${s.do}`} className="h-step" data-status={status}>
+          <li key={s.id ?? `${s.i}:${s.do}`} className="h-step" data-status={status}>
             <span className="h-step__mark">
               {current ? <Orb state={orbStateFor({ phase }) ?? 'working'} px={20} paused={phase === 'Paused'} />
                 : status === 'done' ? <Icon name="check" size={12} />
@@ -323,7 +329,10 @@ export function PlanSteps({ limit = 12, dense = false }) {
             </span>
             <span className="h-step__text">
               <span className="h-step__do">{s.do}</span>
-              {current && action?.detail && phase === 'Acting' && <span className="h-step__why">{action.detail}</span>}
+              {/* The current milestone says what Halo is doing right now; the
+                  others stay one line each, so the timeline reads at a glance. */}
+              {current && plan.live && <span className="h-step__why h-step__live">{plan.live}</span>}
+              {current && !plan.live && s.doneWhen && <span className="h-step__why">Done when: {s.doneWhen}</span>}
               {!current && status !== 'pending' && status !== 'done' && <span className="h-step__why">{STATUS_WORD[status]}</span>}
             </span>
             {current && (
@@ -338,6 +347,14 @@ export function PlanSteps({ limit = 12, dense = false }) {
   );
 }
 
+export function ActivityLog() {
+  const plan = useStore(sel.plan);
+  if (!plan?.activity?.length) return null;
+  return <details className="h-activity"><summary>Activity · {plan.activity.length} recent actions</summary>
+    <ol>{plan.activity.map((item, index) => <li key={`${item.id}:${index}`}>{item.text}</li>)}</ol>
+  </details>;
+}
+
 /** Pause or resume, skip, stop — the controls for a run in hand. */
 export function RunControls({ size = 15 }) {
   const phase = useStore(sel.phase);
@@ -350,7 +367,9 @@ export function RunControls({ size = 15 }) {
       <IconButton icon={paused ? 'play' : 'pause'} label={paused ? 'Resume' : 'Pause'} size={size}
         onClick={() => bridge.send(paused ? 'resume' : 'pause')} />
       {canSkip && <IconButton icon="skip" label="Skip this step" size={size} onClick={() => bridge.send('skipStep', { index: plan.index })} />}
-      <IconButton icon="stop" label="Stop — Esc" size={size - 3} className="h-ibtn--stop" onClick={() => bridge.send('stop')} />
+      <button type="button" className="h-stop-button" title="Stop task and voice · Esc" onClick={stopEverything}>
+        <Icon name="stop" size={size - 3} /> Stop
+      </button>
     </div>
   );
 }
@@ -409,7 +428,135 @@ const MODE_HINT = {
   agent: 'Always act on the desktop',
 };
 
-export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null, big = false }) {
+/* --------------------------------------------------------------------------
+   The voice bar's parts, after HeyClicky: a glowing round mic, a waveform,
+   a line of hint, and the chord drawn as keycaps.
+   -------------------------------------------------------------------------- */
+
+/** The bars at rest: a still voice, loud on the left and fading out. */
+const WAVE_AT_REST = [0.3, 0.55, 0.8, 0.45, 1, 0.6, 0.85, 0.4, 0.7, 0.3, 0.2, 0.28, 0.16, 0.22, 0.12, 0.18];
+
+/** Recent microphone levels as bars, newest on the right. */
+export function Waveform({ level = 0, phase = 'idle' }) {
+  const live = phase === 'recording';
+  const [history, setHistory] = useState(() => WAVE_AT_REST.map(() => 0));
+  useEffect(() => {
+    if (live) setHistory((h) => [...h.slice(1), Math.max(0, Math.min(1, level))]);
+  }, [level, live]);
+  const values = live ? history : WAVE_AT_REST;
+  return (
+    <span className="h-wave" data-phase={phase} aria-hidden="true">
+      {values.map((v, i) => (
+        <i key={i}
+          data-on={live ? (v > 0.06 ? 'true' : 'false') : (i < 10 ? 'true' : 'false')}
+          style={{ height: `${Math.round(5 + (v * 21))}px`, animationDelay: `${(i * 83) % 600}ms` }} />
+      ))}
+    </span>
+  );
+}
+
+/** The mic: starts voice, shows what voice is doing, and ends it again. */
+export function VoiceOrb({ phase = 'idle', level = 0, active = false, onClick }) {
+  const label = active ? 'End voice' : 'Talk to Halo';
+  return (
+    <button type="button" className="h-orb" data-phase={active ? phase : 'idle'} aria-label={label} title={label}
+      style={{ '--level': active && phase === 'recording' ? Math.max(0, Math.min(1, level)) : 0 }}
+      onClick={onClick}>
+      <Icon name="mic" size={20} />
+    </button>
+  );
+}
+
+export function Keycaps({ keys = [] }) {
+  return (
+    <span className="h-keycaps" aria-hidden="true">
+      {keys.map((k) => <kbd key={k}>{k.length > 1 ? k.toLowerCase() : k}</kbd>)}
+    </span>
+  );
+}
+
+export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null, big = false, acceptShortcut = false }) {
+  const [micState, setMicState] = useState({ phase: 'idle', message: '' });
+  const voice = useStore(sel.voice);
+  const conversationOn = voice.active;
+  const conversation = useRef(false);
+  const voiceBusy = useRef(false);
+  const resumeTimer = useRef(null);
+  const oneShot = useRef(false);           // push-to-talk: one utterance, then done
+  const spokeOnce = useRef(null);          // the reply preference to restore after it
+  const repliesBefore = useRef(false);
+  const [focused, setFocused] = useState(false);
+  const transcriptHandler = useRef(null);
+  const microphone = useMemo(() => createMicrophone({
+    onState: state => {
+      setMicState(state);
+      if (conversation.current) updateVoice({ phase: state.phase, message: state.message });
+    },
+    onLevel: level => { if (conversation.current) updateVoice({ level }); },
+    onTranscript: value => transcriptHandler.current?.(value),
+    stopPlayback: stopVoice,
+  }), []);
+  const resumeListening = () => {
+    clearTimeout(resumeTimer.current);
+    if (!conversation.current || voiceBusy.current) return;
+    resumeTimer.current = setTimeout(() => {
+      if (conversation.current && !voiceBusy.current) microphone.start();
+    }, 450);
+  };
+  useEffect(() => {
+    const off = bridge.onSend(command => {
+      if (['newChat', 'openChat', 'stop'].includes(command)) {
+        conversation.current = false;
+        clearTimeout(resumeTimer.current);
+        microphone.cancel();
+        if (store.state.voice.active) endVoice();
+      } else if (['submitTask', 'steer'].includes(command)) {
+        microphone.cancel();
+        resumeListening();
+      }
+    });
+    const unload = () => {
+      conversation.current = false;
+      clearTimeout(resumeTimer.current);
+      microphone.cancel();
+      if (store.state.voice.owner === voiceOwner) endVoice();
+    };
+    window.addEventListener('pagehide', unload);
+    return () => { off(); window.removeEventListener('pagehide', unload); unload(); };
+  }, [microphone]);
+  useEffect(() => onVoiceSession(event => {
+    if (event.type !== 'claim' && event.type !== 'stop') return;
+    conversation.current = false;
+    clearTimeout(resumeTimer.current);
+    microphone.cancel();
+    voiceBusy.current = false;
+    setVoiceEnabled(false);
+    setVoiceOn(false);
+  }), [microphone]);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState('');
+  useEffect(() => {
+    const update = (event) => {
+      const value = event.detail;
+      setVoiceStatus(value);
+      const busy = value === 'Preparing voice…' || value === 'Speaking';
+      if (busy) {
+        voiceBusy.current = true; microphone.cancel();
+        if (conversation.current) updateVoice({ phase: 'speaking', message: value, level: 0 });
+      }
+      else if (voiceBusy.current) {
+        voiceBusy.current = false;
+        if (spokeOnce.current !== null) {
+          const before = spokeOnce.current;
+          spokeOnce.current = null;
+          setVoiceEnabled(before);
+          setVoiceOn(before);
+        } else resumeListening();
+      }
+    };
+    window.addEventListener('halo:voice-status', update);
+    return () => window.removeEventListener('halo:voice-status', update);
+  }, [microphone]);
   const phase = useStore(sel.phase);
   const plan = useStore(sel.plan);
   const mode = useStore(sel.mode);
@@ -422,11 +569,20 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
   const blocked = isActive(phase) && !steering;
   const canSend = Boolean(text.trim()) && guardian.ready && !blocked;
 
+  useEffect(() => {
+    if (['Stopped', 'Failed'].includes(phase) && conversation.current) {
+      conversation.current = false;
+      clearTimeout(resumeTimer.current);
+      microphone.cancel();
+      endVoice();
+    }
+  }, [phase, microphone]);
+
   useEffect(() => { if (autoFocus) ref.current?.focus({ preventScroll: true }); }, [autoFocus, ref]);
 
-  const submit = () => {
-    const t = text.trim();
-    if (!t || !canSend) return;
+  const submit = (value) => {
+    const t = (typeof value === 'string' ? value : text).trim();
+    if (!t || !guardian.ready || blocked) return;
     if (steering) {
       bridge.send('steer', { text: t });
     } else {
@@ -439,6 +595,27 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     }
     setText('');
   };
+  transcriptHandler.current = (value) => {
+    if (isSpokenStop(value)) { stopEverything(); return; }
+    setText(value);
+    if (guardian.ready && !blocked) submit(value);
+    else if (guardian.ready && isActive(phase)) bridge.send('steer', { text: value });
+    else setMicState({ phase: 'idle', message: 'Recorded. You can send this when Halo is ready.' });
+    if (oneShot.current) {
+      /* Push-to-talk is one thing said. The bar goes back to rest now; the
+         reply is still spoken, and afterwards replies go back to how they
+         were. */
+      oneShot.current = false;
+      spokeOnce.current = repliesBefore.current;
+      conversation.current = false;
+      clearTimeout(resumeTimer.current);
+      microphone.cancel();
+      releaseVoice();
+      return;
+    }
+    if (conversation.current) updateVoice({ phase: 'thinking', transcript: value, message: `Heard: ${value}` });
+    resumeListening();
+  };
 
   const placeholder = steering
     ? `Tell ${petName} something — "no, the other one"…`
@@ -447,33 +624,109 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     : mode === 'agent' ? `Tell ${petName} what to do…`
     : `Ask ${petName} anything, or give it a job…`;
 
+  const startConversation = () => {
+    repliesBefore.current = voiceOn;
+    conversation.current = true;
+    claimVoice();
+    setVoiceEnabled(true);
+    setVoiceOn(true);
+    microphone.start();
+  };
+  const endConversation = () => {
+    spokeOnce.current = null;
+    oneShot.current = false;
+    conversation.current = false;
+    clearTimeout(resumeTimer.current);
+    microphone.cancel();
+    voiceBusy.current = false;
+    setVoiceEnabled(false);
+    setVoiceOn(false);
+    endVoice();
+  };
+  useStoreEvent(['voiceToggle'], () => {
+    if (!acceptShortcut) return;
+    if (store.state.voice.active) {
+      if (store.state.voice.owner === voiceOwner) endConversation();
+      else endVoice();
+    } else startConversation();
+  });
+  /* Hold to talk. The chord starts voice on the way down either way; how
+     long it was held decides the rest. A tap leaves hands-free voice on,
+     sending whenever you stop talking. A hold of a third of a second or more
+     is push-to-talk: letting go sends what was said, and the microphone is
+     put down again once Halo has answered. */
+  useStoreEvent(['voiceRelease'], (s) => {
+    if (!acceptShortcut || !conversation.current) return;
+    if ((s.voiceHeldMs ?? 0) < 350) return;
+    oneShot.current = true;
+    microphone.finish();
+  });
+  const voiceMessage = voice.transcript && voice.phase === 'thinking'
+    ? `Heard: ${voice.transcript}`
+    : voice.phase === 'recording' ? 'Listening… stop talking to send'
+    : voice.message || (voice.phase === 'speaking' ? `${petName} is speaking` : 'Listening…');
+  const shortcutOk = useStore((s) => s.voiceShortcut) !== false;
+  const talkKeys = keybind('toggleVoice')?.keys ?? [];
+  const working = isActive(phase);
+  const hint = shortcutOk && talkKeys.length
+    ? `${talkKeys.map((k) => (k.length > 1 ? k.toLowerCase() : k)).join(' + ')} or click the mic :)`
+    : 'type here, or click the mic :)';
+
   return (
     <Beam active={steering} size="line" color="ocean" strength={0.85} className="h-composer-beam">
-      <div className={`h-composer${big ? ' is-big' : ''}`} data-steering={steering ? 'true' : 'false'}>
-        {steering
-          ? <span className="h-composer__tag">Steer</span>
-          : (
+      <div className={`h-composer h-clicky${big ? ' is-big' : ''}${conversationOn ? ' is-voice' : ''}`} data-steering={steering ? 'true' : 'false'}>
+        <VoiceOrb phase={voice.phase} level={voice.level} active={conversationOn}
+          onClick={() => { if (!conversationOn) startConversation(); else if (voice.owner === voiceOwner) endConversation(); else endVoice(); }} />
+        {conversationOn ? <>
+          <Waveform level={voice.level} phase={voice.phase} />
+          <span className="h-voice__status" role="status">{voiceMessage}</span>
+          {voice.phase === 'error' && voice.owner === voiceOwner && <button type="button" className="h-voice__end" onClick={() => microphone.start()}>Retry</button>}
+        </> : <>
+          {!focused && !text && <Waveform phase="idle" />}
+          {steering && <span className="h-composer__tag">Steer</span>}
+          <input
+            ref={ref}
+            className="h-composer__input"
+            value={text}
+            disabled={!guardian.ready}
+            placeholder={focused || steering || blocked ? placeholder : hint}
+            aria-label={steering ? 'Steer the task in hand' : 'Message or task'}
+            autoComplete="off"
+            spellCheck={false}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
+          />
+          {!steering && (focused || text) && (
             <button type="button" className="h-composer__mode" data-mode={mode} title={MODE_HINT[mode]}
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => { store.setMode(MODE_ORDER[(MODE_ORDER.indexOf(mode) + 1) % MODE_ORDER.length]); ref.current?.focus(); }}>
               {MODE_LABEL[mode]}
             </button>
           )}
-        <input
-          ref={ref}
-          className="h-composer__input"
-          value={text}
-          disabled={!guardian.ready}
-          placeholder={placeholder}
-          aria-label={steering ? 'Steer the task in hand' : 'Message or task'}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
-        />
-        <MetalButton circle aria-label={steering ? 'Send to the task' : 'Send'} disabled={!canSend} onClick={submit} className="h-send">
-          <Icon name="send" size={big ? 17 : 15} />
-        </MetalButton>
+          {(focused || text) && (
+            <button type="button" className="h-clicky__speak" aria-pressed={voiceOn} title={voiceOn ? 'Replies are read aloud' : 'Read replies aloud'}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setVoiceEnabled(!voiceOn); setVoiceOn(!voiceOn); }}>
+              <Icon name="volume" size={15} />
+            </button>
+          )}
+          {text
+            ? (
+              <MetalButton circle aria-label={steering ? 'Send to the task' : 'Send'} disabled={!canSend} onClick={submit} className="h-send">
+                <Icon name="send" size={big ? 17 : 15} />
+              </MetalButton>
+            )
+            : !working && shortcutOk && talkKeys.length > 0 && <Keycaps keys={talkKeys} />}
+        </>}
+        {(conversationOn || working || voiceStatus) && (
+          <button type="button" className="h-stop-button h-clicky__stop" title="Stop everything · Esc" onClick={stopEverything}>
+            <Icon name="stop" size={11} /> Stop
+          </button>
+        )}
       </div>
+      {!conversationOn && micState.phase === 'error' && micState.message && <small className="h-clicky__note" role="status">{micState.message}</small>}
     </Beam>
   );
 }

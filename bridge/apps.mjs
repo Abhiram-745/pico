@@ -72,6 +72,16 @@ export const SITES = new Map([
   ['twitter', { url: 'https://x.com', label: 'x.com', app: true }],
   ['tiktok', { url: 'https://www.tiktok.com', label: 'tiktok.com', app: true }],
   ['github', { url: 'https://github.com', label: 'github.com', app: true }],
+  /* The things people build with. Every one of these ships a desktop app or
+     installs as one from the Store, and every one is the same product on the
+     web — so which was meant is a real question, not a guess to be made. */
+  ['lovable', { url: 'https://lovable.dev', label: 'lovable.dev', app: true }],
+  ['cursor', { url: 'https://cursor.com', label: 'cursor.com', app: true }],
+  ['replit', { url: 'https://replit.com', label: 'replit.com', app: true }],
+  ['vercel', { url: 'https://vercel.com', label: 'vercel.com', app: true }],
+  ['v0', { url: 'https://v0.app', label: 'v0.app', app: true }],
+  ['supabase', { url: 'https://supabase.com/dashboard', label: 'supabase.com', app: true }],
+  ['linear', { url: 'https://linear.app', label: 'linear.app', app: true }],
   ['canva', { url: 'https://www.canva.com', label: 'canva.com', app: true }],
   ['prime video', { url: 'https://www.primevideo.com', label: 'primevideo.com', app: true }],
   ['disney+', { url: 'https://www.disneyplus.com', label: 'disneyplus.com', app: true }],
@@ -284,6 +294,21 @@ export function parseOpen(text) {
   const t = String(text ?? '').trim();
   const m = t.match(OPEN_RE);
   if (!m) return null;
+
+  // An exact URL is enough to act. It may contain localhost, an IP address,
+  // or a port, and may be followed by "in Chrome, then ...". Treating that
+  // whole phrase as an app name sends the agent into taskbar-click loops.
+  const exactUrl = m[1].match(/^(https?:\/\/[^\s,]+)/i)?.[1];
+  if (exactUrl) {
+    const suffix = m[1].slice(exactUrl.length)
+      .replace(/^\s+in\s+(?:the\s+)?(?:chrome|edge|firefox|browser)\b/i, '')
+      .replace(/^\s*(?:,\s*)?(?:(?:and\s+)?then\s+|and\s+|,\s*)/i, '')
+      .trim();
+    try {
+      const parsed = new URL(exactUrl);
+      if (['http:', 'https:'].includes(parsed.protocol)) return { name: exactUrl, url: parsed.href, rest: suffix, said: exactUrl };
+    } catch { /* The normal parser below can reject or interpret it. */ }
+  }
 
   let subject = m[1];
   let rest = '';

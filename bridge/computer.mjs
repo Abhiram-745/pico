@@ -304,15 +304,15 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
        was there before. */
     async click(x, y, button = 'left') {
       if (Number.isFinite(x)) await glide(x, y);
-      await sleep(70);
+      await sleep(45);
       await mouse.click(BUTTON[button] ?? Button.LEFT);
-      await sleep(40);                       // and let it register before moving on
+      await sleep(25);                       // and let it register before moving on
     },
 
     /** A click with Shift held: extends a selection to here. */
     async shiftClick(x, y) {
       if (Number.isFinite(x)) await glide(x, y);
-      await sleep(70);
+      await sleep(45);
       const shift = mapKey('SHIFT');
       if (shift !== null) await keyboard.pressKey(shift);
       try {
@@ -320,14 +320,14 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       } finally {
         if (shift !== null) await keyboard.releaseKey(shift).catch?.(() => {});
       }
-      await sleep(40);
+      await sleep(25);
     },
 
     async doubleClick(x, y) {
       if (Number.isFinite(x)) await glide(x, y);
-      await sleep(70);
+      await sleep(45);
       await mouse.doubleClick(Button.LEFT);
-      await sleep(40);
+      await sleep(25);
     },
 
     /**
@@ -342,22 +342,48 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
     async drag(path = []) {
       if (path.length < 2) return;
       await glide(path[0].x, path[0].y);
-      await sleep(60);                       // let the target see the pointer arrive
+      await sleep(120);                      // let the target see the pointer arrive (hover state)
 
       await mouse.pressButton(Button.LEFT);
-      await sleep(90);                       // and see the button go down
+      await sleep(120);                      // and see the button go down
 
-      // Past the system drag threshold before doing anything else, or the
-      // application treats the whole gesture as a click.
+      /* Past the system drag threshold in two small moves rather than one
+         jump: a page's pointer handlers and Windows' own drag detection both
+         want to see movement while the button is held, and a single 8px
+         jump was sometimes read as a click that wandered. */
       const next = path[1];
-      const dx = Math.sign(next.x - at.x) || 1;
-      const dy = Math.sign(next.y - at.y) || 1;
-      await setPointer(at.x + (dx * 8), at.y + (dy * 8));
-      await sleep(40);
+      const dist0 = Math.hypot(next.x - at.x, next.y - at.y) || 1;
+      const ux = (next.x - at.x) / dist0;
+      const uy = (next.y - at.y) / dist0;
+      const start = { ...at };
+      await setPointer(start.x + (ux * 5), start.y + (uy * 5));
+      await sleep(35);
+      await setPointer(start.x + (ux * 12), start.y + (uy * 12));
+      await sleep(60);
 
       try {
-        for (const p of path.slice(1)) await glide(p.x, p.y, 320);
-        await sleep(110);                    // arrive, then let go — not both at once
+        for (const p of path.slice(1)) {
+          const d = Math.hypot(p.x - at.x, p.y - at.y);
+          /* Most of the way at a hand's pace, then a pause just short of the
+             target, then the rest: web drag-and-drop decides where a drop
+             goes from the last few moves it saw, and it needs a beat to
+             light the target up before anything lets go over it. */
+          const near = { x: p.x - ((p.x - at.x) * 0.12), y: p.y - ((p.y - at.y) * 0.12) };
+          await glide(near.x, near.y, Math.max(260, Math.min(700, d * 0.9)));
+          await sleep(70);
+          await glide(p.x, p.y, 120);
+        }
+        /* Hover, and wiggle a few pixels: HTML5 drag-and-drop only accepts a
+           drop where it has just fired dragover, and a pointer that arrives
+           and stops dead is sometimes let go before that has happened. */
+        const end = { ...at };
+        await sleep(120);
+        await setPointer(end.x + 3, end.y + 2);
+        await sleep(45);
+        await setPointer(end.x - 2, end.y - 1);
+        await sleep(45);
+        await setPointer(end.x, end.y);
+        await sleep(140);                    // arrive, then let go — not both at once
       } finally {
         // Never leave the button down. A run that failed mid-drag would
         // otherwise hand the desk back with the mouse held, and every
@@ -414,8 +440,40 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       if (dx) await surface.wheel(x, y, dx * WHEEL_DELTA, 'x');
     },
 
+    /**
+     * Type it.
+     *
+     * Anything outside plain ASCII goes via the clipboard instead of the
+     * keyboard. Windows types a character by pressing the keys that would
+     * produce it on the current layout, and a layout that has no key for
+     * "ö" produces something else entirely: measured, "Gödel incompleteness
+     * theorems" arrived in Wikipedia as "gDEL INCOMPLETENESS THEOREMS" —
+     * the dead key took the rest of the line with it. A paste carries the
+     * exact characters whatever the keyboard is.
+     */
     async type(text) {
-      if (text) await keyboard.type(String(text));
+      const body = String(text ?? '');
+      if (!body) return;
+      if (!/[^\x20-\x7e\t\r\n]/.test(body)) {
+        /* Caps Lock inverts every letter of it, and a run that turned it on
+           by accident - a dead key for an accented character will do it -
+           leaves every later line shouting. Measured: "plain ascii line"
+           arrived as "PLAIN ASCII LINE". Checked before typing, and put
+           back the way it was found. */
+        const locked = (await sense?.keystate?.().catch(() => null))?.caps === true;
+        if (locked) { await surface.keypress(['capslock']); await sleep(30); }
+        await keyboard.type(body);
+        if (locked) { await sleep(30); await surface.keypress(['capslock']); }
+        return;
+      }
+      const kept = await surface.readClipboard();
+      const put = await surface.writeClipboard(body);
+      if (!put) { await keyboard.type(body); return; }   // no clipboard: the keyboard is what is left
+      await sleep(40);
+      await surface.keypress(['ctrl', 'v']);
+      await sleep(60);
+      // Their clipboard is theirs. Put back whatever was in it.
+      if (kept) await surface.writeClipboard(kept);
     },
 
     /* --- the clipboard -----------------------------------------------------

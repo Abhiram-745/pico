@@ -97,7 +97,7 @@ const initial = () => ({
 
   guardian: { ready: false },
   settings: {
-    model: 'gpt-5.4-mini',
+    model: 'gpt-4.1-mini',
     pauseOnPhysicalInput: true,
     maximumComputerTurns: 100,
     hasApiKey: false,
@@ -115,6 +115,8 @@ const initial = () => ({
   // index, doneWhen, finished?, succeeded? }. Kept after the run so the last
   // one can still be read, and cleared when the next begins.
   plan: null,
+  voice: { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null },
+  voiceShortcut: false,
   // The last finished task, for "save as shortcut": { task, steps, succeeded }.
   lastRun: null,
 

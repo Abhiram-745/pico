@@ -137,6 +137,9 @@ function scripted(script) {
     },
     respond: async (req) => {
       const tool = req.tools?.[0]?.function?.name;
+      // The zoomed second look (zoom.mjs) is not part of any script: it
+      // finds nothing, and the click goes where the script said.
+      if (tool === 'point') return { call: null, text: '' };
       calls.push({
         tool,
         model: req.model,
@@ -169,6 +172,9 @@ function scripted(script) {
 
 const plan = (steps, extra = {}) => ({ name: 'plan', args: { steps, done_when: 'it is done', already_done: false, ...extra } });
 const act = (args) => ({ name: 'act', args: { why: 'doing the step', ...args } });
+/* The live loop ends when the model says the job is done, so every script
+   carries one. Scripts whose run stops for another reason never reach it. */
+const finish = { name: 'step_done' };
 
 function run({ computer, llm, task = 'type hello there', hooks = {}, context = {} }) {
   const events = { phases: [], summaries: [], plans: [], errors: [], audits: [] };
@@ -182,7 +188,7 @@ function run({ computer, llm, task = 'type hello there', hooks = {}, context = {
       onPhase: (p) => events.phases.push(p),
       onSummary: (t) => events.summaries.push(t),
       onPlan: (p) => events.plans.push(JSON.parse(JSON.stringify(p))),
-      onError: (e) => events.errors.push(e),
+      onError: (e) => { events.errors.push(e); if (process.env.PICO_DEBUG) console.log('[error]', e?.message); },
       onAudit: (e, extra) => events.audits.push({ e, ...extra }),
       ...hooks,
     },
@@ -199,10 +205,10 @@ console.log('focus taken once');
 {
   const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Type hello there', kind: 'keyboard' }]),
     // While this decision is being made, the video takes the screen.
     () => { computer.state.front = '200'; return act({ action: 'type', text: 'hello there' }); },
     act({ action: 'type', text: 'hello there' }),
+      finish,
   ]);
   const { done, events } = run({ computer, llm });
   const result = await done;
@@ -210,6 +216,7 @@ console.log('focus taken once');
   check('Notepad was brought back', computer.state.focusCalls.includes('100'));
   check('the text went into Notepad', computer.state.typed.some((t) => t.into === '100' && t.text === 'hello there'));
   check('the run finished', events.phases.at(-1) === 'Completed', `${events.phases.join(' > ')} ${JSON.stringify(events.errors)}`);
+  // act, act, then the turn that says the job is done — and only then the verdict.
   check('judged by the facts, without a verifier call', !llm.calls.some((c) => c.tool === 'report'), llm.calls.map((c) => c.tool).join(','));
   check('it says what it did', /typed "hello there"/i.test(events.summaries.at(-1) ?? ''), events.summaries.at(-1));
   check('it reports success', result?.succeeded === true);
@@ -220,16 +227,16 @@ console.log('focus taken twice');
 {
   const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Type hello there', kind: 'keyboard' }]),
     () => { computer.state.front = '200'; return act({ action: 'type', text: 'hello there' }); },
     () => { computer.state.front = '200'; return act({ action: 'type', text: 'hello there' }); },
+      finish,
   ]);
   const { done, events } = run({ computer, llm });
   await done;
   check('nothing was typed at all', computer.state.typed.length === 0, JSON.stringify(computer.state.typed));
   check('the run stopped', events.phases.at(-1) === 'Stopped', events.phases.join(' > '));
   check('the summary names the window that took the screen', (events.summaries.at(-1) ?? '').includes('Q3 figures'), events.summaries.at(-1));
-  check('it did not loop until the turns ran out', llm.calls.length === 3, `${llm.calls.length} model calls`);
+  check('it did not loop until the turns ran out', llm.calls.length === 2, `${llm.calls.length} model calls`);
 }
 
 /* --- 3. taken between steps, while Halo was only typing --------------------- */
@@ -237,14 +244,13 @@ console.log('focus taken between steps');
 {
   const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Type hello', kind: 'keyboard' }, { do: 'Type there', kind: 'keyboard' }]),
     () => act({ action: 'type', text: 'hello ' }),
     // Taken while typing, so the step is looked at again rather than assumed.
     ({ req }) => {
       check('it is told the keys may have gone astray', /came to the front on its own/.test(req.content[0].text), req.content[0].text);
-      return { name: 'step_done', args: {} };
+      return act({ action: 'type', text: 'there' });
     },
-    () => act({ action: 'type', text: 'there' }),
+      finish,
   ]);
   // Right after the first text goes in and Halo has looked, the video jumps up.
   let armed = true;
@@ -264,24 +270,28 @@ console.log('re-plan after a miss');
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   computer.state.clicksChange = false;
   const llm = scripted([
-    plan([{ do: 'Click the View menu', kind: 'pointer' }, { do: 'Click Status bar', kind: 'pointer' }]),
     act({ action: 'click', x: 10, y: 5, target: 'the View menu' }),
     act({ action: 'click', x: 12, y: 5, target: 'the View menu' }),
-    ({ tool, req }) => {
-      check('the re-plan is told what went wrong', /changed nothing/i.test(req.content[0].text), req.content[0].text);
+    ({ req }) => {
+      check('the next turn is told what went wrong', /changed nothing/i.test(req.content[0].text), req.content[0].text);
+      check('and to try another way', /try a different way/i.test(req.content[0].text), req.content[0].text);
       computer.state.clicksChange = true;
-      return { name: 'replan', args: { steps: [{ do: 'Press alt+v to open View', kind: 'keyboard' }, { do: 'Click Status bar', kind: 'pointer' }], already_done: false } };
+      return act({ action: 'key', keys: ['alt', 'v'] });
     },
-    act({ action: 'key', keys: ['alt', 'v'] }),
     act({ action: 'click', x: 20, y: 20, target: 'Status bar' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Turned on the status bar.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'show the status bar in notepad' });
   await done;
   const last = events.plans.at(-1);
   check('the run finished instead of stopping at the miss', events.phases.at(-1) === 'Completed', `${events.phases.join(' > ')} | ${events.summaries.at(-1)}`);
-  check('the failed step is still shown, marked', last?.steps?.[0]?.status === 'failed', JSON.stringify(last));
-  check('the new steps follow it', last?.steps?.[1]?.do === 'Press alt+v to open View' && last.steps.length === 3, JSON.stringify(last?.steps));
+  // Nothing is marked failed, because nothing was promised: what the island
+  // shows is what actually happened, in the order it happened.
+  check('what it did is shown, in order', last?.steps?.map((st) => st.do).join(' | ') === 'pressed alt+v | clicked (20, 20)', JSON.stringify(last?.steps));
+  check('and every line of it is something that really happened', last?.steps?.every((st) => st.status === 'done'), JSON.stringify(last?.steps));
   check('a click leaves nothing to check, so the verifier was asked', llm.calls.at(-1).tool === 'report');
 }
 
@@ -291,16 +301,18 @@ console.log('skip');
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const pending = [];
   const llm = scripted([
-    plan([{ do: 'Type hello', kind: 'keyboard' }, { do: 'Type goodbye', kind: 'keyboard' }]),
     () => { pending.push({ type: 'skip', index: 0 }); return act({ action: 'type', text: 'hello' }); },
     act({ action: 'type', text: 'goodbye' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Typed goodbye.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, hooks: { steer: () => pending.splice(0) } });
   await done;
   check('the skipped step\'s action was not carried out', !computer.state.typed.some((t) => t.text === 'hello'), JSON.stringify(computer.state.typed));
-  check('the next step was', computer.state.typed.some((t) => t.text === 'goodbye'));
-  check('it is marked skipped', events.plans.at(-1)?.steps?.[0]?.status === 'skipped', JSON.stringify(events.plans.at(-1)));
+  check('and the run carried on', computer.state.typed.some((t) => t.text === 'goodbye'), JSON.stringify(computer.state.typed));
+  check('the skip is on the record', (events.plans.at(-1)?.steps ?? []).some((st) => /you skipped/.test(st.do)), JSON.stringify(events.plans.at(-1)));
 }
 
 /* --- 6. "no, the other one" ------------------------------------------------ */
@@ -309,20 +321,21 @@ console.log('correction');
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const pending = [];
   const llm = scripted([
-    plan([{ do: 'Click the first result', kind: 'pointer' }]),
     () => { pending.push({ type: 'correct', text: 'no, the other one' }); return act({ action: 'click', x: 10, y: 10, target: 'the first result' }); },
     ({ req }) => {
-      check('the correction reaches the planner, word for word', req.content[0].text.includes('no, the other one'), req.content[0].text);
-      return { name: 'replan', args: { steps: [{ do: 'Click the second result', kind: 'pointer' }], already_done: false } };
+      check('the correction reaches the next turn, word for word', req.content[0].text.includes('no, the other one'), req.content[0].text);
+      return act({ action: 'click', x: 10, y: 30, target: 'the second result' });
     },
-    act({ action: 'click', x: 10, y: 30, target: 'the second result' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Opened the second result.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'click the search result', hooks: { steer: () => pending.splice(0) } });
   await done;
   const steps = events.plans.at(-1)?.steps ?? [];
-  check('the corrected step is marked changed', steps[0]?.status === 'changed', JSON.stringify(steps));
-  check('and replaced by what they meant', steps[1]?.do === 'Click the second result' && steps[1]?.status === 'done', JSON.stringify(steps));
+  check('what they said is on the record', steps.some((st) => /no, the other one/.test(st.do)), JSON.stringify(steps));
+  check('and the next thing done is what they meant', steps.some((st) => /clicked \(10, 30\)/.test(st.do)), JSON.stringify(steps));
   check('the first click never happened', computer.state.screen === 2, `screen=${computer.state.screen}`);
 }
 
@@ -404,13 +417,15 @@ console.log('the wrong row');
   computer.click = async () => { clicks += 1; computer.state.screen += 1; };
   computer.sense.hit = async () => ({ found: true, at: { type: 'ListItem', name: 'Archived' }, layers: [], window: { title: 'WhatsApp' } });
   const llm = scripted([
-    plan([{ do: 'Open Locked chats', kind: 'pointer' }]),
     act({ action: 'click', x: 10, y: 40, target: 'Locked chats' }),
     ({ req }) => {
       check('the model is told what was really there', /called "Archived", which is not "Locked chats"/.test(req.content[0].text), req.content[0].text);
       return act({ action: 'click', x: 10, y: 60, target: 'Locked chats' });
     },
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Opened Locked chats.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'show my locked chats in whatsapp' });
   await done;
@@ -446,10 +461,12 @@ console.log('guide mode');
   guide.say = (words) => { doesIt(); return origSay(words); };
 
   const llm = scripted([
-    plan([{ do: 'Click the address bar', kind: 'pointer' }, { do: 'Type halo.dev', kind: 'keyboard' }]),
     act({ action: 'click', x: 40, y: 10, target: 'the address bar' }),
     act({ action: 'type', text: 'halo.dev' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'You opened halo.dev.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'put halo.dev in the address bar', context: { guide } });
   await done;
@@ -473,12 +490,14 @@ console.log('a model that talks instead of acting');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Type hello there', kind: 'keyboard' }]),
     // Three attempts of prose in one turn: the in-turn retry cannot save
     // this, so it falls through to the loop's own handling.
     () => null, () => null, () => null,
     act({ action: 'type', text: 'hello there' }),          // the next turn, done properly
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm });
   await done;
@@ -495,23 +514,28 @@ console.log('a model that talks instead of acting');
 }
 
 /* --- an opening step costs no model turn ---------------------------------- */
-console.log('opening from the plan');
+console.log('opening from the words of the task');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Open the reports site', kind: 'open', url: 'https://reports.example.com' },
-      { do: 'Type ssuazo', kind: 'keyboard' }]),
     act({ action: 'type', text: 'ssuazo' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Searched.' } },
+      finish,
   ]);
-  const { done, events } = run({ computer, llm, task: 'open the reports site and search ssuazo' });
+  const { done, events } = run({ computer, llm, task: 'open reports.example.com and search ssuazo' });
   await done;
 
-  const acts = llm.calls.filter((c) => c.tool === 'act');
-  check('the open step spent no act call', acts.length === 1, `${acts.length} act calls`);
-  check('both steps finished',
-    events.plans.at(-1)?.steps?.every((s) => s.status === 'done'),
+  /* An address in the words of the task is opened before any model is asked
+     anything — it is the commonest first move there is, and reading it off
+     the task costs nothing. Everything after it is a decision, and decisions
+     cost turns. */
+  check('the address in the task opened without a turn being spent',
+    (events.plans.at(-1)?.steps ?? []).some((st) => /reports\.example\.com/i.test(st.do)),
     JSON.stringify(events.plans.at(-1)?.steps));
+  check('and the search happened after it',
+    computer.state.typed.some((t) => t.text === 'ssuazo'), JSON.stringify(computer.state.typed));
 }
 
 
@@ -527,9 +551,6 @@ console.log('carrying a value between apps');
   computer.state.selection = 'ORDER-99312';
   const filler = (n) => ({ do: `Type line ${n}`, kind: 'keyboard' });
   const llm = scripted([
-    plan([{ do: 'Copy the order number', kind: 'keyboard' },
-      filler(1), filler(2), filler(3), filler(4), filler(5), filler(6),
-      { do: 'Paste it into the other window', kind: 'keyboard' }]),
     act({ action: 'copy', remember_as: 'order number' }),
     act({ action: 'type', text: 'one ' }),
     act({ action: 'type', text: 'two ' }),
@@ -547,7 +568,10 @@ console.log('carrying a value between apps');
         /order number: ORDER-99312/.test(seen), seen.slice(-500));
       return act({ action: 'paste' });
     },
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Moved it across.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'copy the order number into the other window' });
   await done;
@@ -563,7 +587,6 @@ console.log('a copy that picked nothing up');
   computer.state.clipboard = 'something from before';
   computer.state.selection = 'something from before';   // ctrl+c on no selection
   const llm = scripted([
-    plan([{ do: 'Copy the total', kind: 'keyboard' }]),
     act({ action: 'copy', remember_as: 'total' }),
     ({ calls }) => {
       const seen = calls.at(-1).text;
@@ -573,7 +596,10 @@ console.log('a copy that picked nothing up');
         !/total: something from before/.test(seen), seen.slice(-300));
       return { name: 'step_done', args: {} };
     },
+    finish,
+
     { name: 'report', args: { succeeded: false, summary: 'Could not copy it.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'copy the total' });
   await done;
@@ -585,9 +611,11 @@ console.log('pasting long exact text');
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const LONG = 'https://example.com/invoices/2026/09/AC-4471-payable?ref=q3-reconciliation';
   const llm = scripted([
-    plan([{ do: 'Put the link in', kind: 'keyboard' }]),
     act({ action: 'paste', paste_text: LONG }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Pasted the link.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'put the link in' });
   await done;
@@ -602,7 +630,6 @@ console.log('notes');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Look at the total', kind: 'pointer' }, { do: 'Type it', kind: 'keyboard' }]),
     act({ action: 'click', x: 10, y: 10, target: 'the total', note: 'the invoice total is 240.50' }),
     ({ calls }) => {
       const seen = calls.at(-1).text;
@@ -610,7 +637,10 @@ console.log('notes');
         seen.includes('the invoice total is 240.50'), seen.slice(-300));
       return act({ action: 'type', text: '240.50' });
     },
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Typed the total.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'type the invoice total' });
   await done;
@@ -629,15 +659,14 @@ console.log('working across two windows');
   const computer = desktop({ windows: [NOTEPAD, SHEET], front: '100' });
   computer.state.selection = 'the quarterly figure';
   const llm = scripted([
-    plan([{ do: 'Copy the figure', kind: 'keyboard' },
-      { do: 'Go to the spreadsheet', kind: 'keyboard' },
-      { do: 'Paste it there', kind: 'keyboard' },
-      { do: 'Go back to Notepad', kind: 'keyboard' }]),
     act({ action: 'copy', remember_as: 'figure' }),
     act({ action: 'switch_to', window: 'Excel' }),
     act({ action: 'paste' }),
     act({ action: 'switch_to', window: 'Notepad' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Moved it across and came back.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'copy the figure into the spreadsheet' });
   await done;
@@ -658,7 +687,6 @@ console.log('switching to a window that is not there');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Go to Excel', kind: 'keyboard' }]),
     act({ action: 'switch_to', window: 'Excel' }),
     ({ calls }) => {
       const seen = calls.at(-1).text;
@@ -666,7 +694,10 @@ console.log('switching to a window that is not there');
         /no open window matching/.test(seen) && /Notepad/.test(seen), seen.slice(-300));
       return { name: 'step_done', args: {} };
     },
+    finish,
+
     { name: 'report', args: { succeeded: false, summary: 'Excel was not open.' } },
+      finish,
   ]);
   // Not "go to excel": that phrasing is a request to OPEN something, and the
   // planner rightly adds an open step for it. This is about switching to a
@@ -683,7 +714,6 @@ console.log('expectation is fed back');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Click the address bar', kind: 'pointer' }, { do: 'Type it', kind: 'keyboard' }]),
     act({ action: 'click', x: 20, y: 8, target: 'the address bar', expect: 'the address bar is focused and empty' }),
     ({ calls }) => {
       const seen = calls.at(-1).text;
@@ -693,7 +723,10 @@ console.log('expectation is fed back');
         /check that is what actually happened/.test(seen), seen.slice(-400));
       return act({ action: 'type', text: 'halo.dev' });
     },
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'put halo.dev in the address bar' });
   await done;
@@ -725,11 +758,12 @@ console.log('guide mode and a screen that moves on its own');
 
   const shown = act({ action: 'click', x: 40, y: 20, target: 'the Send button' });
   const llm = scripted([
-    plan([{ do: 'Click the Send button', kind: 'pointer' }]),
     shown, shown,
-    plan([{ do: 'Click the Send button', kind: 'pointer' }]),   // the re-plan a miss forces
     shown, shown,
+    finish,
+
     { name: 'report', args: { succeeded: false, summary: 'You did not do it.' } },
+      finish,
   ]);
   const { done, events } = run({
     computer, llm, task: 'send it', context: { guide, patienceMs: 250 },
@@ -757,11 +791,13 @@ console.log('a bad answer is put right without spending a turn');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Click the address bar', kind: 'pointer' }]),
     () => null,                                                   // prose, no tool call
     act({ action: 'click', target: 'the address bar' }),          // no coordinates
     act({ action: 'click', x: 30, y: 15, target: 'the address bar' }),   // usable
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Focused it.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'focus the address bar' });
   await done;
@@ -769,11 +805,13 @@ console.log('a bad answer is put right without spending a turn');
   check('it was told to call a tool',
     llm.retries.flat().some((w) => /call exactly one tool/i.test(w)),
     JSON.stringify(llm.retries));
-  check('and then told the click needed coordinates',
-    llm.retries.flat().some((w) => /needs x and y/i.test(w)),
+  check('and then told the click needed a mark or a point',
+    llm.retries.flat().some((w) => /needs "mark"/i.test(w)),
     JSON.stringify(llm.retries));
+  // Two turns: the one that took three goes to answer usably, and the one
+  // where the model says the job is done.
   check('all three attempts were one turn, not three',
-    llm.calls.filter((c) => c.tool === 'act').length === 1,
+    llm.calls.filter((c) => c.tool === 'act').length === 2,
     `${llm.calls.filter((c) => c.tool === 'act').length} act turns`);
   check('the step finished', events.phases.at(-1) === 'Completed', events.phases.join(' > '));
 }
@@ -791,14 +829,16 @@ console.log('the run is one conversation');
   const steps = [];
   for (let i = 1; i <= 6; i++) steps.push({ do: `Type line ${i}`, kind: 'keyboard' });
   const llm = scripted([
-    plan(steps),
     act({ action: 'type', text: 'one ' }),
     act({ action: 'type', text: 'two ' }),
     act({ action: 'type', text: 'three ' }),
     act({ action: 'type', text: 'four ' }),
     act({ action: 'type', text: 'five ' }),
     act({ action: 'type', text: 'six ' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Typed them.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'type six lines' });
   await done;
@@ -831,11 +871,12 @@ console.log('looking back when a run stalls');
   computer.state.clicksChange = false;            // nothing this run does works
   const stuckAct = act({ action: 'click', x: 25, y: 25, target: 'the toolbar' });
   const llm = scripted([
-    plan([{ do: 'Click the toolbar', kind: 'pointer' }]),
     stuckAct, stuckAct, stuckAct, stuckAct,
-    plan([{ do: 'Click the toolbar', kind: 'pointer' }]),
     stuckAct, stuckAct, stuckAct, stuckAct,
+    finish,
+
     { name: 'report', args: { succeeded: false, summary: 'It would not respond.' } },
+      finish,
   ]);
   const { done, events } = run({ computer, llm, task: 'click the toolbar' });
   await done;
@@ -844,9 +885,11 @@ console.log('looking back when a run stalls');
     `${llm.chats.length} reflection calls`);
   // The re-plan is what the second opinion is for: it is the decision being
   // made at the moment the run concluded something was wrong.
-  check('the new plan was made knowing what the second opinion was',
-    llm.calls.some((c) => c.tool === 'replan' && /A second look at the run so far/.test(c.text)),
-    JSON.stringify(llm.calls.filter((c) => c.tool === 'replan').map((c) => c.text.slice(-160))));
+  // There is no re-plan to carry it: it goes to the next turn, which is the
+  // decision being made at the moment the run concluded something was wrong.
+  check('the next turn was told what the second opinion was',
+    llm.calls.some((c) => /A look back over the run so far/.test(c.text)),
+    JSON.stringify(llm.calls.map((c) => c.text.slice(-120))));
   check('the reflection was recorded', events.audits.some((a) => a.e === 'reflected'),
     JSON.stringify(events.audits.map((a) => a.e)));
 }
@@ -856,9 +899,11 @@ console.log('no second opinion on a healthy run');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Type hello', kind: 'keyboard' }]),
     act({ action: 'type', text: 'hello' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Typed it.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'type hello' });
   await done;
@@ -880,11 +925,12 @@ console.log('selecting a span of text');
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   computer.state.selection = 'the second paragraph';
   const llm = scripted([
-    plan([{ do: 'Select the paragraph', kind: 'pointer' },
-      { do: 'Copy it', kind: 'keyboard' }]),
     act({ action: 'select_text', x: 12, y: 20, to_x: 70, to_y: 34, target: 'the second paragraph' }),
     act({ action: 'copy', remember_as: 'paragraph' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Selected and copied it.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'copy the second paragraph' });
   await done;
@@ -903,9 +949,11 @@ console.log('holding a key across several taps');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Select four lines', kind: 'keyboard' }]),
     act({ action: 'hold_and_press', hold: ['shift'], press: ['down'], times: 4 }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Selected four lines.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'select the next four lines' });
   await done;
@@ -924,10 +972,12 @@ console.log('a select_text missing its end point');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   const llm = scripted([
-    plan([{ do: 'Select the paragraph', kind: 'pointer' }]),
     act({ action: 'select_text', x: 12, y: 20, target: 'the paragraph' }),        // no end
     act({ action: 'select_text', x: 12, y: 20, to_x: 60, to_y: 30, target: 'the paragraph' }),
+    finish,
+
     { name: 'report', args: { succeeded: true, summary: 'Selected it.' } },
+      finish,
   ]);
   const { done } = run({ computer, llm, task: 'select the paragraph' });
   await done;
@@ -935,8 +985,40 @@ console.log('a select_text missing its end point');
   check('it was told which half was missing',
     llm.retries.flat().some((w) => /needs to_x and to_y/.test(w)), JSON.stringify(llm.retries));
   check('and it still only cost one turn',
-    llm.calls.filter((c) => c.tool === 'act').length === 1,
+    llm.calls.filter((c) => c.tool === 'act').length === 2,
     `${llm.calls.filter((c) => c.tool === 'act').length} act turns`);
+}
+
+console.log('eight accessibility actions reuse prefetched controls without eight screenshots');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  let clicks = 0, captures = 0, snapshots = 0;
+  const capture = computer.capture;
+  computer.capture = async () => { captures++; return capture(); };
+  const elements = () => Array.from({ length: 4 }, (_, i) => ({
+    type: 'Button', name: `Control ${i + 1}`, id: `control-${i}`, runtimeId: `node-${i}`,
+    rect: [10 + i * 100, 30, 70, 30], operable: true, enabled: true, selected: clicks > i,
+  }));
+  computer.sense.look = async () => { snapshots++; return { elements: elements(), says: [`Actions completed: ${clicks}`] }; };
+  computer.sense.hit = async (x) => ({ found: true, at: elements().find(el => x >= el.rect[0] && x <= el.rect[0] + el.rect[2]) });
+  computer.click = async () => { clicks++; computer.state.screen++; };
+  const llm = scripted([finish, { name: 'report', args: { succeeded: true, summary: 'Eight controls used.' } }, finish]);
+  llm.evaluate = async (state, questions) => {
+    if (!questions.operation) return null;
+    const chosen = clicks < 8 ? 'CLICK' : 'DONE';
+    const answer = (criteria, choice) => ({ choice, probabilities: Object.fromEntries(Object.keys(criteria).map(id => [id, id === choice ? 1 : 0])) });
+    const out = { operation: answer(questions.operation.criteria, chosen) };
+    for (const [key, q] of Object.entries(questions)) if (key !== 'operation') out[key] = answer(q.criteria, String((clicks % 4) + 1));
+    return out;
+  };
+  const { done, events } = run({ computer, llm, task: 'Click Control 1, Control 2, Control 3, and Control 4 twice in order' });
+  await done;
+  const timings = events.audits.filter(e => e.e === 'turn_timing');
+  check('all eight actions executed', clicks === 8, `${clicks} clicks`);
+  check('only initial, completion and report screenshots were needed', captures === 3, `${captures} captures`);
+  check('one snapshot per state, with prefetch reused', snapshots === 9, `${snapshots} reads`);
+  check('all eight turns used accessibility', timings.length === 8 && timings.every(e => e.metadata.path === 'accessibility' && e.metadata.screenshot_skipped));
+  check('vision checked completion and independently verified it', llm.calls.length === 2 && llm.calls[0].tool === 'act' && llm.calls[1].tool === 'report', JSON.stringify(llm.calls.map(c => c.tool)));
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

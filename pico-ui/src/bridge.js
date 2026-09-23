@@ -41,6 +41,10 @@ export const HOST_EVENTS = [
   'focusChat',   // { at } — a chord asked for the box, focused and ready
   'chord',       // { id, at } — a global chord was pressed, whatever it was for
   'runbook',     // { routes, apps } — what Halo has worked out by doing jobs here
+  'voiceSession',// { active, phase, level, message, transcript, owner }
+  'voiceShortcut',// { available } — native registration succeeded
+  'voiceToggle', // { at } — global shortcut toggled the notch microphone
+  'voiceRelease', // { at, ms } — and was let go after ms: a hold means push-to-talk
 ];
 
 /** Commands the UI sends up to the host. */
@@ -81,6 +85,7 @@ export const UI_COMMANDS = [
   'chatSearch',   // { q }
   'chatsImport',  // { chats } — history a window kept for itself before
   'openApp',      // { section? } — the full window, from the island
+  'voiceSession', // { action: 'claim'|'update'|'end', owner, state? }
 ];
 
 class Bridge {
@@ -142,6 +147,21 @@ class Bridge {
 
       case 'plan':
         store.setPlan(payload);
+        break;
+
+      case 'voiceSession': {
+        const previousVoice = store.state.voice;
+        store.set({ voice: payload }, { type: 'voice', remote: true, previousVoice });
+        break;
+      }
+      case 'voiceShortcut':
+        store.set({ voiceShortcut: Boolean(payload.available) }, { type: 'voiceShortcut' });
+        break;
+      case 'voiceToggle':
+        store.set({ voiceToggleAt: Number(payload.at) || Date.now() }, { type: 'voiceToggle' });
+        break;
+      case 'voiceRelease':
+        store.set({ voiceHeldMs: Number(payload.ms) || 0 }, { type: 'voiceRelease' });
         break;
 
       case 'runFinished':

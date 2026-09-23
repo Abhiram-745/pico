@@ -171,6 +171,43 @@ export async function route(text, { hint = 'auto', llm = null } = {}) {
 
   if (!llm) return fallback;
 
+  /* Ask the evaluation model first.
+
+     This is a classification, not a conversation — which of two things is
+     this sentence — and that is precisely what an evaluation model is for.
+     Jev answers it in about a third of a second for nothing, with a
+     probability attached, where the same question put to a chat model costs
+     a two-second round trip and comes back as a word to be matched with a
+     regular expression. It also cannot wander off and reply with a sentence,
+     which the chat models sometimes do.
+
+     The confidence is checked rather than taken: an answer the model itself
+     is unsure of is worse than the local rules, which at least know what
+     "open" means. Anything missing, slow or unconvincing falls through to
+     the chat model below, exactly as before. */
+  const answers = await llm.evaluate?.(
+    `The person typed this to a desktop assistant: "${clean(text).slice(0, 500)}"`,
+    {
+      kind: {
+        type: 'choice',
+        instructions: 'Is this a job to carry out on the computer, or just conversation?',
+        criteria: {
+          agent: 'an instruction to operate the desktop: open, click, type, find, send, buy, play',
+          chat: 'a question, a greeting, or a remark that expects an answer in words',
+        },
+      },
+    },
+    { timeout: 4000 },
+  ).catch(() => null);
+  const pick = answers?.kind;
+  if (pick?.choice && (pick.probabilities?.[pick.choice] ?? 0) >= 0.7) {
+    return {
+      mode: pick.choice === 'agent' ? 'agent' : 'chat',
+      why: pick.choice === 'agent' ? 'reads as an instruction' : 'reads as conversation',
+      source: 'evaluation',
+    };
+  }
+
   try {
     const answer = await llm.chat(
       [

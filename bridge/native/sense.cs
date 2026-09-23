@@ -61,6 +61,7 @@ static class Win
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern short GetKeyState(int vk);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder sb, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -239,9 +240,18 @@ static class Sense
 
     public static string TypeName(AutomationElement el)
     {
+        try { return TypeName(el.Current.ControlType); }
+        catch { return ""; }
+    }
+
+    /// The same, from a control type already in hand — a cached read has one
+    /// and asking the element again would be the round trip the cache exists
+    /// to avoid.
+    public static string TypeName(ControlType t)
+    {
         try
         {
-            string n = el.Current.ControlType.ProgrammaticName;
+            string n = t.ProgrammaticName;
             int dot = n.LastIndexOf('.');
             return dot >= 0 ? n.Substring(dot + 1) : n;
         }
@@ -260,6 +270,74 @@ static class Sense
             || Pattern(el, AutomationElement.IsTogglePatternAvailableProperty)
             || Pattern(el, AutomationElement.IsSelectionItemPatternAvailableProperty)
             || Pattern(el, AutomationElement.IsExpandCollapsePatternAvailableProperty);
+    }
+
+    /// Can text be put into this, whether or not it can be clicked?
+    ///
+    /// Kept apart from Operable on purpose. Operable decides what a click
+    /// snaps to, and a document is the whole window: snapping to the middle
+    /// of one would move every click in a text editor to its centre. This
+    /// only decides what appears in the list of controls, where a field the
+    /// caller can type into is exactly what was missing — Elements() used to
+    /// return every button in Notepad and not the page you write on.
+    /// What a dropdown holds, and what it is showing now.
+    ///
+    /// A native select is one control with a list inside it. Halo's element
+    /// list is flat, so the options would otherwise be invisible until the
+    /// list was open — and the run would have to click the box, look again,
+    /// and click the row, spending three turns on one choice. Where the
+    /// options are in the tree already they come out with the box.
+    ///
+    /// Read through the ControlView walker rather than a FindAll, which on
+    /// a large list is the difference between a few milliseconds and a
+    /// second. Capped, because a country list is 200 rows and a decision
+    /// made from 200 rows is not a decision anybody wants to read.
+    static string Options(AutomationElement el)
+    {
+        var sb = new StringBuilder("[");
+        int n = 0;
+        try
+        {
+            var walker = TreeWalker.ControlViewWalker;
+            var child = walker.GetFirstChild(el);
+            while (child != null && n < 40)
+            {
+                string name = "";
+                bool selected = false;
+                try
+                {
+                    name = Trim(child.Current.Name, 80);
+                    if (Pattern(child, AutomationElement.IsSelectionItemPatternAvailableProperty))
+                    {
+                        var si = (SelectionItemPattern)child.GetCurrentPattern(SelectionItemPattern.Pattern);
+                        selected = si.Current.IsSelected;
+                    }
+                }
+                catch { }
+                if (name.Length > 0)
+                {
+                    // The rectangle comes with it: the option is chosen by
+                    // clicking it, like a person does, so the point has to
+                    // travel with the label.
+                    string rect = "null";
+                    try { rect = RectJson(child.Current.BoundingRectangle); } catch { }
+                    if (n++ > 0) sb.Append(',');
+                    sb.Append("{\"label\":").Append(Json.Str(name))
+                      .Append(",\"rect\":").Append(rect)
+                      .Append(",\"selected\":").Append(selected ? "true" : "false").Append('}');
+                }
+                child = walker.GetNextSibling(child);
+            }
+        }
+        catch { }
+        sb.Append(']');
+        return n > 0 ? sb.ToString() : null;
+    }
+
+    static bool Editable(AutomationElement el, string type)
+    {
+        if (type == "Document" || type == "Edit" || type == "ComboBox") return true;
+        return Pattern(el, AutomationElement.IsValuePatternAvailableProperty);
     }
 
     static string RectJson(System.Windows.Rect r)
@@ -287,6 +365,11 @@ static class Sense
              .B("focusable", c.IsKeyboardFocusable)
              .B("operable", Operable(el, type))
              .B("positional", POSITIONAL.Contains(type));
+            if (type == "ComboBox" || type == "List")
+            {
+                string opts = Options(el);
+                if (opts != null) j.Raw("options", opts);
+            }
             string how = Pattern(el, AutomationElement.IsInvokePatternAvailableProperty) ? "invoke"
                 : Pattern(el, AutomationElement.IsTogglePatternAvailableProperty) ? "toggle"
                 : Pattern(el, AutomationElement.IsSelectionItemPatternAvailableProperty) ? "select"
@@ -294,6 +377,14 @@ static class Sense
                 : Pattern(el, AutomationElement.IsValuePatternAvailableProperty) ? "value"
                 : "";
             if (how.Length > 0) j.S("how", how);
+            try { j.S("runtimeId", string.Join(".", el.GetRuntimeId())); } catch { }
+            try {
+                if (Pattern(el, AutomationElement.IsValuePatternAvailableProperty)) {
+                    var value = (ValuePattern)el.GetCurrentPattern(ValuePattern.Pattern);
+                    j.B("readOnly", value.Current.IsReadOnly);
+                    if (!c.IsPassword) j.S("value", Trim(value.Current.Value, 200));
+                }
+            } catch { }
         }
         catch (Exception e)
         {
@@ -439,6 +530,47 @@ static class Sense
         return best;
     }
 
+    /// Is this element the one you would actually hit at its own centre?
+    ///
+    /// The element list says where every control is; it does not say what is
+    /// in front of them. A dialog leaves everything behind it listed, at its
+    /// old rectangle, looking perfectly clickable — and a click on one lands
+    /// on the dialog.
+    ///
+    /// Rectangles alone cannot answer this: the thing found at the point may
+    /// be a child of the control (still the control) or a panel covering it
+    /// (not the control), and both can contain the same point. So the answer
+    /// comes from the tree — walk up from whatever is at the point and see
+    /// whether this element is on that chain. Unknown counts as visible: a
+    /// control is never hidden from the run on a guess.
+    static bool OnTop(AutomationElement el, System.Windows.Rect r)
+    {
+        try
+        {
+            var p = new System.Windows.Point(r.Left + (r.Width / 2), r.Top + (r.Height / 2));
+            var at = AutomationElement.FromPoint(p);
+            if (at == null) return true;
+            var walker = TreeWalker.ControlViewWalker;
+            var found = at;
+            for (int i = 0; i < 8 && at != null; i++)
+            {
+                if (Automation.Compare(at, el)) return true;
+                at = walker.GetParent(at);
+            }
+            /* Something else answered. Whether that means "covered" depends
+               on what answered: a named control genuinely is in front, while
+               an anonymous Pane is what a window hands back when it does not
+               hit-test its own contents. Measured: every button on Notepad's
+               toolbar resolves to an unnamed Pane, and calling those covered
+               would take the whole toolbar away from the run. So a nameless
+               answer is treated as no answer. */
+            string over = "";
+            try { over = found.Current.Name ?? ""; } catch { }
+            return over.Trim().Length == 0;
+        }
+        catch { return true; }
+    }
+
     public static string Hit(int x, int y)
     {
         var p = new System.Windows.Point(x, y);
@@ -546,13 +678,21 @@ static class Sense
     /// Ask the window under this point for its accessibility tree, once ever.
     /// Returns true if this call was the one that asked, so the caller knows
     /// to give the application a moment to build it.
-    public static bool Wake(IntPtr root)
+    /// Ask a window to build its accessibility tree.
+    ///
+    /// Remembered per window, because the ask is slow and pointless twice —
+    /// except after the page inside it changes, which throws the tree away
+    /// and builds a new one only when something asks again. `force` is for
+    /// that case: measured, a Wikipedia article opened by a search answered
+    /// with zero controls, and every re-ask was silently dropped here
+    /// because the window had been woken once already an hour before.
+    public static bool Wake(IntPtr root, bool force = false)
     {
         if (root == IntPtr.Zero) return false;
         long key = root.ToInt64();
         lock (Woken)
         {
-            if (Woken.Contains(key)) return false;
+            if (!force && Woken.Contains(key)) return false;
             Woken.Add(key);
         }
 
@@ -706,15 +846,83 @@ static class Sense
     /// Named, operable controls inside a window, on screen: what a person
     /// could click there, with where each one is. Bounded in count and time,
     /// because a browser can hold thousands of nodes.
-    public static string Elements(IntPtr hwnd, int max)
+    /// Every property this reads, asked for once instead of one call each.
+    ///
+    /// UI Automation reads a property by talking to the other process, and
+    /// the walk below reads about fifteen per control. On a browser page
+    /// with a hundred controls that is fifteen hundred round trips, and it
+    /// is the whole of why a snapshot of Wikipedia took two seconds while
+    /// the same call on Notepad took two hundred milliseconds. A cache
+    /// request fetches the lot in one go and every read afterwards is local.
+    static CacheRequest ElementCache()
+    {
+        var cr = new CacheRequest();
+        cr.TreeScope = TreeScope.Element | TreeScope.Subtree;
+        cr.TreeFilter = Automation.ControlViewCondition;
+        cr.AutomationElementMode = AutomationElementMode.None;
+        foreach (var prop in new AutomationProperty[]
+        {
+            AutomationElement.NameProperty,
+            AutomationElement.AutomationIdProperty,
+            AutomationElement.RuntimeIdProperty,
+            AutomationElement.IsPasswordProperty,
+            AutomationElement.ClassNameProperty,
+            AutomationElement.ControlTypeProperty,
+            AutomationElement.BoundingRectangleProperty,
+            AutomationElement.IsEnabledProperty,
+            AutomationElement.IsOffscreenProperty,
+            AutomationElement.IsKeyboardFocusableProperty,
+            AutomationElement.IsInvokePatternAvailableProperty,
+            AutomationElement.IsTogglePatternAvailableProperty,
+            AutomationElement.IsSelectionItemPatternAvailableProperty,
+            AutomationElement.IsExpandCollapsePatternAvailableProperty,
+            AutomationElement.IsValuePatternAvailableProperty,
+        }) cr.Add(prop);
+        /* What is in the box, cached with everything else.
+           Without it the table says a search field exists and not that it
+           already contains what was asked for — and a run types into it
+           again, and again: measured, thirteen times in a row before
+           something else stopped it. */
+        cr.Add(ValuePattern.ValueProperty);
+        cr.Add(ValuePattern.IsReadOnlyProperty);
+        // A slider's range, so a value can be reached by clicking the right
+        // share of the way along it rather than by dragging a handle.
+        cr.Add(RangeValuePattern.ValueProperty);
+        cr.Add(RangeValuePattern.MinimumProperty);
+        cr.Add(RangeValuePattern.MaximumProperty);
+        cr.Add(TogglePattern.ToggleStateProperty);
+        cr.Add(SelectionItemPattern.IsSelectedProperty);
+        return cr;
+    }
+
+    public static string Elements(IntPtr hwnd, int max, bool ontop = false)
     {
         var sw = Stopwatch.StartNew();
         AutomationElement root = AutomationElement.FromHandle(hwnd);
+
+        /* The quick way first: one request for the whole subtree with every
+           property already in it. AutomationElementMode.None means the
+           elements come back as data rather than as live references, which
+           is what makes it one call — so anything needing a live element
+           (the options inside a dropdown, a hit test) falls through to the
+           walk below. */
+        if (!ontop)
+        {
+            try
+            {
+                string quick = Cached(root, max, sw);
+                if (quick != null) return quick;
+            }
+            catch { /* fall through to the walk */ }
+        }
         var arr = new StringBuilder("[");
         int n = 0;
         var queue = new Queue<AutomationElement>();
         queue.Enqueue(root);
         var walker = TreeWalker.ControlViewWalker;
+        // Whatever the cached attempt already spent counts against this, so a
+        // window that defeats both routes costs four seconds in total rather
+        // than four on top of two.
         while (queue.Count > 0 && n < max && sw.ElapsedMilliseconds < 4000)
         {
             var el = queue.Dequeue();
@@ -724,10 +932,18 @@ static class Sense
                 string type = TypeName(el);
                 var r = c.BoundingRectangle;
                 if (el != root && !c.IsOffscreen && !r.IsEmpty && r.Width > 4 && r.Height > 4
-                    && !string.IsNullOrEmpty(c.Name) && c.IsEnabled && Operable(el, type) && type != "Window")
+                    && !string.IsNullOrEmpty(c.Name) && c.IsEnabled && type != "Window"
+                    && (Operable(el, type) || Editable(el, type)))
                 {
                     if (n++ > 0) arr.Append(',');
-                    arr.Append(Describe(el));
+                    string one = Describe(el);
+                    if (ontop)
+                    {
+                        // Spliced in rather than passed through Describe, which
+                        // is shared with callers that have no point to test.
+                        one = one.Substring(0, one.Length - 1) + ",\"ontop\":" + (OnTop(el, r) ? "true" : "false") + "}";
+                    }
+                    arr.Append(one);
                 }
             }
             catch { }
@@ -744,6 +960,179 @@ static class Sense
         }
         arr.Append(']');
         return new Json().Raw("elements", arr.ToString()).N("ms", sw.ElapsedMilliseconds).ToString();
+    }
+
+    /// The same list, built from one cached request. Null when it comes back
+    /// with nothing, so the caller can fall back to walking it live.
+    static string Cached(AutomationElement root, int max, Stopwatch sw)
+    {
+        AutomationElementCollection all;
+        using (ElementCache().Activate())
+        {
+            all = root.FindAll(TreeScope.Subtree, Condition.TrueCondition);
+        }
+        // An empty tree is a real answer — a window whose contents have not
+        // been built yet has no controls, and walking it live to be told the
+        // same thing again costs four seconds for nothing. Measured: a
+        // Chrome window that had not been woken took six seconds to return
+        // nothing twice.
+        if (all == null) return null;
+
+        var arr = new StringBuilder("[");
+        /* What the window actually says, alongside what can be done to it.
+           A table of controls tells a run where the buttons are and nothing
+           about whether the job is finished: measured, a run that had the
+           Alan Turing article open on screen went back to the search box
+           because nothing it could see said the article was there. Headings
+           and text, in the order they appear, are what answers that. */
+        var words = new StringBuilder("[");
+        int w = 0;
+        int n = 0;
+        /* Where the words are, as well as what they say, and the named
+           regions that hold things: a card on a board is text, not a
+           button, and the column it is dragged to is a group. Halo numbers
+           these on the screenshot so a small model can say "that one"
+           instead of guessing pixels. */
+        var texts = new StringBuilder("[");
+        int t = 0;
+        var places = new StringBuilder("[");
+        int pl = 0;
+        foreach (AutomationElement el in all)
+        {
+            if (w < 40 || t < 60)
+            {
+                try
+                {
+                    var tc = el.Cached;
+                    string tt = TypeName(tc.ControlType);
+                    /* Text only. Buttons and links are already in the
+                       control table, and taking them here filled the whole
+                       quota with the browser's own furniture — Minimize,
+                       Restore, Back, Reload — before reaching a word of the
+                       page. */
+                    if (w < 40 && tt == "Text" && !tc.IsOffscreen
+                        && !string.IsNullOrEmpty(tc.Name) && tc.Name.Length > 2)
+                    {
+                        if (w++ > 0) words.Append(',');
+                        words.Append(Json.Str(Trim(tc.Name, 90)));
+                    }
+                    if (tt == "Text" && t < 60 && !tc.IsOffscreen && !string.IsNullOrEmpty(tc.Name))
+                    {
+                        var tr = tc.BoundingRectangle;
+                        if (!tr.IsEmpty && tr.Width > 4 && tr.Height > 4)
+                        {
+                            if (t++ > 0) texts.Append(',');
+                            texts.Append(new Json().S("name", Trim(tc.Name, 90)).Raw("rect", RectJson(tr)).ToString());
+                        }
+                    }
+                }
+                catch { }
+            }
+            if (n >= max) continue;
+            try
+            {
+                var c = el.Cached;
+                string type = TypeName(c.ControlType);
+                var r = c.BoundingRectangle;
+                if (c.IsOffscreen || r.IsEmpty || r.Width <= 4 || r.Height <= 4) continue;
+                /* A large picture with no name — a canvas, a map, a chart, a
+                   game — is somewhere things are clicked that Windows cannot
+                   describe. It is offered as a place, so it can be pointed at
+                   as a whole and looked into closely (zoom.mjs). */
+                if (string.IsNullOrEmpty(c.Name) && pl < 25 && (type == "Image" || type == "Custom")
+                    && r.Width >= 150 && r.Height >= 120 && c.IsEnabled)
+                {
+                    if (pl++ > 0) places.Append(',');
+                    places.Append(new Json().S("type", type).S("name", "(unnamed picture)").Raw("rect", RectJson(r)).ToString());
+                    continue;
+                }
+                if (string.IsNullOrEmpty(c.Name) || !c.IsEnabled || type == "Window") continue;
+
+                bool operable = CLICKABLE.Contains(type)
+                    || (bool)el.GetCachedPropertyValue(AutomationElement.IsInvokePatternAvailableProperty)
+                    || (bool)el.GetCachedPropertyValue(AutomationElement.IsTogglePatternAvailableProperty)
+                    || (bool)el.GetCachedPropertyValue(AutomationElement.IsSelectionItemPatternAvailableProperty)
+                    || (bool)el.GetCachedPropertyValue(AutomationElement.IsExpandCollapsePatternAvailableProperty);
+                bool editable = type == "Document" || type == "Edit" || type == "ComboBox"
+                    || (bool)el.GetCachedPropertyValue(AutomationElement.IsValuePatternAvailableProperty);
+                if (!operable && !editable)
+                {
+                    if (pl < 25 && (type == "Group" || type == "List" || type == "Pane" || type == "Custom"
+                        || type == "Table" || type == "DataGrid" || type == "Tree"))
+                    {
+                        if (pl++ > 0) places.Append(',');
+                        places.Append(new Json().S("type", type).S("name", Trim(c.Name, 90)).Raw("rect", RectJson(r)).ToString());
+                    }
+                    continue;
+                }
+
+                string how = (bool)el.GetCachedPropertyValue(AutomationElement.IsInvokePatternAvailableProperty) ? "invoke"
+                    : (bool)el.GetCachedPropertyValue(AutomationElement.IsTogglePatternAvailableProperty) ? "toggle"
+                    : (bool)el.GetCachedPropertyValue(AutomationElement.IsSelectionItemPatternAvailableProperty) ? "select"
+                    : (bool)el.GetCachedPropertyValue(AutomationElement.IsExpandCollapsePatternAvailableProperty) ? "expand"
+                    : (bool)el.GetCachedPropertyValue(AutomationElement.IsValuePatternAvailableProperty) ? "value"
+                    : "";
+
+                if (n++ > 0) arr.Append(',');
+                var j = new Json()
+                    .S("type", type)
+                    .S("name", Trim(c.Name, 120))
+                    .S("id", Trim(c.AutomationId, 60))
+                    .S("cls", Trim(c.ClassName, 60))
+                    .Raw("rect", RectJson(r))
+                    .B("enabled", c.IsEnabled)
+                    .B("offscreen", c.IsOffscreen)
+                    .B("focusable", c.IsKeyboardFocusable)
+                    .B("operable", operable)
+                    .B("positional", POSITIONAL.Contains(type));
+                if (how.Length > 0) j.S("how", how);
+                try
+                {
+                    object v = el.GetCachedPropertyValue(ValuePattern.ValueProperty, true);
+                    if (!c.IsPassword && v != null && v != AutomationElement.NotSupported) j.S("value", Trim(v.ToString(), 200));
+                }
+                catch { }
+                try {
+                    var ids = el.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty, true) as int[];
+                    if (ids != null) j.S("runtimeId", string.Join(".", ids));
+                } catch { }
+                try {
+                    object rv = el.GetCachedPropertyValue(RangeValuePattern.ValueProperty, true);
+                    object rmin = el.GetCachedPropertyValue(RangeValuePattern.MinimumProperty, true);
+                    object rmax = el.GetCachedPropertyValue(RangeValuePattern.MaximumProperty, true);
+                    if (rv is double && rmin is double && rmax is double)
+                        j.Raw("range", "[" + ((double)rmin).ToString(System.Globalization.CultureInfo.InvariantCulture) + "," + ((double)rmax).ToString(System.Globalization.CultureInfo.InvariantCulture) + "," + ((double)rv).ToString(System.Globalization.CultureInfo.InvariantCulture) + "]");
+                } catch { }
+                try {
+                    object ro = el.GetCachedPropertyValue(ValuePattern.IsReadOnlyProperty, true);
+                    if (ro is bool) j.B("readOnly", (bool)ro);
+                } catch { }
+                try {
+                    object toggle = el.GetCachedPropertyValue(TogglePattern.ToggleStateProperty, true);
+                    if (toggle is ToggleState) j.B("checked", (ToggleState)toggle == ToggleState.On);
+                } catch { }
+                try
+                {
+                    object sel = el.GetCachedPropertyValue(SelectionItemPattern.IsSelectedProperty, true);
+                    if (sel is bool) j.B("selected", (bool)sel);
+                }
+                catch { }
+                arr.Append(j.ToString());
+            }
+            catch { }
+        }
+        arr.Append(']');
+        words.Append(']');
+        texts.Append(']');
+        places.Append(']');
+        return new Json()
+            .Raw("elements", arr.ToString())
+            .Raw("says", words.ToString())
+            .Raw("texts", texts.ToString())
+            .Raw("places", places.ToString())
+            .N("ms", sw.ElapsedMilliseconds)
+            .B("cached", true)
+            .ToString();
     }
 
     /// The nearest thing under a point that can scroll, and how far it is
@@ -953,7 +1342,7 @@ static class Program
                     // rather than in front of the click that needs it.
                     case "wake":
                     {
-                        bool asked = Sense.Wake(Sense.RootAt(Int(p[2]), Int(p[3])));
+                        bool asked = Sense.Wake(Sense.RootAt(Int(p[2]), Int(p[3])), p.Length > 4 && p[4] == "force");
                         Reply(id, new Json().B("asked", asked).ToString());
                         break;
                     }
@@ -975,6 +1364,14 @@ static class Program
                         Deadline(id, 1500, () => TopWindows.Focus(h));
                         break;
                     }
+                    /// Caps Lock and its friends, because a stuck one
+                    /// silently inverts everything typed afterwards.
+                    case "keystate":
+                        Reply(id, new Json()
+                            .B("caps", (Win.GetKeyState(0x14) & 1) != 0)
+                            .B("num", (Win.GetKeyState(0x90) & 1) != 0)
+                            .ToString());
+                        break;
                     case "hit":
                     {
                         int x = Int(p[2]), y = Int(p[3]);
@@ -997,7 +1394,14 @@ static class Program
                     {
                         var h = new IntPtr(long.Parse(p[2], CultureInfo.InvariantCulture));
                         int max = p.Length > 3 ? Int(p[3]) : 200;
-                        Deadline(id, 5000, () => Sense.Elements(h, max));
+                        bool ontop = p.Length > 4 && p[4] == "ontop";
+                        /* Short, because the caller has somewhere else to go.
+                           Some pages simply do not answer UI Automation —
+                           measured on a Wikipedia article that blocked every
+                           call, including a plain hit test, for the full six
+                           seconds. Six seconds of nothing is worse than a
+                           second and a half and a screenshot. */
+                        Deadline(id, 1500, () => Sense.Elements(h, max, ontop));
                         break;
                     }
                     default:

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Toolbar</title>
+<link rel="stylesheet" href="qa.css">
+<style>
+table { border-collapse: collapse; }
+th { text-align: left; font-weight: 600; padding: 6px 14px 6px 0; color: #444; }
+td { padding: 4px; }
+td button { width: 30px; height: 30px; padding: 0; font-size: 15px; line-height: 1; border-radius: 6px; }
+</style>
+<h1>Toolbar rows</h1>
+<p class="lead">Small icon buttons, six to a row. Each has a name for screen readers.</p>
+<table id="grid"></table>
+<output id="pressed">Nothing pressed yet.</output>
+<script src="qa.js"></script>
+<script>
+const icons = [['star', '★'], ['heart', '♥'], ['bell', '🔔'], ['trash', '🗑'], ['pin', '📌'], ['lock', '🔒']];
+const grid = document.getElementById('grid');
+let pressed = [];
+for (let r = 1; r <= 6; r++) {
+  const tr = grid.insertRow();
+  const th = document.createElement('th'); th.textContent = `Row ${r}`; tr.appendChild(th);
+  /* Each row a different order, so "the bell" alone is never enough —
+     the row has to be read too. */
+  const order = icons.map((_, i) => icons[(i + r) % icons.length]);
+  for (const [name, glyph] of order) {
+    const b = document.createElement('button');
+    b.textContent = glyph;
+    b.setAttribute('aria-label', `${name} (row ${r})`);
+    b.dataset.qa = `${name}-${r}`;
+    b.addEventListener('click', () => { pressed.push(b.dataset.qa); document.getElementById('pressed').textContent = 'Pressed: ' + pressed.join(', '); });
+    tr.insertCell().appendChild(b);
+  }
+}
+qa.task = 'On the Toolbar rows page, click the bell button in Row 4.';
+qa.check = () => ({ pass: pressed.length >= 1 && pressed.every((p) => p === 'bell-4'), detail: pressed.join(', ') || 'nothing' });
+</script>
+</html>

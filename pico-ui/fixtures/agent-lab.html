@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Halo Agent Lab</title>
+<style>body{font:18px system-ui;background:#f5f5f2;color:#202020;margin:50px auto;max-width:760px}label{display:block;margin:24px 0}input,select,button{font:inherit;padding:10px}input[type=text]{display:block;width:90%;margin-top:8px}button{cursor:pointer;margin-right:14px}output{display:block;padding:24px;margin-top:24px;background:white}small{display:block;margin:10px 0;color:#555}</style>
+<h1>Halo Agent Lab</h1><p>A local test form. Nothing is sent to another website.</p>
+<form id="request">
+<label>Project name<input id="project" name="project" type="text" autocomplete="off" required></label>
+<label>Search topic<input id="topic" name="topic" type="text" autocomplete="off" required></label>
+<label>Priority <select name="priority" id="priority"><option>Normal</option><option>High</option><option>Low</option></select></label>
+<label><input name="notifications" type="checkbox" id="notifications"> Enable notifications</label>
+<button type="submit">Save project</button><button type="reset">Reset form</button>
+</form><output id="result" aria-live="polite">No project saved yet.</output>
+<small id="metrics">0 form changes</small>
+<script>
+let changes=0;
+const form=document.getElementById('request'), result=document.getElementById('result');
+form.addEventListener('change',()=>document.getElementById('metrics').textContent=`${++changes} form changes`);
+form.addEventListener('submit',event=>{event.preventDefault();const data=new FormData(form);result.textContent=`Saved project: ${data.get('project')}. Topic: ${data.get('topic')}. Priority: ${data.get('priority')}. Notifications: ${data.has('notifications')?'enabled':'disabled'}.`;});
+form.addEventListener('reset',()=>{changes=0;result.textContent='No project saved yet.';document.getElementById('metrics').textContent='0 form changes';});
+</script></html>

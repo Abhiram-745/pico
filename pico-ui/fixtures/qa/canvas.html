@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Canvas</title>
+<link rel="stylesheet" href="qa.css">
+<h1>Shapes</h1>
+<p class="lead">Drawn on a canvas, so Windows cannot say what is where — only the picture can.</p>
+<canvas id="c" width="760" height="420" style="background:#fff;border-radius:12px;display:block"></canvas>
+<output id="hit">Nothing clicked yet.</output>
+<script src="qa.js"></script>
+<script>
+const c = document.getElementById('c'), g = c.getContext('2d');
+/* Small shapes, close together, two of them green: the one wanted is the
+   green circle, not the green square beside it. */
+const shapes = [
+  { name: 'red circle', kind: 'circle', x: 110, y: 110, r: 22, fill: '#e24a4a' },
+  { name: 'green square', kind: 'square', x: 300, y: 250, r: 22, fill: '#2fa84f' },
+  { name: 'green circle', kind: 'circle', x: 372, y: 250, r: 18, fill: '#2fa84f' },
+  { name: 'blue circle', kind: 'circle', x: 600, y: 120, r: 26, fill: '#3b6fe2' },
+  { name: 'orange triangle', kind: 'tri', x: 560, y: 330, r: 26, fill: '#f08a24' },
+];
+for (const s of shapes) {
+  g.fillStyle = s.fill; g.beginPath();
+  if (s.kind === 'circle') g.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+  else if (s.kind === 'square') g.rect(s.x - s.r, s.y - s.r, s.r * 2, s.r * 2);
+  else { g.moveTo(s.x, s.y - s.r); g.lineTo(s.x + s.r, s.y + s.r); g.lineTo(s.x - s.r, s.y + s.r); g.closePath(); }
+  g.fill();
+}
+const hits = [];
+c.addEventListener('click', (e) => {
+  const r = c.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (c.width / r.width), y = (e.clientY - r.top) * (c.height / r.height);
+  const s = shapes.find((s) => Math.abs(x - s.x) <= s.r && Math.abs(y - s.y) <= s.r);
+  hits.push(s ? s.name : `nothing (${Math.round(x)}, ${Math.round(y)})`);
+  document.getElementById('hit').textContent = 'Clicked: ' + hits.join(', ');
+});
+qa.task = 'On the Shapes page, click the green circle.';
+qa.check = () => ({ pass: hits.includes('green circle') && !hits.includes('green square'), detail: hits.join(', ') || 'nothing' });
+</script>
+</html>

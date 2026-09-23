@@ -28,6 +28,7 @@ const OPENS = [
   ['open whatsapp then message sam hello', { name: 'whatsapp', rest: 'message sam hello' }],
   ['go to youtube', { name: 'youtube' }],
   ['open claude.ai', { url: 'https://claude.ai' }],
+  ['Open http://127.0.0.1:4177/pico-ui/fixtures/agent-lab.html in Chrome, enter project name Halo QA', { url: 'http://127.0.0.1:4177/pico-ui/fixtures/agent-lab.html', rest: 'enter project name Halo QA' }],
   ['open file explorer', { name: 'file explorer' }],
   ['can you open vs code', { name: 'vs code' }],
   ['switch to chrome', { name: 'chrome' }],

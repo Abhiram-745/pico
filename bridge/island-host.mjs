@@ -77,6 +77,7 @@ export class IslandHost {
     this.ready = false;
     /** Called with a keybind id when its chord is pressed, anywhere. */
     this.onFired = null;
+    this.onRegistered = null;
   }
 
   static async start() {
@@ -102,6 +103,12 @@ export class IslandHost {
       createInterface({ input: this.proc.stdout }).on('line', (line) => {
         if (line === 'ready') { this.ready = true; clearTimeout(timer); resolve(); return; }
         if (line.startsWith('fired ')) { this.onFired?.(line.slice(6).trim()); return; }
+        if (line.startsWith('released ')) {
+          const [id, ms] = line.slice(9).trim().split(/\s+/);
+          this.onReleased?.(id, Number(ms) || 0);
+          return;
+        }
+        if (line.startsWith('registered ')) { this.onRegistered?.(line.slice(11).trim()); return; }
         if (line.startsWith('err')) console.warn(`[bridge] island host: ${line.slice(4)}`);
       });
     });
@@ -131,6 +138,9 @@ export class IslandHost {
 
   /** Remove the resize border and round the corners. Once, after opening. */
   trim(hwnd) { return this.send(`trim ${hwnd}`); }
+
+  /** Let the mouse through the island, or stop letting it. See Deaf(). */
+  deaf(hwnd, on) { return this.send(`deaf ${hwnd} ${on ? 1 : 0}`); }
 
   /** Position and size in one call. Every number rounded — the host parses ints. */
   place(hwnd, rect) {

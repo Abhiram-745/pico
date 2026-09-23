@@ -24,6 +24,8 @@
 //  and one line it sends unprompted:
 //
 //    fired <id>                    that chord was pressed, anywhere
+//    released <id> <ms>            and its key was let go, <ms> later — how
+//                                  a tap is told from a hold (hold to talk)
 //
 //  GLOBAL CHORDS
 //  A web page only hears the keyboard while it has the focus, and Halo's
@@ -77,6 +79,9 @@ static class Native
     public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vk);
+
+    [DllImport("user32.dll")]
     public static extern bool PeekMessage(out MSG msg, IntPtr hWnd, uint min, uint max, uint remove);
 
     [DllImport("user32.dll")]
@@ -110,6 +115,8 @@ static class Native
     public const long WS_MAXIMIZEBOX = 0x00010000;
     public const long WS_EX_TOOLWINDOW = 0x00000080;
     public const long WS_EX_APPWINDOW = 0x00040000;
+    public const long WS_EX_LAYERED = 0x00080000;
+    public const long WS_EX_TRANSPARENT = 0x00000020;
 
     public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     public const int DWMWA_BORDER_COLOR = 34;
@@ -145,6 +152,27 @@ static class IslandHost
         Native.SetWindowPos(h, Native.HWND_TOPMOST, 0, 0, 0, 0,
             Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE
             | Native.SWP_FRAMECHANGED | Native.SWP_SHOWWINDOW);
+    }
+
+    /// Make the island deaf to the mouse, or give it its ears back.
+    ///
+    /// The island hangs over the top centre of the screen, which on a
+    /// browser is exactly where the tab strip is. A run reaching for a tab
+    /// hit the island instead — and the island is the one window on screen
+    /// that must never be clicked by the thing it is reporting on.
+    ///
+    /// WS_EX_TRANSPARENT makes the mouse pass straight through to whatever
+    /// is behind, so the click lands where it was aimed. It needs
+    /// WS_EX_LAYERED alongside it to take effect on a normal window. Both
+    /// are taken off again the moment the run finishes, because an island
+    /// nobody can click is not much of an island.
+    static void Deaf(IntPtr h, bool deaf)
+    {
+        long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+        ex = deaf
+            ? (ex | Native.WS_EX_LAYERED | Native.WS_EX_TRANSPARENT)
+            : (ex & ~Native.WS_EX_TRANSPARENT);
+        Native.SetWindowLongPtr(h, Native.GWL_EXSTYLE, new IntPtr(ex));
     }
 
     /// Trim the window's edges.
@@ -206,6 +234,7 @@ static class IslandHost
     static readonly object Out = new object();
     static readonly Queue<Chord> Pending = new Queue<Chord>();
     static readonly Dictionary<int, string> Live = new Dictionary<int, string>();
+    static readonly Dictionary<int, uint> LiveVk = new Dictionary<int, uint>();
     static bool dropAll;
     static Thread chordThread;
 
@@ -221,6 +250,13 @@ static class IslandHost
     static void ChordLoop()
     {
         var mine = new List<int>();
+        /* The chord last fired, while its key is still down. RegisterHotKey
+           says when a chord is pressed and never when it is let go, so the
+           key is watched until it comes up: a quick tap and a long hold are
+           different requests (start hands-free voice, or talk while held). */
+        string holdName = null;
+        uint holdVk = 0;
+        int holdSince = 0;
         for (;;)
         {
             lock (Pending)
@@ -231,6 +267,7 @@ static class IslandHost
                     foreach (int id in mine) Native.UnregisterHotKey(IntPtr.Zero, id);
                     mine.Clear();
                     Live.Clear();
+                    LiveVk.Clear();
                 }
                 while (Pending.Count > 0)
                 {
@@ -242,6 +279,8 @@ static class IslandHost
                     {
                         if (!mine.Contains(c.Id)) mine.Add(c.Id);
                         Live[c.Id] = c.Name;
+                        LiveVk[c.Id] = c.Vk;
+                        Say("registered " + c.Name);
                     }
                     else
                     {
@@ -260,10 +299,26 @@ static class IslandHost
                     int id = msg.wParam.ToInt32();
                     string name;
                     lock (Pending) { Live.TryGetValue(id, out name); }
-                    if (name != null) Say("fired " + name);
+                    if (name != null)
+                    {
+                        Say("fired " + name);
+                        uint vk;
+                        lock (Pending) { LiveVk.TryGetValue(id, out vk); }
+                        holdName = name; holdVk = vk; holdSince = Environment.TickCount;
+                    }
                 }
             }
-            if (!got) Thread.Sleep(12);
+            if (holdName != null)
+            {
+                int held = Environment.TickCount - holdSince;
+                if (holdVk == 0 || (Native.GetAsyncKeyState((int)holdVk) & 0x8000) == 0)
+                {
+                    Say("released " + holdName + " " + held);
+                    holdName = null;
+                }
+                else if (held > 120000) holdName = null;
+            }
+            if (!got) Thread.Sleep(holdName != null ? 8 : 12);
         }
     }
 
@@ -300,6 +355,9 @@ static class IslandHost
                         break;
                     case "trim":
                         Trim(Handle(p[1]));
+                        break;
+                    case "deaf":
+                        Deaf(Handle(p[1]), p.Length > 2 && p[2] == "1");
                         break;
                     case "place":
                         Place(Handle(p[1]), Int(p[2]), Int(p[3]), Int(p[4]), Int(p[5]));

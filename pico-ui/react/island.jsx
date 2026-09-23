@@ -29,17 +29,18 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createRoot } from 'react-dom/client';
 import { store, isActive, PHASE_COPY } from '../src/store.js';
 import { bridge, connect } from '../src/bridge.js';
+import { stopEverything } from '../src/voice-session.js';
 import { chats } from '../src/chats.js';
 import { permissions, LEVELS } from '../src/permissions.js';
 import { TAUGHT, written } from '../src/keybinds.js';
 import { useStore, useStoreEvent, sel, usePetName, ago } from './hooks.js';
 import { Beam, MetalButton } from './fx.jsx';
 import {
-  Composer, Decision, Icon, IconButton, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
+  ActivityLog, Composer, Decision, Icon, IconButton, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
 } from './parts.jsx';
 
 /** Content width for each size. Height is whatever the content needs. */
-export const WIDTHS = { compact: 232, peek: 380, live: 460, open: 620, card: 396 };
+export const WIDTHS = { compact: 232, peek: 380, live: 460, voice: 550, open: 620, card: 396 };
 
 const SHORT = {
   Idle: 'Ready',
@@ -69,6 +70,22 @@ const SUGGESTIONS = ['What can you do?', 'Open Notepad and type hello', 'Remembe
    the page stops guessing. What follows is only for when there is no bridge
    to ask: an ordinary tab, or the preview.
    -------------------------------------------------------------------------- */
+/* Whether the bridge is there, read off the attribute the connection sets.
+   The island is the one surface that cannot show a banner about it — there
+   is no room — so it goes in the line under the name, where "Ready" would
+   otherwise be claiming something that is not true. */
+function useConnected() {
+  const [ok, setOk] = useState(() => document.body.dataset.conn !== 'offline');
+  useEffect(() => {
+    const read = () => setOk(document.body.dataset.conn !== 'offline');
+    const watch = new MutationObserver(read);
+    watch.observe(document.body, { attributes: true, attributeFilter: ['data-conn'] });
+    read();
+    return () => watch.disconnect();
+  }, []);
+  return ok;
+}
+
 function useHover() {
   const [hover, setHover] = useState(false);
   const told = useRef(false);
@@ -203,6 +220,7 @@ function Island({ onMeasure }) {
   const [petName] = usePetName();
   const phase = useStore(sel.phase);
   const plan = useStore(sel.plan);
+  const voice = useStore(sel.voice);
   const action = useStore(sel.action);
   const messages = useStore(sel.messages);
   const guardian = useStore(sel.guardian);
@@ -210,6 +228,7 @@ function Island({ onMeasure }) {
   const routines = useStore(sel.routines);
   const chatState = useStore(sel.chats);
   const hover = useHover();
+  const connected = useConnected();
 
   const shell = useStore(sel.shell);
   const [pinned, setPinned] = useState(false);
@@ -222,6 +241,7 @@ function Island({ onMeasure }) {
   const inputRef = useRef(null);
   const flashTimer = useRef(null);
   const keysTimer = useRef(null);
+  const hoverRef = useRef(false);
 
   const decision = useDecision(autoApproved);
   const running = isActive(phase);
@@ -230,11 +250,24 @@ function Island({ onMeasure }) {
   const waitingOnPerson = Boolean(decision);
 
   useEffect(() => permissions.subscribe(setLevel), []);
+  useEffect(() => { hoverRef.current = hover; }, [hover]);
 
+  /* A notice, for a few seconds — but never one that expires under the
+     pointer. The island is 460 wide while a notice is showing and 380 when
+     it is merely hovered, so a timer firing while someone is reaching for it
+     shrinks the window, moves the words and re-lays-out the bar in the
+     middle of the gesture. That is the whole of what "it glitches instead of
+     opening" was: the island changing shape on its own at the one moment a
+     hand is on it. So while the pointer is on the island the notice simply
+     stays, and it goes when the pointer does. */
   const showFlash = useCallback((kind, text, ms) => {
     clearTimeout(flashTimer.current);
     setFlash({ kind, text });
-    flashTimer.current = setTimeout(() => setFlash(null), ms);
+    const done = () => {
+      if (hoverRef.current) { flashTimer.current = setTimeout(done, 400); return; }
+      setFlash(null);
+    };
+    flashTimer.current = setTimeout(done, ms);
   }, []);
 
   /* Arriving from the app window: the chords, for a few seconds, in the
@@ -262,6 +295,7 @@ function Island({ onMeasure }) {
     if (card) return 'card';
     if (decision && !(decision.kind === 'question' && decision.item.id === dismissed)) return 'open';
     if (pinned) return 'open';
+    if (voice.active) return 'voice';
     if (running || streaming || flash) return 'live';
     if (hover) return 'peek';
     return 'compact';
@@ -282,7 +316,20 @@ function Island({ onMeasure }) {
   useStoreEvent(['question'], (s) => { if (s.question) { setDismissed(null); setPinned(true); } });
   // Sent as a job: get out of the way of the screen Halo is about to use.
   useStoreEvent(['routed'], (s) => { if (s.routed?.mode === 'agent') setPinned(false); });
-  useStoreEvent(['summary'], (s) => { if (s.summary) showFlash('done', s.summary, 6500); });
+  /* A run that did not work does not get a tick.
+
+     Every summary used to flash as 'done', mark and all, so "the latest
+     project was not opened" arrived with a green tick beside it — the words
+     said one thing and the only part anybody reads at a glance said the
+     opposite. The verdict is already on the run that just finished; use it. */
+  useStoreEvent(['summary'], (s) => {
+    if (!s.summary) return;
+    /* The plan carries the verdict and is published in the same breath as
+       the summary; `lastRun` only arrives once the whole run has unwound,
+       which is after this, and would still be the run before. */
+    const ok = s.plan?.finished ? s.plan.succeeded !== false : true;
+    showFlash(ok ? 'done' : 'fail', s.summary, 6500);
+  });
   useStoreEvent(['error'], (s) => { if (s.error && !s.error.quiet) showFlash('fail', s.error.message, 6000); });
   useStoreEvent(['message'], (s, meta) => {
     const m = meta.message;
@@ -291,6 +338,12 @@ function Island({ onMeasure }) {
 
   /* --- gestures ----------------------------------------------------------- */
   const open = useCallback(() => {
+    /* Opening supersedes whatever notice was showing: the panel is a
+       different shape and a different set of words, and a timer left running
+       would clear the notice — and re-measure the island — part way through
+       the window getting there. */
+    clearTimeout(flashTimer.current);
+    setFlash(null);
     setPinned(true);
     requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   }, []);
@@ -307,7 +360,7 @@ function Island({ onMeasure }) {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
-      if (isActive(store.state.phase)) bridge.send('stop'); else collapse();
+      if (isActive(store.state.phase) || store.state.voice.active) stopEverything(); else collapse();
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
@@ -365,6 +418,13 @@ function Island({ onMeasure }) {
       : guardian.canAct === false ? 'Chat only' : 'Ready';
   }
   if (waitingOnPerson) mark = 'attention';
+  /* Nothing is coming back from the bridge, so nothing else on the bar is
+     worth believing. Said in the one place that is always visible. */
+  if (!connected) {
+    line = 'Reconnecting';
+    mark = 'dot';
+    if (view === 'compact') head = `${petName} · Reconnecting`;
+  }
 
   /* --- dragging the card -------------------------------------------------
      The window is moved by the bridge, not by the page: a page cannot move
@@ -401,7 +461,7 @@ function Island({ onMeasure }) {
           <span className="h-island__lead"><Presence px={view === 'compact' ? 22 : view === 'peek' ? 38 : 30} /></span>
 
           <div className="h-island__text">
-            <div className="h-island__title" key={view === 'live' ? head : undefined}>{head}</div>
+            <div className="h-island__title">{head}</div>
             <div className="h-island__sub">{line}</div>
           </div>
 
@@ -485,6 +545,7 @@ function Island({ onMeasure }) {
                   <div className="h-run__meter"><i style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }} /></div>
                 </header>
                 <PlanSteps limit={6} dense />
+                <ActivityLog />
                 {plan.finished && <div className="h-run__after"><SaveShortcut /></div>}
               </section>
             )}
@@ -541,9 +602,11 @@ function Island({ onMeasure }) {
               </div>
             )}
 
-            {!(decision?.kind === 'question') && <Composer petName={petName} inputRef={inputRef} />}
           </div>
         )}
+        <div className="h-island__composer" hidden={!(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
+          <Composer petName={petName} inputRef={inputRef} acceptShortcut />
+        </div>
       </div>
     </Beam>
   );
@@ -570,6 +633,31 @@ const onMeasure = ({ width, height, view }) => {
   });
   fetch(`/notch/size?${q}`, { method: 'POST' }).catch(() => { /* no bridge behind this page */ });
 };
+
+/* --- an island with no bridge behind it -----------------------------------
+   This window is started detached, so it outlives a bridge that crashes or
+   is killed outright — which is what should happen for the second or two a
+   restart takes, and exactly what should not happen when the bridge has
+   gone for good. Left alone it is a convincing fake of Halo: it draws, it
+   takes clicks, and nothing answers any of them. It cannot resize itself
+   either — the window belongs to the bridge — so it sits at whatever size
+   it last was with its words clipped, which is what "hovering stopped
+   working" looks like from the outside.
+
+   A restart is seconds; this waits far longer than that, and then takes the
+   window away. The next bridge opens a fresh one. Only ever the real island:
+   a stray tab on this URL has no token, and the preview has no bridge to
+   lose. */
+if (mode !== 'mock' && new URLSearchParams(location.search).get('k')) {
+  let goneSince = 0;
+  setInterval(() => {
+    const connected = document.body.dataset.conn === 'connected';
+    if (connected) { goneSince = 0; return; }
+    if (!goneSince) { goneSince = Date.now(); return; }
+    if (Date.now() - goneSince < 45_000) return;
+    try { window.close(); } catch { /* the words below say it instead */ }
+  }, 1000);
+}
 
 const host = document.getElementById('island') ?? document.body.appendChild(document.createElement('div'));
 createRoot(host).render(<Island onMeasure={onMeasure} />);

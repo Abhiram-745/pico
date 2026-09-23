@@ -16,12 +16,7 @@ import { bridge } from './bridge.js';
 
 /* Free-text: the host accepts any safe model ID. Driving the desktop needs a
    model with the Responses API computer tool; planning does not. */
-const KNOWN_MODELS = [
-  'gpt-5.4-nano',
-  'gpt-5.4-mini',
-  'gpt-5.6',
-  'computer-use-preview',
-];
+const KNOWN_MODELS = ['gpt-4.1-mini'];
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
