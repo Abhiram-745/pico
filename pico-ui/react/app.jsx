@@ -532,55 +532,94 @@ function SettingsView({ demo, petName, setPetName }) {
 /* --------------------------------------------------------------------------
    Updates
    -------------------------------------------------------------------------- */
-function UpdatesView({ demo }) {
-  const [info, setInfo] = useState(null);
-  const [state, setState] = useState({ busy: false, msg: '', error: null, pct: 0, done: false });
-
-  const check = useCallback(async () => {
-    setState((s) => ({ ...s, busy: true, error: null, msg: 'Checking…' }));
-    try {
-      const r = await fetch('/update/check');
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
-      setInfo(j);
-      setState((s) => ({ ...s, busy: false, msg: j.available ? '' : 'You are on the latest build.' }));
-    } catch (err) {
-      setState((s) => ({ ...s, busy: false, msg: '', error: err.message }));
-    }
-  }, []);
-  useEffect(() => { if (!demo) check(); }, [demo, check]);
-
-  const install = async () => {
-    setState((s) => ({ ...s, busy: true, pct: 0, msg: 'Downloading…' }));
-    try {
-      const res = await fetch('/update/install', { method: 'POST' });
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const ev = JSON.parse(line);
-          if (ev.error) throw new Error(ev.error);
-          setState((s) => ({ ...s, pct: ev.pct ?? s.pct, msg: { downloading: 'Downloading…', extracting: 'Unpacking…', installing: 'Installing…', dependencies: 'Installing packages…', done: 'Installed' }[ev.stage] || s.msg }));
-        }
+/* One updater, shared by the Updates page and the button in the sidebar:
+   both show the same download in progress rather than starting two. */
+const updater = { info: null, state: { busy: false, msg: '', error: null, pct: 0, done: false }, subs: new Set() };
+const setUpdater = (patch) => {
+  if (patch.info !== undefined) updater.info = patch.info;
+  if (patch.state) updater.state = { ...updater.state, ...patch.state };
+  for (const fn of updater.subs) fn({});
+};
+async function checkForUpdate({ quiet = false } = {}) {
+  if (updater.state.busy) return;
+  setUpdater({ state: { busy: !quiet, error: null, msg: quiet ? updater.state.msg : 'Checking…' } });
+  try {
+    const r = await fetch('/update/check');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    setUpdater({ info: j, state: { busy: false, msg: j.available ? '' : 'You are on the latest build.' } });
+  } catch (err) {
+    setUpdater({ state: { busy: false, msg: '', error: quiet ? null : err.message } });
+  }
+}
+async function installUpdate() {
+  setUpdater({ state: { busy: true, pct: 0, error: null, msg: 'Downloading…' } });
+  try {
+    const res = await fetch('/update/install', { method: 'POST' });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.error) throw new Error(ev.error);
+        setUpdater({ state: { pct: ev.pct ?? updater.state.pct, msg: { downloading: 'Downloading…', extracting: 'Unpacking…', installing: 'Installing…', dependencies: 'Installing packages…', done: 'Installed' }[ev.stage] || updater.state.msg } });
       }
-      setState((s) => ({ ...s, busy: false, done: true, msg: 'Installed.' }));
-    } catch (err) {
-      setState((s) => ({ ...s, busy: false, error: err.message, msg: '' }));
     }
-  };
+    setUpdater({ state: { busy: false, done: true, msg: 'Installed.' } });
+  } catch (err) {
+    setUpdater({ state: { busy: false, error: err.message, msg: '' } });
+  }
+}
+async function restartForUpdate() {
+  setUpdater({ state: { busy: true, msg: 'Restarting…' } });
+  try { await fetch('/update/restart', { method: 'POST' }); } catch { /* the server goes away mid-request by design */ }
+  setTimeout(() => location.reload(), 4000);
+}
+function useUpdater() {
+  const [, tick] = useState({});
+  useEffect(() => { updater.subs.add(tick); return () => { updater.subs.delete(tick); }; }, []);
+  return updater;
+}
 
-  const restart = async () => {
-    setState((s) => ({ ...s, busy: true, msg: 'Restarting…' }));
-    try { await fetch('/update/restart', { method: 'POST' }); } catch { /* the server goes away mid-request by design */ }
-    setTimeout(() => location.reload(), 4000);
-  };
+/* The sidebar's own button: nothing at all until a newer build is out, then
+   one press to download it and one to restart into it. Checked on opening
+   and every half hour, quietly — a failed check shows nothing here. */
+function UpdateButton({ demo }) {
+  const { info, state } = useUpdater();
+  useEffect(() => {
+    if (demo) return undefined;
+    checkForUpdate({ quiet: true });
+    const t = setInterval(() => checkForUpdate({ quiet: true }), 30 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [demo]);
+  if (demo || !(info?.available || state.done)) return null;
+  const label = state.done ? 'Restart to update' : state.busy ? `${state.msg || 'Downloading…'}${state.pct ? ` ${Math.round(state.pct)}%` : ''}` : 'Download update';
+  return (
+    <div className="h-update">
+      <MetalButton className="h-update__btn" disabled={state.busy} onClick={state.done ? restartForUpdate : installUpdate}>
+        <Icon name="update" size={15} />
+        <span>{label}</span>
+      </MetalButton>
+      {state.busy && state.pct > 0 && <div className="h-meter h-update__meter"><i style={{ width: `${state.pct}%` }} /></div>}
+      {state.error ? <div className="h-update__sub h-update__sub--error">{state.error}</div>
+        : !state.busy && !state.done && <div className="h-update__sub">New build {info.latest?.sha} · {(info.size / 1048576).toFixed(1)} MB</div>}
+    </div>
+  );
+}
+
+function UpdatesView({ demo }) {
+  const { info, state } = useUpdater();
+  const check = useCallback(() => checkForUpdate(), []);
+  useEffect(() => { if (!demo) check(); }, [demo, check]);
+  const install = installUpdate;
+  const restart = restartForUpdate;
 
   return (
     <div className="h-page">
@@ -736,6 +775,8 @@ function App({ demo, conn }) {
             </button>
           ))}
         </nav>
+
+        <UpdateButton demo={demo} />
       </aside>
 
       <main className="h-main">

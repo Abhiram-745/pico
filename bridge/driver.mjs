@@ -84,8 +84,9 @@ import { makeMilestones } from './milestones.mjs';
 import { windowState } from './judge.mjs';
 import { heavyImages, HEAVY_IMAGE_WIDTH } from './llm.mjs';
 import { buildMarks, describeMarks, drawMarks, resolveMarks } from './marks.mjs';
-import { refine, pickShape } from './zoom.mjs';
+import { refine, pickShape, shapesIn } from './zoom.mjs';
 import { planForm } from './formfill.mjs';
+import { planClick, planDrag, planShapeClick, matchShape, dragLanded, valueOnScreen } from './quickplan.mjs';
 import { upgradeDropdownClick } from './select.mjs';
 import { checkMilestoneEvidence } from './milestone-evidence.mjs';
 
@@ -1428,6 +1429,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   let proven = null;          // { at } — the window proved the job done after this many actions
   let formTried = false;      // the task has been matched against the window's fields once
   let lastDrag = null;        // { item, place } — the marks of the last drag, for the check after it
+  let quickCheck = null;      // where a drag planned from the task should have left things (quickplan.mjs)
   let pictureScale = 1;       // shot pixels per pixel of the picture the model saw
   let semanticChange = null;
   const woken = new Set();
@@ -2018,8 +2020,11 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
          milestone sent the run back to a vision call to find that out. */
       const whole = { do: brief, doneWhen: brief };
       let goalNow = whole;
+      /* A drag planned from the task knows exactly where the thing should be
+         now; the window's rectangles say whether it is, with nothing asked. */
+      const landed = (snap) => (quickCheck && snap ? dragLanded(quickCheck, buildMarks(snap, { within: workWindow.rect })) : null);
       // Both questions at once: a third of a second, not two thirds.
-      const [wholeProof, stageProof] = await Promise.all([
+      const [wholeProof, stageProof] = landed(snapshot) === true ? [{ confirmed: true, by: 'layout' }, null] : await Promise.all([
         checkMilestoneEvidence(whole, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot }),
         currentMilestone && currentMilestone.doneWhen !== brief
           ? checkMilestoneEvidence(currentMilestone, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot })
@@ -2036,7 +2041,8 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         await computer.wait(300);
         goalNow = whole;
         const again = dragFact(await Promise.resolve().then(() => sense.look?.(workWindow.hwnd, 160)).catch(() => null));
-        proof = await checkMilestoneEvidence(whole, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot: again });
+        proof = landed(again) === true ? { confirmed: true, by: 'layout' }
+          : await checkMilestoneEvidence(whole, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot: again });
       }
       if (proof?.confirmed === true && goalNow === whole && milestoneMode) {
         // The job is done, so every stage of it is.
@@ -2096,10 +2102,17 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         ?? await Promise.resolve().then(() => sense.look?.(workWindow.hwnd, 120)).catch(() => null);
       // The fast path below reads the same window this turn: it gets this read, not another.
       if (snapshot) pendingElements = Promise.resolve(snapshot);
+      /* And what comes after a planned action is compared with it, word for
+         word, rather than by a screenshot: "Clicked: green circle" under a
+         canvas is too few pixels for a picture to call it a change. */
+      if (snapshot?.elements) fastSnapshot = snapshot;
       let form = snapshot?.elements ? planForm(task, snapshot.elements) : null;
       if (form?.some((st) => st.needsValue)) {
         const says = [...(snapshot.says ?? []), ...(snapshot.texts ?? []).map((t) => t.name)];
         for (const st of form.filter((x) => x.needsValue)) {
+          // Written on the page once, as a label and its value: read, not asked.
+          st.text = valueOnScreen(task, says);
+          if (st.text) { st.why = `Typing ${st.text} into ${st.el.name}`; continue; }
           st.text = await fieldText(llm, { goal: task, field: { label: st.el.name, role: st.el.type, value: st.el.value ?? '' }, window: frontTitle, says }).catch(() => null);
           if (st.text) st.why = `Typing ${st.text} into ${st.el.name}`;
         }
@@ -2120,6 +2133,24 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
           choice = { call: { name: 'act', args: { action: first.action, mark: first.markRef.n, text: first.text, why: first.why, replaceValue: first.replaceValue } }, text: '', queued: true };
           debug(`[form] planned from the task, no model: ${items.map((it) => `${it.action} "${it.markRef.name}"${it.text ? ` = ${it.text}` : ''}`).join(', ')}`);
           onAudit('form_planned', { metadata: { steps: items.length } });
+        }
+      }
+      /* Not a form: one click or one drag the task names outright — see
+         quickplan.mjs. The whole task has to be explained by it, or the
+         model decides as usual. */
+      if (!choice && snapshot) {
+        const within = Array.isArray(workWindow.rect) && workWindow.rect.length === 4 ? workWindow.rect : null;
+        const now = buildMarks(snapshot, { within });
+        const q = [planDrag, planClick, planShapeClick].map((fn) => fn(task, now)).find((p) => p?.action);
+        if (q) {
+          turnMarks = now;
+          quickCheck = q.check ?? null;
+          const args = { action: q.action, mark: q.mark, why: q.why };
+          if (q.to_mark) args.to_mark = q.to_mark;
+          if (q.target) args.target = q.target;
+          choice = { call: { name: 'act', args }, text: '', queued: true };
+          debug(`[quick] planned from the task, no model: ${q.action} [${q.mark}]${q.to_mark ? ` -> [${q.to_mark}]` : ''} — ${q.why}`);
+          onAudit('quick_planned', { metadata: { action: q.action } });
         }
       }
     }
@@ -2889,9 +2920,10 @@ Do only that step.`,
        suggestions. That is the shape of it here too: the old numbers —
        140/360/100 — were a guess made before anything was measured, and on
        a run of twenty actions they are four seconds of watching nothing. */
-    if (!result?.frame) {
+    const batchGoesOn = choice.queued && queued.length > 0 && result?.ok !== false && !result?.stale;
+    if (!result?.frame && !(batchGoesOn && action.type !== 'type')) {
       await computer.wait(
-        action.type === 'type' ? 200            // suggestions, if the field has any
+        action.type === 'type' ? (batchGoesOn ? 60 : 200)   // suggestions, if the field has any
           : OPENING.has(action.type) ? 300      // a window has to exist before it can be read
             : 50,
       );
@@ -3056,7 +3088,7 @@ Do only that step.`,
       && (changed || !POINTER.has(action.type))
       && (!seenFront?.hwnd || !workWindow?.hwnd || String(seenFront.hwnd) === String(workWindow.hwnd));
     if (choice.queued && !queued.length && flowOk) batchEnded = true;
-    if (action.type === 'drag' && action.markedAs && action.toMarkedAs) lastDrag = { item: action.markedAs, place: action.toMarkedAs };
+    if (action.type === 'drag' && action.markedAs && action.toMarkedAs?.kind === 'place') lastDrag = { item: action.markedAs, place: action.toMarkedAs };
     if (!choice.queued && !choice.fast && !queued.length && flowOk && step.kind === 'live' && POINTER.has(action.type) && changed) {
       // A single planned action that changed the page is also worth one cheap check.
       batchEnded = true;
@@ -3338,6 +3370,15 @@ export async function execute({ computer, sense, shot, action, openThing, switch
       const bx = Math.max(o.x, Math.round(picture[0]));
       const by = Math.max(o.y, Math.round(picture[1]));
       const box = { x: bx, y: by, width: Math.min(o.x + shot.physical.width - bx, Math.round(picture[2])), height: Math.min(o.y + shot.physical.height - by, Math.round(picture[3])) };
+      /* "The green circle" is a colour and an outline, and both can be
+         measured: one shape that fits is the answer with no model asked. */
+      const mine = matchShape(described || action.why, shapesIn(shot.raw, box));
+      if (mine) {
+        const x = mine.rect[0] + (mine.rect[2] / 2);
+        const y = mine.rect[1] + (mine.rect[3] / 2);
+        if (process.env.PICO_DEBUG) console.log(`[zoom] "${described}" measured in the picture, no model -> ${Math.round(x)},${Math.round(y)}`);
+        return { x, y, moved: Math.hypot(x - physical.x, y - physical.y), how: 'shape', landed: null, window: null, mouse: shot.physToScreen(x, y) };
+      }
       let z = await pickShape(llm, { shot, box, target: described || action.why, physical });
       if (z && process.env.PICO_DEBUG) console.log(`[zoom] picked shape of ${z.shapes} for "${described}"`);
       if (!z) z = await refine(llm, { shot, physical, target: described || action.why, box: picture });

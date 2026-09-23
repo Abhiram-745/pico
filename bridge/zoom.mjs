@@ -131,10 +131,13 @@ export function shapesIn(raw, box, { step = 3, maxShapes = 60 } = {}) {
     let head = 0; let tail = 0;
     queue[tail++] = start; seen[start] = 1;
     let x0 = gw; let y0 = gh; let x1 = 0; let y1 = 0; let area = 0;
+    let sr = 0; let sg = 0; let sb = 0;
     while (head < tail) {
       const c = queue[head++];
       const cx = c % gw; const cy = (c - cx) / gw;
       area += 1;
+      const [pr, pg, pb] = at(cx, cy);
+      sr += pr; sg += pg; sb += pb;
       if (cx < x0) x0 = cx; if (cy < y0) y0 = cy; if (cx > x1) x1 = cx; if (cy > y1) y1 = cy;
       for (const n of [c - 1, c + 1, c - gw, c + gw]) {
         if (n < 0 || n >= mask.length || seen[n] || !mask[n]) continue;
@@ -146,7 +149,12 @@ export function shapesIn(raw, box, { step = 3, maxShapes = 60 } = {}) {
     const h = (y1 - y0 + 1) * step;
     // Specks and anything nearly the size of the whole picture are not things to click.
     if (area < 6 || w > box.width * 0.8 || h > box.height * 0.8) continue;
-    shapes.push({ rect: [box.x + (x0 * step), box.y + (y0 * step), w, h], area });
+    /* Its colour, and how much of its own box it fills — a square all of
+       it, a circle about three quarters, a triangle half — which is enough
+       to name "the green circle" without showing anyone the picture. */
+    shapes.push({ rect: [box.x + (x0 * step), box.y + (y0 * step), w, h], area,
+      colour: [Math.round(sr / area), Math.round(sg / area), Math.round(sb / area)],
+      fill: area / ((x1 - x0 + 1) * (y1 - y0 + 1)) });
   }
   return shapes.sort((a, b) => b.area - a.area).slice(0, maxShapes);
 }

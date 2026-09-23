@@ -532,8 +532,10 @@ console.log('opening from the words of the task');
      the task costs nothing. Everything after it is a decision, and decisions
      cost turns. */
   check('the address in the task opened without a turn being spent',
-    (events.plans.at(-1)?.steps ?? []).some((st) => /reports\.example\.com/i.test(st.do)),
-    JSON.stringify(events.plans.at(-1)?.steps));
+    /* Any timeline it showed: the planned one arrives in the background and
+       can replace the list after the address has already been opened. */
+    events.plans.some((p) => (p?.steps ?? []).some((st) => /reports\.example\.com/i.test(st.do))),
+    JSON.stringify(events.plans.map((p) => p?.steps)));
   check('and the search happened after it',
     computer.state.typed.some((t) => t.text === 'ssuazo'), JSON.stringify(computer.state.typed));
 }

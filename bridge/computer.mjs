@@ -141,6 +141,22 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
   mouse.config.autoDelayMs = 1;
   keyboard.config.autoDelayMs = 0;
 
+  /* Keys pressed and released through nut-js's provider directly: its own
+     pressKey and releaseKey each wait a setTimeout first, which on Windows
+     is a 15.6ms tick even at zero — a chord was two of them, and typing a
+     dropdown's option a key at a time was a tick per letter. */
+  const keysDirect = (() => { try { return keyboard.providerRegistry?.getKeyboard?.() ?? null; } catch { return null; } })();
+  const pressKey = (...k) => (keysDirect ? keysDirect.pressKey(...k) : keyboard.pressKey(...k));
+  const releaseKey = (...k) => (keysDirect ? keysDirect.releaseKey(...k) : keyboard.releaseKey(...k));
+  // The same for the buttons: the pauses around a click are asked for below, on purpose.
+  const buttonsDirect = (() => { try { return mouse.providerRegistry?.getMouse?.() ?? null; } catch { return null; } })();
+  const buttons = {
+    click: (b) => (buttonsDirect ? buttonsDirect.click(b) : mouse.click(b)),
+    doubleClick: (b) => (buttonsDirect ? buttonsDirect.doubleClick(b) : mouse.doubleClick(b)),
+    press: (b) => (buttonsDirect ? buttonsDirect.pressButton(b) : mouse.pressButton(b)),
+    release: (b) => (buttonsDirect ? buttonsDirect.releaseButton(b) : mouse.releaseButton(b)),
+  };
+
   const KEY_MAP = buildKeyMap(Key);
   const mapKey = (name) => KEY_MAP[String(name).toUpperCase().trim()] ?? null;
   const BUTTON = { left: Button.LEFT, right: Button.RIGHT, middle: Button.MIDDLE };
@@ -151,6 +167,7 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
   const clampX = (x) => Math.round(Math.max(reach.minX, Math.min(reach.maxX, x)));
   const clampY = (y) => Math.round(Math.max(reach.minY, Math.min(reach.maxY, y)));
 
+  let capsRead = null;        // { at, caps } — Caps Lock, read at most every few seconds
   // Where Halo last put the pointer, for when Windows cannot be asked.
   let at = { x: Math.round((bounds.x ?? 0) + (bounds.width / 2)), y: Math.round((bounds.y ?? 0) + (bounds.height / 2)) };
 
@@ -312,7 +329,7 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
     async click(x, y, button = 'left') {
       if (Number.isFinite(x)) await glide(x, y);
       await sleep(45);
-      await mouse.click(BUTTON[button] ?? Button.LEFT);
+      await buttons.click(BUTTON[button] ?? Button.LEFT);
       await sleep(25);                       // and let it register before moving on
     },
 
@@ -321,11 +338,11 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       if (Number.isFinite(x)) await glide(x, y);
       await sleep(45);
       const shift = mapKey('SHIFT');
-      if (shift !== null) await keyboard.pressKey(shift);
+      if (shift !== null) await pressKey(shift);
       try {
-        await mouse.click(Button.LEFT);
+        await buttons.click(Button.LEFT);
       } finally {
-        if (shift !== null) await keyboard.releaseKey(shift).catch?.(() => {});
+        if (shift !== null) await Promise.resolve().then(() => releaseKey(shift)).catch(() => {});
       }
       await sleep(25);
     },
@@ -333,7 +350,7 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
     async doubleClick(x, y) {
       if (Number.isFinite(x)) await glide(x, y);
       await sleep(45);
-      await mouse.doubleClick(Button.LEFT);
+      await buttons.doubleClick(Button.LEFT);
       await sleep(25);
     },
 
@@ -349,55 +366,47 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
     async drag(path = []) {
       if (path.length < 2) return;
       await glide(path[0].x, path[0].y);
-      await sleep(120);                      // let the target see the pointer arrive (hover state)
+      await sleep(50);                       // let the target see the pointer arrive (hover state)
 
-      await mouse.pressButton(Button.LEFT);
-      await sleep(120);                      // and see the button go down
+      await buttons.press(Button.LEFT);
+      await sleep(70);                       // and see the button go down
 
-      /* Past the system drag threshold in two small moves rather than one
-         jump: a page's pointer handlers and Windows' own drag detection both
-         want to see movement while the button is held, and a single 8px
-         jump was sometimes read as a click that wandered. */
+      /* Past the system drag threshold first, slowly and in a straight line:
+         a page's pointer handlers and Windows' own drag detection both want
+         to see movement while the button is held, and a jump was sometimes
+         read as a click that wandered. Traced, like every other move, so it
+         is a movement and not two hops. */
       const next = path[1];
       const dist0 = Math.hypot(next.x - at.x, next.y - at.y) || 1;
       const ux = (next.x - at.x) / dist0;
       const uy = (next.y - at.y) / dist0;
       const start = { ...at };
-      await setPointer(start.x + (ux * 5), start.y + (uy * 5));
-      await sleep(35);
-      await setPointer(start.x + (ux * 12), start.y + (uy * 12));
-      await sleep(60);
+      await trace(60, (t) => ({ x: start.x + (ux * 12 * t), y: start.y + (uy * 12 * t) }));
 
       try {
         for (const p of path.slice(1)) {
           const d = Math.hypot(p.x - at.x, p.y - at.y);
-          /* Most of the way at a hand's pace, then a pause just short of the
-             target, then the rest: web drag-and-drop decides where a drop
-             goes from the last few moves it saw, and it needs a beat to
-             light the target up before anything lets go over it. */
-          const near = { x: p.x - ((p.x - at.x) * 0.12), y: p.y - ((p.y - at.y) * 0.12) };
-          await glide(near.x, near.y, Math.max(260, Math.min(700, d * 0.9)));
-          await sleep(70);
-          await glide(p.x, p.y, 120);
+          /* One reach, braking into the target the way a hand does. The
+             minimum-jerk curve already spends its last quarter covering the
+             last tenth of the distance, which is the run of small moves a
+             web drag-and-drop reads the drop from — the stop just short of
+             the target that used to be here made the pointer stutter. */
+          await glide(p.x, p.y, Math.max(220, Math.min(450, 120 + (d * 0.4))));
         }
-        /* Hover, and wiggle a few pixels: HTML5 drag-and-drop only accepts a
+        /* A small circle over the target: HTML5 drag-and-drop only accepts a
            drop where it has just fired dragover, and a pointer that arrives
            and stops dead is sometimes let go before that has happened. */
         const end = { ...at };
-        await sleep(120);
-        await setPointer(end.x + 3, end.y + 2);
-        await sleep(45);
-        await setPointer(end.x - 2, end.y - 1);
-        await sleep(45);
+        await trace(100, (t) => ({ x: end.x + (3 * Math.sin(t * Math.PI * 2)), y: end.y + (2 * (1 - Math.cos(t * Math.PI * 2))) }));
         await setPointer(end.x, end.y);
-        await sleep(140);                    // arrive, then let go — not both at once
+        await sleep(90);                     // arrive, then let go — not both at once
       } finally {
         // Never leave the button down. A run that failed mid-drag would
         // otherwise hand the desk back with the mouse held, and every
         // subsequent click would be a selection.
-        await mouse.releaseButton(Button.LEFT);
+        await buttons.release(Button.LEFT);
       }
-      await sleep(60);
+      await sleep(40);
     },
 
     /**
@@ -467,9 +476,25 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
            leaves every later line shouting. Measured: "plain ascii line"
            arrived as "PLAIN ASCII LINE". Checked before typing, and put
            back the way it was found. */
-        const locked = (await sense?.keystate?.().catch(() => null))?.caps === true;
+        /* Asked once every few seconds, not before every field: in a form
+           that was a round trip to the helper per box, for a key nobody
+           touches mid-task. Whatever Halo turns off it turns back on. */
+        if (!capsRead || Date.now() - capsRead.at > 8000) {
+          capsRead = { at: Date.now(), caps: (await sense?.keystate?.().catch(() => null))?.caps === true };
+        }
+        const locked = capsRead.caps;
         if (locked) { await surface.keypress(['capslock']); await sleep(30); }
-        await keyboard.type(body);
+        /* nut-js types a character at a time with a setTimeout before each,
+           and on Windows even setTimeout(0) waits for the 15.6ms tick:
+           measured at 13.7ms a character, a quarter of a second for "desktop
+           agents" spent waiting on nothing. The call it makes for each
+           character is this one; made directly, the next character goes
+           as soon as the last one has. */
+        if (libnut?.typeString) {
+          for (const ch of body) { libnut.typeString(ch); await tick(); }
+        } else {
+          await keyboard.type(body);
+        }
         if (locked) { await sleep(30); await surface.keypress(['capslock']); }
         return;
       }
@@ -518,8 +543,8 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
     async keypress(keys = []) {
       const mapped = keys.map(mapKey).filter((k) => k !== null);
       if (!mapped.length) return;
-      await keyboard.pressKey(...mapped);
-      await keyboard.releaseKey(...mapped);
+      await pressKey(...mapped);
+      await releaseKey(...mapped);
     },
 
     /**
@@ -537,19 +562,19 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       const taps = press.map(mapKey).filter((k) => k !== null);
       if (!taps.length) return;
       const rounds = Math.min(Math.max(Math.round(times) || 1, 1), 50);
-      if (held.length) await keyboard.pressKey(...held);
+      if (held.length) await pressKey(...held);
       try {
         for (let i = 0; i < rounds; i++) {
           for (const k of taps) {
-            await keyboard.pressKey(k);
-            await keyboard.releaseKey(k);
+            await pressKey(k);
+            await releaseKey(k);
             await sleep(12);        // a real key is not instantaneous
           }
         }
       } finally {
         // Whatever happened, the modifiers must not be left down: a stuck
         // Ctrl turns the person's next keystroke into a shortcut.
-        if (held.length) await keyboard.releaseKey(...held).catch?.(() => {});
+        if (held.length) await Promise.resolve().then(() => releaseKey(...held)).catch(() => {});
       }
     },
 

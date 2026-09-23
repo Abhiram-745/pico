@@ -371,3 +371,10 @@ body {
   background: linear-gradient(180deg, #3a3d41, #2a2d30);
   box-shadow: 0 1px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .06);
 }
+
+/* The update button at the foot of the sidebar: only there when a newer build is. */
+.h-update { margin-top: auto; padding: 10px 4px 2px; display: grid; gap: 6px; }
+.h-update__btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 12px; border-radius: 999px; font-weight: 600; }
+.h-update__meter { margin: 0 6px; }
+.h-update__sub { font-size: 11.5px; color: var(--h-muted, #8a8f98); text-align: center; }
+.h-update__sub--error { color: var(--h-deny, #e5484d); }

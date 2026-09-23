@@ -97,7 +97,7 @@ export function targetStillMatches(expected, hit) {
 /** Compare only observed UI state, not unrelated animation pixels. */
 export function observationKey(snapshot) {
   if (!snapshot?.elements) return null;
-  return JSON.stringify({ says: snapshot.says || [], elements: snapshot.elements.map(el => ({
+  return JSON.stringify({ says: snapshot.says || [], texts: (snapshot.texts || []).map((t) => t.name), elements: snapshot.elements.map(el => ({
     id: el.runtimeId || el.id, name: el.name, type: el.type, rect: el.rect,
     value: el.value, checked: el.checked, selected: el.selected, enabled: el.enabled, offscreen: el.offscreen,
   })) });
