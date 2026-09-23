@@ -358,8 +358,33 @@ export class NotchWindow {
 
     this.proc.on('exit', () => { this.proc = null; this.hwnd = null; this.placed = null; });
     this.proc.unref();
+    this.watchdog();
 
     return this.waitForWindow(8000);
+  }
+
+  /* The island outlives a bridge that is killed outright — Task Manager, a
+     crash, the app closed by force — because nothing in this process runs
+     then. It was found that way: a black box at the top of the screen, its
+     size frozen mid-change, taking clicks nobody answered. The page's own
+     window.close() is refused by Chrome for a window it opened itself.
+
+     So a small watcher is left behind with it: it waits for this bridge to
+     end, gives a restart a few seconds, then closes the island this bridge
+     opened — matched by its token, so a newer bridge's island is never
+     touched. */
+  watchdog() {
+    if (process.platform !== 'win32' || !this.token) return;
+    const token = String(this.token).replace(/[^A-Za-z0-9_-]/g, '');
+    const script = `try { Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue } catch {}; Start-Sleep -Seconds 4; `
+      + "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='msedge.exe'\" | "
+      + `Where-Object { $_.CommandLine -like '*k=${token}*' } | `
+      + 'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }';
+    try {
+      const w = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        { detached: true, stdio: 'ignore', windowsHide: true });
+      w.unref();
+    } catch { /* the page's own timeout is what is left */ }
   }
 
   async waitForWindow(timeout) {

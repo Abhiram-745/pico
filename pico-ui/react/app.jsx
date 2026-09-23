@@ -582,6 +582,11 @@ async function restartForUpdate() {
   try { await fetch('/update/restart', { method: 'POST' }); } catch { /* the server goes away mid-request by design */ }
   setTimeout(() => location.reload(), 4000);
 }
+/* A release is a file of a size; a git checkout is a number of commits. */
+const whatIsNew = (info) => (info?.checkout
+  ? `${info.latest?.sha} · ${info.notes || 'new changes on main'}`
+  : `New build ${info?.latest?.sha} · ${((info?.size ?? 0) / 1048576).toFixed(1)} MB`);
+
 function useUpdater() {
   const [, tick] = useState({});
   useEffect(() => { updater.subs.add(tick); return () => { updater.subs.delete(tick); }; }, []);
@@ -609,7 +614,7 @@ function UpdateButton({ demo }) {
       </MetalButton>
       {state.busy && state.pct > 0 && <div className="h-meter h-update__meter"><i style={{ width: `${state.pct}%` }} /></div>}
       {state.error ? <div className="h-update__sub h-update__sub--error">{state.error}</div>
-        : !state.busy && !state.done && <div className="h-update__sub">New build {info.latest?.sha} · {(info.size / 1048576).toFixed(1)} MB</div>}
+        : !state.busy && !state.done && <div className="h-update__sub">{whatIsNew(info)}</div>}
     </div>
   );
 }
@@ -633,7 +638,7 @@ function UpdatesView({ demo }) {
                 {state.done ? 'Update installed' : info?.available ? 'A new build is ready' : state.error ? 'Could not check for updates' : 'Halo is up to date'}
               </div>
               <div className="h-card__sub">
-                {state.error || state.msg || (info?.available ? `${info.latest.sha} · ${(info.size / 1048576).toFixed(1)} MB` : `Build ${info?.current?.sha ?? '—'}`)}
+                {state.error || state.msg || (info?.available ? whatIsNew(info) : `Build ${info?.current?.sha ?? '—'}${info?.current?.dirty ? ' · with local changes' : ''}`)}
               </div>
               {state.busy && state.pct > 0 && <div className="h-meter"><i style={{ width: `${state.pct}%` }} /></div>}
             </div>

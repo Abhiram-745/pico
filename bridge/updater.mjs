@@ -11,7 +11,8 @@
    half-written file can never leave a broken install behind.
    ========================================================================== */
 
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, readFile, writeFile, cp, stat } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -29,13 +30,84 @@ const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 /** Files and folders an update must never overwrite. */
 const PRESERVE = new Set(['.env', 'settings.json', 'audit.jsonl']);
 
+/* --- a copy that is a git checkout ------------------------------------------
+   Run from a clone, a build.json is whatever was last stamped into the
+   folder — measured here: a checkout at a2ca393 still calling itself
+   2fce8cf, a fortnight stale, so the app said it was out of date and offered
+   an update that would have unpacked a release zip over the working tree
+   and every uncommitted change in it. A checkout is what git says it is,
+   and it is brought up to date the way git brings things up to date. */
+const IS_CHECKOUT = existsSync(join(ROOT, '.git'));
+
+function git(args, timeout = 30_000) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd: ROOT, windowsHide: true, timeout }, (err, stdout, stderr) => {
+      if (err) reject(new Error(String(stderr || err.message).trim().split('\n').pop()));
+      else resolve(String(stdout).trim());
+    });
+  });
+}
+
 /** Read the build stamp shipped with this copy. */
 export async function localBuild() {
+  if (IS_CHECKOUT) {
+    try {
+      const [sha, date, changes] = await Promise.all([
+        git(['rev-parse', '--short=7', 'HEAD']),
+        git(['log', '-1', '--format=%cs']),
+        git(['status', '--porcelain', '--untracked-files=no']),
+      ]);
+      return { sha, date, tag: 'checkout', checkout: true, dirty: Boolean(changes) };
+    } catch { /* no git on the PATH: the stamp is the best there is */ }
+  }
   try {
     return JSON.parse(await readFile(BUILD_FILE, 'utf8'));
   } catch {
     return { sha: 'dev', date: null, tag: 'dev' };
   }
+}
+
+/* The repository is private, and GitHub answers a private repository's
+   release with 404 to anyone it does not know — which the app reported as
+   "could not reach GitHub" forever. On a machine signed in to the GitHub CLI
+   the same sign-in is used, and only ever sent to api.github.com. Asked once
+   per run. */
+let tokenAsked = null;
+function githubToken() {
+  if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) return Promise.resolve(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
+  tokenAsked ??= new Promise((resolve) => {
+    execFile('gh', ['auth', 'token'], { windowsHide: true, timeout: 8000 }, (err, stdout) => {
+      const t = String(stdout ?? '').trim();
+      resolve(!err && /^[A-Za-z0-9_]{20,}$/.test(t) ? t : null);
+    });
+  });
+  return tokenAsked;
+}
+
+async function githubHeaders(accept = 'application/vnd.github+json') {
+  const token = await githubToken();
+  return { Accept: accept, 'User-Agent': 'halo-updater', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+}
+
+/** A checkout: how far behind main it is, fetched with the person's own git. */
+async function checkCheckout(current) {
+  await git(['fetch', '--quiet', 'origin', 'main'], 60_000);
+  const [latest, behind, published] = await Promise.all([
+    git(['rev-parse', '--short=7', 'origin/main']),
+    git(['rev-list', '--count', 'HEAD..origin/main']),
+    git(['log', '-1', '--format=%cI', 'origin/main']),
+  ]);
+  const n = Number(behind) || 0;
+  return {
+    current,
+    latest: { sha: latest, tag: 'main', published },
+    available: n > 0,
+    checkout: true,
+    behind: n,
+    url: null,
+    size: 0,
+    notes: n ? `${n} new change${n === 1 ? '' : 's'} on main` : '',
+  };
 }
 
 /**
@@ -44,11 +116,15 @@ export async function localBuild() {
  */
 export async function check() {
   const current = await localBuild();
+  if (current.checkout) return checkCheckout(current);
 
   const res = await fetch(RELEASE_API, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'halo-updater' },
+    headers: await githubHeaders(),
     signal: AbortSignal.timeout(20_000),
   });
+  if (res.status === 404) {
+    throw new Error('GitHub did not show the release: the repository is private. Sign in with the GitHub CLI (gh auth login) on this computer, or make the repository public.');
+  }
   if (!res.ok) throw new Error(`Could not reach GitHub (HTTP ${res.status}).`);
   const rel = await res.json();
 
@@ -64,6 +140,7 @@ export async function check() {
     latest: { sha: latestSha, tag: rel.tag_name, published: rel.published_at },
     available: Boolean(latestSha) && latestSha !== current.sha,
     url: zip.browser_download_url,
+    api: zip.url,
     size: zip.size,
     notes: rel.body || '',
   };
@@ -96,13 +173,36 @@ export async function install(onProgress = () => {}) {
   const info = await check();
   if (!info.available) return { installed: false, reason: 'Already up to date.' };
 
+  /* A checkout moves forward with git, which stops rather than overwrite a
+     file changed here and not yet committed — work in progress survives. */
+  if (info.checkout) {
+    onProgress('downloading', 10);
+    const before = await git(['rev-parse', 'HEAD']);
+    try {
+      await git(['pull', '--ff-only', '--quiet', 'origin', 'main'], 120_000);
+    } catch (err) {
+      throw new Error(`This copy is a git checkout and git would not update it (${err.message}). Commit or put aside the local changes, then try again.`);
+    }
+    const changed = await git(['diff', '--name-only', before, 'HEAD']).catch(() => '');
+    if (/(^|\n)package(-lock)?\.json$/m.test(changed)) {
+      onProgress('dependencies');
+      await installDependencies();
+    }
+    onProgress('done', 100);
+    return { installed: true, from: info.current.sha, to: info.latest.sha };
+  }
+
   const work = await mkdtemp(join(tmpdir(), 'halo-update-'));
   const zipPath = join(work, 'update.zip');
 
   try {
     onProgress('downloading', 0);
-    const res = await fetch(info.url, {
-      headers: { 'User-Agent': 'halo-updater' },
+    /* Signed in, the file comes through the API, which is the only way to
+       a private repository's download; GitHub hands back a signed link to
+       the file itself and the sign-in does not travel with it. */
+    const signedIn = Boolean(await githubToken()) && info.api;
+    const res = await fetch(signedIn ? info.api : info.url, {
+      headers: signedIn ? await githubHeaders('application/octet-stream') : { 'User-Agent': 'halo-updater' },
       signal: AbortSignal.timeout(180_000),
     });
     if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}).`);
