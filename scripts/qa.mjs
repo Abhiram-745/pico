@@ -20,6 +20,9 @@
    Run:   node scripts/qa.mjs                    every page, once
           node scripts/qa.mjs sort kanban -n 3   those pages, three times each
           node scripts/qa.mjs --label baseline   name the results file
+          node scripts/qa.mjs each one notes     the list-repeat cases and the notes page,
+                                                  by name only — see EXTRA below for why
+                                                  they're not in ALL
 
    Results: one JSON line per run in artifacts/qa/<label>.jsonl, and a table.
    ========================================================================== */
@@ -34,7 +37,7 @@ import { performance } from 'node:perf_hooks';
 import { LLM } from '../bridge/llm.mjs';
 import { Sense } from '../bridge/sense.mjs';
 import { loadComputer } from '../bridge/computer.mjs';
-import { runTask } from '../bridge/driver.mjs';
+import { runJob } from '../bridge/job.mjs';
 import { findBrowser } from '../bridge/notch-window.mjs';
 import { chooseMonitor } from '../bridge/screen.mjs';
 import { createRequire } from 'node:module';
@@ -42,9 +45,24 @@ import { createRequire } from 'node:module';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PAGES_DIR = join(ROOT, 'pico-ui', 'fixtures', 'qa');
 const ALL = ['form', 'icons', 'slider', 'copy', 'sort', 'kanban', 'canvas'];
+/* Cases that share chat.html, picked by a `?case=` query string rather than
+   a file of their own. Left out of ALL — and so out of a bare
+   `node scripts/qa.mjs` run — because "each" waits out four separate image
+   generations and can take minutes; folding it into the everyday smoke test
+   would silently turn a few seconds into a coffee break. Name them on the
+   command line to run them, exactly like any other page.
+
+   `notes` is here too, though it is quick: it is new, has no baseline in
+   the results files yet, and adding it to ALL would make every earlier run
+   of the default set incomparable with the next. */
+const EXTRA = { each: 'chat.html?case=each', one: 'chat.html?case=one', notes: 'notes.html' };
+const FILE_OF = { ...Object.fromEntries(ALL.map((p) => [p, `${p}.html`])), ...EXTRA };
 const PORT = 4190;
 const DEBUG_PORT = 9333;
 const TASK_LIMIT_MS = 150_000;
+/* "each" pastes four prompts and waits out a simulated image generation
+   after every one of them — several times the usual budget for one page. */
+const TASK_LIMIT_OVERRIDE = { each: 240_000 };
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -55,7 +73,9 @@ const repeat = Math.max(1, Number(opt('n', 1)) || 1);
 const label = opt('label', new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-'));
 const skip = new Set([opt('n'), opt('label'), opt('display')].filter(Boolean));
 const wanted = argv.filter((a) => !a.startsWith('-') && !skip.has(a));
-const pages = wanted.length ? wanted.filter((p) => ALL.includes(p)) : ALL;
+// Named explicitly, a page can be anything in FILE_OF — ALL or EXTRA alike.
+// With nothing named, it's the default set only: EXTRA never runs by accident.
+const pages = wanted.length ? wanted.filter((p) => FILE_OF[p]) : ALL;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -233,13 +253,15 @@ for (let round = 1; round <= repeat; round++) {
       ws.close(); server.close(); sense?.stop();
       process.exit(2);
     }
-    await cdp('Page.navigate', { url: `http://127.0.0.1:${PORT}/${page}.html` });
+    await cdp('Page.navigate', { url: `http://127.0.0.1:${PORT}/${FILE_OF[page]}` });
     await sleep(900);
     /* A title no other window has, so the window raised is this tab's. */
     const tag = Math.random().toString(36).slice(2, 6);
     await evaluate(`document.title = document.title + ' #${tag}'`);
     const title = await evaluate('document.title');
     const task = await evaluate('qa.task');
+    // Read the same way as qa.task: whatever the page declares, or none at all.
+    const attachments = (await evaluate('qa.attachments').catch(() => null)) || [];
     if (!(await raise(title))) {
       console.log(`SKIP  ${page.padEnd(7)} the QA window would not come to the front — not measured`);
       continue;
@@ -251,13 +273,14 @@ for (let round = 1; round <= repeat; round++) {
     taskStart = t0;
     let firstAction = null;
     let stopped = false;
-    const timer = setTimeout(() => { stopped = true; }, TASK_LIMIT_MS);
+    const timer = setTimeout(() => { stopped = true; }, TASK_LIMIT_OVERRIDE[page] ?? TASK_LIMIT_MS);
 
     let outcome = null;
     let error = null;
     try {
-      outcome = await runTask({
+      outcome = await runJob({
         task,
+        attachments,
         computer,
         llm,
         maxTurns: 24,

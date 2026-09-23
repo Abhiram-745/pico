@@ -41,6 +41,23 @@ function titleFor(messages) {
 const clean = (m) => {
   const out = { id: String(m.id), from: m.from, text: String(m.text ?? ''), done: m.done !== false, at: m.at ?? Date.now() };
   if (m.memoryId) out.memoryId = String(m.memoryId);
+  /* What was attached, as the thread shows it — a name, a size, a small
+     thumbnail or the first lines — so a chat reopened later still shows the
+     chip a message was sent with, and a message that was only a picture is
+     not an empty bubble. Only that shape (attachmentEcho in
+     attachments.mjs): the picture itself and the whole of a pasted text went
+     to the model once and are never written down. */
+  if (Array.isArray(m.attachments) && m.attachments.length) {
+    out.attachments = m.attachments.slice(0, 6).filter((a) => a && typeof a === 'object').map((a) => {
+      const kept = { id: String(a.id ?? ''), name: String(a.name ?? '').slice(0, 120), kind: a.kind === 'image' ? 'image' : 'text', mime: String(a.mime ?? ''), size: Number(a.size) || 0 };
+      if (kept.kind === 'image' && typeof a.thumb === 'string' && a.thumb.startsWith('data:image/') && a.thumb.length <= 60 * 1024) kept.thumb = a.thumb;
+      if (kept.kind === 'text') {
+        if (Number.isFinite(a.chars)) kept.chars = a.chars;
+        if (typeof a.preview === 'string') kept.preview = a.preview.slice(0, 240);
+      }
+      return kept;
+    });
+  }
   return out;
 };
 

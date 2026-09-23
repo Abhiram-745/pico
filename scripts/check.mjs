@@ -194,7 +194,7 @@ for (const f of files) {
    This is the one behaviour where being wrong is immediately visible: a
    misrouted greeting means Halo takes over the desktop to type "hello".
    -------------------------------------------------------------------------- */
-for (const suite of ['test-intent.mjs', 'test-apps.mjs', 'test-shortcuts.mjs', 'test-aim.mjs', 'test-scroll.mjs', 'test-driver.mjs', 'test-milestones.mjs', 'test-select-option.mjs', 'test-memory.mjs', 'test-voice-fastpath.mjs', 'test-microphone.mjs', 'test-voice-session.mjs', 'test-marks.mjs', 'test-judge.mjs', 'test-formfill.mjs', 'test-quickplan.mjs']) {
+for (const suite of ['test-intent.mjs', 'test-apps.mjs', 'test-shortcuts.mjs', 'test-aim.mjs', 'test-scroll.mjs', 'test-driver.mjs', 'test-milestones.mjs', 'test-select-option.mjs', 'test-memory.mjs', 'test-voice-fastpath.mjs', 'test-microphone.mjs', 'test-voice-session.mjs', 'test-marks.mjs', 'test-judge.mjs', 'test-formfill.mjs', 'test-quickplan.mjs', 'test-repeat.mjs', 'test-attachments.mjs', 'test-job.mjs']) {
   try {
     execFileSync(process.execPath, [join(ROOT, 'scripts', suite)], { stdio: 'pipe' });
   } catch (err) {

@@ -542,6 +542,12 @@ const ACT_TOOLS = [
               + 'instead of "type" for anything long or exact — it arrives in one go and cannot '
               + 'be mistyped. Leave empty to paste whatever was last copied.',
           },
+          paste_attachment: {
+            type: 'integer',
+            description: 'For "paste": the NUMBER of something the person attached (listed as '
+              + '"Attached by the person"), to paste it exactly as they sent it. Never retype an '
+              + 'attachment into paste_text or type — this is exact and instant.',
+          },
           remember_as: {
             type: 'string',
             description: 'For "copy": a short name to file the copied text under, e.g. '
@@ -562,6 +568,7 @@ const ACT_TOOLS = [
                 mark: { type: 'integer', description: 'The number of the box it is aimed at, from THIS screenshot.' },
                 to_mark: { type: 'integer' },
                 text: { type: 'string' },
+                paste_attachment: { type: 'integer', description: 'For "paste": the number of an attachment to paste.' },
                 keys: { type: 'array', items: { type: 'string' } },
                 why: { type: 'string', description: 'Optional: a few words for the person watching.' },
               },
@@ -738,6 +745,7 @@ const ACT_SYSTEM = (shot, front, windows = []) => [
   '',
   'ACTIONS WORTH KNOWING:',
   '- open_app / open_url to open things. Never type an app or site name into a search or address bar.',
+  '- open_url only an address the task or the screen gives you — never a guessed one. To go back a page, key alt+left.',
   '- switch_to with part of a window title, to go back to a window already open.',
   '- select_option on a native dropdown: its mark, and the exact option in "text".',
   '- drag: "mark" is what you pick up, "to_mark" is where it goes. List rows, cards, files, windows.',
@@ -747,6 +755,7 @@ const ACT_SYSTEM = (shot, front, windows = []) => [
   '  stops at hyphens and spaces.',
   '- hold_and_press for repeated keys under a modifier (shift + down x4), never separate key actions.',
   '- copy with remember_as, then paste, to move text between places. paste_text for anything long.',
+  '- paste with paste_attachment: N puts something the person attached in, exactly as they sent it.',
   '',
   'DO WHAT YOU CAN ALREADY SEE IN ONE GO: when the next few actions are plain from this screen',
   '(fill three fields, choose an option, tick a box, then Save), give the first as the action and',
@@ -1233,9 +1242,24 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   const learned = [];         // free notes, newest last
   let clipboard = '';         // what Halo last saw on the clipboard
 
+  /* What the person sent along with the words: pasted text and files.
+     Shown by number and pasted by number (paste_attachment), never retyped:
+     a model copying three paragraphs into a tool call is slow, and the one
+     wrong word it makes is the one nobody asked for. */
+  const material = (Array.isArray(context.attachments) ? context.attachments : [])
+    .filter((a) => a && a.kind === 'text' && typeof a.text === 'string' && a.text.trim());
+
   /** Everything the run knows, as the lines the model is shown each turn. */
   const scratchpad = () => {
     const lines = [];
+    if (material.length) {
+      lines.push('Attached by the person (paste one with paste_attachment: its number):');
+      material.forEach((a, i) => {
+        const text = String(a.text);
+        const rows = text.split(/\r?\n/).length;
+        lines.push(`  [${i + 1}] "${a.name || 'Pasted text'}" — ${rows} line${rows === 1 ? '' : 's'}, starts: ${preview(text, 160)}`);
+      });
+    }
     if (kept.size) {
       lines.push('What you have kept (use these rather than reading them off the screen again):');
       for (const [name, value] of kept) lines.push(`  ${name}: ${value}`);
@@ -2611,6 +2635,14 @@ Do only that step.`,
     // Only the local fast path can attach an observed target; models cannot invent one.
     delete action.observedTarget;
     delete action.exact;
+    /* An attachment named by number becomes its exact text here, once, so
+       everything downstream — the executor, the record of what was typed,
+       the verdict — sees an ordinary paste of known text. */
+    if (action.type === 'paste' && Number.isFinite(Number(action.paste_attachment))) {
+      const picked = material[Number(action.paste_attachment) - 1];
+      if (picked) action.paste_text = String(picked.text);
+    }
+    delete action.paste_attachment;
     if (choice.fast && fast?.element && ['CLICK', 'SELECT', 'TYPE_TEXT'].includes(fast.operation)) action.observedTarget = fast.element;
     /* A number from the model becomes the rectangle Windows reported for it.
        A control chosen this way is checked again, fresh, just before input —
@@ -3693,8 +3725,32 @@ export async function execute({ computer, sense, shot, action, openThing, switch
     case 'open_app':
       return openThing({ name: action.app || action.target || '' });
 
-    case 'open_url':
+    case 'open_url': {
+      /* Already working in a browser, the address goes into that browser —
+         a new tab, typed, Enter — as a person would. Handing it to Windows
+         opens the DEFAULT browser instead: measured on the QA display, a
+         second browser came up on the other screen, over the person's own
+         work, and the run carried on typing in there. */
+      const href = (() => {
+        try {
+          const u = new URL(/^https?:\/\//i.test(String(action.url || '')) ? action.url : `https://${action.url}`);
+          return /^https?:$/.test(u.protocol) && u.hostname.includes('.') ? u.href : null;
+        } catch { return null; }
+      })();
+      const fg = href ? await sense?.foreground?.().catch(() => null) : null;
+      const inBrowser = fg && !isHaloWindow(fg.title)
+        && (/^(?:chrome|msedge|firefox|brave|opera|vivaldi)(?:\.exe)?$/i.test(String(fg.process || ''))
+          || / - (?:Google Chrome|Microsoft​? Edge|Mozilla Firefox|Brave)$/i.test(String(fg.title || '')));
+      if (inBrowser) {
+        if (!(await gate())) return { stop: true };
+        await computer.keypress(['ctrl', 't']);
+        await computer.wait(180);
+        await computer.type(href);
+        await computer.keypress(['enter']);
+        return { ok: true, said: `opened ${href} in a new tab of the browser in front` };
+      }
       return openThing({ url: action.url || '', name: action.target || '' });
+    }
 
     case 'switch_to':
       return switchTo(action.window || action.app || action.target || '');

@@ -28,6 +28,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces, tmpdir } from 'node:os';
 
 import { upgrade } from './ws.mjs';
+import { attachmentEcho, prepareSubmitTask } from './attachments.mjs';
 import { encode, toTerminal, toSVG } from './qr.mjs';
 import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
@@ -134,7 +135,10 @@ const ALLOWED_COMMANDS = new Set([
   'forgetRoutes',    // {} — throw away what Halo learnt about doing things here
 ]);
 
-const MAX_TASK_LENGTH = 2000;   // mirrors the desktop app's own task limit
+// A typed answer — a tapped option, or a word or two — is short by nature,
+// so it keeps the old, tight cap. submitTask's own cap, and everything about
+// validating what came with it, now lives in attachments.mjs.
+const MAX_ANSWER_LENGTH = 2000;
 
 /* The phases in which Halo has the mouse and the island should not. Waiting
    on a person is not one of them: an approval card is answered by clicking
@@ -548,9 +552,9 @@ class Bridge {
     }
 
     if (command === 'submitTask') {
-      const text = String(payload.text ?? '').slice(0, MAX_TASK_LENGTH).trim();
-      if (!text) return;
-      const mode = ['auto', 'chat', 'agent'].includes(payload.mode) ? payload.mode : 'auto';
+      const prepared = prepareSubmitTask(payload);
+      if (!prepared) return;
+      const { text, attachments, mode } = prepared;
 
       // Echo it to everyone, so the phone and the laptop show the same thread
       // rather than each keeping its own half of it. The sender already added
@@ -559,10 +563,16 @@ class Bridge {
       const id = typeof payload.id === 'string' && /^[\w-]{1,48}$/.test(payload.id)
         ? payload.id
         : `you_${Date.now()}`;
-      this._fromHost('message', { id, from: 'you', text, done: true });
+      // What the thread shows and the archive keeps is display metadata
+      // only — see attachmentEcho. The picture and the full pasted text go
+      // to the agent below, in payload.attachments, and nowhere else.
+      this._fromHost('message', {
+        id, from: 'you', text, done: true,
+        ...(attachments.length ? { attachments: attachments.map(attachmentEcho) } : {}),
+      });
 
-      console.log(`[bridge] message from ${client.ip} (${mode})`);
-      this._hostHandler?.({ command, payload: { text, mode } });
+      console.log(`[bridge] message from ${client.ip} (${mode})${attachments.length ? `, ${attachments.length} attachment${attachments.length === 1 ? '' : 's'}` : ''}`);
+      this._hostHandler?.({ command, payload: { text, mode, attachments } });
       return;
     }
 
@@ -581,7 +591,7 @@ class Bridge {
     // approve/deny must name the decision they are answering, so a stale phone
     // cannot approve whatever happens to be pending now.
     if (command === 'answerQuestion') {
-      const text = String(payload.text ?? '').slice(0, MAX_TASK_LENGTH).trim();
+      const text = String(payload.text ?? '').slice(0, MAX_ANSWER_LENGTH).trim();
       if (!text) return;
       // A tapped option names itself by id, so "the app" and "the website"
       // do not depend on how their labels happen to be worded.

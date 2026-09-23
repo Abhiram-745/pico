@@ -7,6 +7,16 @@
 window.qa = {
   task: '',
   check: () => ({ pass: false, detail: 'no check' }),
+  /* What the person "sent with the words" for this task, in the same shape
+     the bridge passes to the job runner — see bridge/job.mjs and
+     pico-ui/src/attachments.js's toBridgeAttachment. Empty on every page
+     that doesn't need one, which is most of them. */
+  attachments: [],
+  /* Whitespace-collapsed and trimmed, so a typed or pasted paragraph still
+     compares equal despite different line-wrapping or trailing spaces.
+     Shared so every page that checks pasted text (chat.html, notes.html)
+     applies the same rule rather than each rolling its own. */
+  normalize: (s) => String(s ?? '').replace(/\s+/g, ' ').trim(),
   presses: [],
   result() {
     let verdict;

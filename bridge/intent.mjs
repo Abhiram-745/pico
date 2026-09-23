@@ -86,21 +86,66 @@ const APP_OR_SURFACE = /\b(?:chrome|edge|firefox|safari|browser|notepad|word|exc
 /** A URL or bare domain is always a destination to go to. */
 const LOOKS_LIKE_URL = /(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+\.(?:com|net|org|io|dev|co|ai|app|gov|edu|uk)\b/i;
 
+/* --------------------------------------------------------------------------
+   Signals for a message that has something attached — pasted text, a file,
+   a picture (see bridge/attachments.mjs for the shape). Checked only when
+   there is at least one, so a message with nothing attached is routed
+   exactly as it always was: neither pattern below can fire without an
+   attachment to be about, and every existing case in test-intent.mjs sends
+   none.
+   -------------------------------------------------------------------------- */
+
+/** Doing something WITH what was attached — "paste each one", "put this
+    into…", "fill in…", "send this to…". Wider than the general VERB list
+    above on purpose: "put" is not an instruction on its own ("put the
+    kettle on" is prose to nobody in particular), but "put this into
+    ChatGPT" with a picture attached plainly is. */
+const ATTACHMENT_ACTION = /\b(?:paste|put|type|fill(?:\s+in|\s+out)?|send|enter|drop|upload|attach|copy|insert)\b/i;
+
+/** Asking about what was attached rather than asking for it to be used
+    somewhere — "what's in this image", "summarise this", "explain". */
+const ATTACHMENT_QUESTION = /\bwhat.?s?\s+(?:in|on)\b|\bsummaris|\bsummariz|\bexplain\b|\bdescribe\b|\banaly[sz]e\b|\btell\s+me\s+about\b/i;
+
 const clean = (text) => String(text ?? '').trim();
 
 /**
  * Decide from the text alone.
+ * @param {string} text
+ * @param {object} [opts]
+ * @param {Array} [opts.attachments]  pasted text, files or pictures sent
+ *   along with this message — see bridge/attachments.mjs. Only ever makes
+ *   the call more confident, never less: with none, this behaves exactly as
+ *   it did before attachments existed.
  * @returns {{mode:'chat'|'agent', why:string, certain:boolean}|null}
  *          null when the rules genuinely cannot call it.
  */
-export function localRoute(text) {
+export function localRoute(text, { attachments = [] } = {}) {
   const t = clean(text);
-  if (!t) return { mode: 'chat', why: 'nothing to do', certain: true };
+  const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+
+  if (!t) {
+    // Nothing typed. With something attached, that is not "nothing to do"
+    // — it is a picture or a document with no instruction on it, which is
+    // answered rather than acted on: the safer of the two when nothing
+    // says which.
+    return hasAttachments
+      ? { mode: 'chat', why: 'something was attached with nothing said about it', certain: true }
+      : { mode: 'chat', why: 'nothing to do', certain: true };
+  }
 
   if (PLEASANTRY.test(t)) return { mode: 'chat', why: 'a greeting', certain: true };
 
   if (ABOUT_PICO.some((re) => re.test(t))) {
     return { mode: 'chat', why: 'a question about Halo', certain: true };
+  }
+
+  if (hasAttachments) {
+    if (ATTACHMENT_QUESTION.test(t)) {
+      return { mode: 'chat', why: 'asks about what was attached', certain: true };
+    }
+    if (ATTACHMENT_ACTION.test(t)) {
+      return { mode: 'agent', why: 'an instruction for what was attached', certain: false };
+    }
   }
 
   const surface = APP_OR_SURFACE.test(t);
@@ -143,9 +188,11 @@ const CLASSIFY_SYSTEM =
   'exactly one word.\n' +
   'AGENT - they want something done on their computer: opening apps, ' +
   'clicking, typing into a program, browsing, searching the web, managing ' +
-  'files.\n' +
+  'files. If they mention something attached, AGENT also covers using it — ' +
+  'pasting it in, filling it into a form, sending or uploading it.\n' +
   'CHAT - they are talking, greeting, asking a question, or want something ' +
-  'written or explained back to them.\n' +
+  'written or explained back to them. If they mention something attached, ' +
+  'CHAT also covers asking about it, describing it or summarising it.\n' +
   'If unsure, answer CHAT.';
 
 /**
@@ -155,14 +202,16 @@ const CLASSIFY_SYSTEM =
  * @param {object} opts
  * @param {'auto'|'chat'|'agent'} opts.hint  explicit choice from the UI
  * @param {object} opts.llm                  attached provider, or null
+ * @param {Array} [opts.attachments]         pasted text, files or pictures
+ *   sent with this message — see bridge/attachments.mjs
  * @returns {Promise<{mode:'chat'|'agent', why:string, source:string}>}
  */
-export async function route(text, { hint = 'auto', llm = null } = {}) {
+export async function route(text, { hint = 'auto', llm = null, attachments = [] } = {}) {
   if (hint === 'chat' || hint === 'agent') {
     return { mode: hint, why: 'you chose it', source: 'user' };
   }
 
-  const local = localRoute(text);
+  const local = localRoute(text, { attachments });
   if (local?.certain) return { ...local, source: 'rules' };
 
   const fallback = local
@@ -170,6 +219,14 @@ export async function route(text, { hint = 'auto', llm = null } = {}) {
     : { mode: 'chat', why: 'not clearly an instruction', source: 'rules' };
 
   if (!llm) return fallback;
+
+  // Said once, folded into both prompts below, so a model asked to settle
+  // an otherwise-ambiguous message also knows there is something attached —
+  // "put this in" reads as a job only once "this" names a real attachment.
+  const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+  const attachmentNote = hasAttachments
+    ? ` They also attached ${attachments.length} item${attachments.length === 1 ? '' : 's'} (pasted text, a file, or a picture).`
+    : '';
 
   /* Ask the evaluation model first.
 
@@ -186,14 +243,16 @@ export async function route(text, { hint = 'auto', llm = null } = {}) {
      "open" means. Anything missing, slow or unconvincing falls through to
      the chat model below, exactly as before. */
   const answers = await llm.evaluate?.(
-    `The person typed this to a desktop assistant: "${clean(text).slice(0, 500)}"`,
+    `The person typed this to a desktop assistant: "${clean(text).slice(0, 500)}"${attachmentNote}`,
     {
       kind: {
         type: 'choice',
         instructions: 'Is this a job to carry out on the computer, or just conversation?',
         criteria: {
-          agent: 'an instruction to operate the desktop: open, click, type, find, send, buy, play',
-          chat: 'a question, a greeting, or a remark that expects an answer in words',
+          agent: 'an instruction to operate the desktop: open, click, type, find, send, buy, play'
+            + (hasAttachments ? ', or to do something with what they attached — paste it, fill it in, send it, upload it' : ''),
+          chat: 'a question, a greeting, or a remark that expects an answer in words'
+            + (hasAttachments ? ', including asking about, describing or summarising what they attached' : ''),
         },
       },
     },
@@ -212,7 +271,7 @@ export async function route(text, { hint = 'auto', llm = null } = {}) {
     const answer = await llm.chat(
       [
         { role: 'system', content: CLASSIFY_SYSTEM },
-        { role: 'user', content: clean(text).slice(0, 500) },
+        { role: 'user', content: `${clean(text).slice(0, 500)}${attachmentNote}` },
       ],
       { model: llm.tiers.fast, maxTokens: 8, signal: AbortSignal.timeout(6000) },
     );

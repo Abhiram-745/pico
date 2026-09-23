@@ -40,7 +40,9 @@ export const NOTCH_TITLE = 'Halo Notch';
 
 /** Chrome on Windows 11 at 125%, measured. Replaced by the page's own report. */
 const DEFAULT_FRAME = { side: 7, top: 30, bottom: 7 };
-const COMPACT = { width: 236, height: 36 };
+// The island at rest, before the page has measured itself: WIDTHS.compact in
+// island.jsx by the compact bar's 36px (island.css).
+const COMPACT = { width: 216, height: 36 };
 
 const CANDIDATES = [
   `${process.env.ProgramFiles}\\Google\\Chrome\\Application\\chrome.exe`,
@@ -428,7 +430,18 @@ export class NotchWindow {
     // rectangle is then skipped as redundant — the island stuck at one size
     // for good, with the page still politely asking.
     if (this.host?.ready) {
-      const sent = this.host.place(h, rect);
+      // The window is drawn a few pixels bigger than the island on screen —
+      // `this.frame` — so the browser has somewhere to put the resize border
+      // Trim() strips and the title bar parked above the top edge. Telling
+      // the host that inset lets it clip the window down to exactly the
+      // content (see Clip() in native/island-host.cs), which is what
+      // actually gets rid of the grey band Trim() alone could not: removing
+      // the WS_THICKFRAME style stops Windows offering to resize from there,
+      // but leaves the space itself for the browser to paint. `squareTop`
+      // keeps the top corners sharp for the island — flush with the screen
+      // edge, the way a notch should sit — and lets the card round every
+      // corner, since it floats free rather than hanging off the top.
+      const sent = this.host.place(h, rect, { side: this.frame.side, top: this.frame.top, squareTop: this.mode !== 'card' });
       if (sent) this.placed = key;
       return sent;
     }
@@ -539,12 +552,32 @@ export class NotchWindow {
    * one window on screen that must never be clicked by the run it is
    * reporting on. Deaf, the click goes through to the tab.
    */
-  async listen(on) {
-    if (this.deaf === !on) return;
-    this.deaf = !on;
+  async listen(on, tries = 0) {
+    const wantDeaf = !on;
+    this.wantDeaf = wantDeaf;
+    clearTimeout(this.listenRetry);
+    if (this.deaf === wantDeaf) return;
     const h = this.hwnd ?? this.findWindow();
-    if (!h || !this.host?.ready) return;
-    try { await this.host.deaf(h, !on); } catch { /* it keeps its ears */ }
+    // Without a window to tell, or a host that can hear the request, this
+    // cannot actually happen — and marking `deaf` as done anyway was the
+    // bug: the next call for this same state saw them "agree" and skipped
+    // itself too, forever, which is how the island stayed click-through
+    // long after the run that asked for it had finished. Leaving `deaf`
+    // untouched here means the very next phase change tries again instead
+    // of trusting a request that was never carried out.
+    //
+    // Giving the island its ears back is also tried again on its own, a
+    // few times: the end of a run is the LAST phase change, so "the next
+    // one" may be a whole task away — and a helper relaunching after a
+    // crash (island-host.mjs retry()) is not ready for half a second.
+    if (!h || !this.host?.ready) {
+      if (!wantDeaf && tries < 10) {
+        this.listenRetry = setTimeout(() => { if (this.wantDeaf === false) this.listen(true, tries + 1); }, 1000);
+      }
+      return;
+    }
+    // Believed only once the command is actually away, for the same reason.
+    if (this.host.deaf(h, wantDeaf)) this.deaf = wantDeaf;
   }
 
   raise() {
@@ -557,6 +590,7 @@ export class NotchWindow {
   }
 
   async close() {
+    clearTimeout(this.listenRetry);
     this.unwatchHover();
     try { this.proc?.kill(); } catch { /* already gone */ }
     this.proc = null;

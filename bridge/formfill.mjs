@@ -39,6 +39,32 @@ const OFF = /\b(?:disable|uncheck|untick|turn off|switch off|deselect|opt out|do
    is decided by looking, not by matching words. */
 const FINISH = /^(?:save|submit|confirm|apply|create|add|search|go|continue|next|done|ok|register|sign up|update|finish)\b/i;
 
+/* Filler a clause can have that names nothing on the page. */
+const VERBS = new Set(['fill', 'in', 'into', 'type', 'enter', 'put', 'write', 'set', 'choose', 'select', 'pick', 'tick', 'untick',
+  'check', 'uncheck', 'enable', 'disable', 'turn', 'on', 'off', 'click', 'press', 'hit', 'the', 'a', 'an', 'to', 'as', 'with',
+  'field', 'box', 'dropdown', 'option', 'then', 'and', 'from', 'of', 'for', 'it', 'please', 'finally', 'also', 'value', 'button']);
+const clausesOf = (task) => String(task ?? '')
+  .replace(/^(?:on|in|at)\s+(?:the\s+)?[^,.]{1,60},\s*/i, '')
+  .split(/,|;|\.\s|\s+(?:and then|then|and)\s+/i)
+  .map((c) => c.trim()).filter((c) => words(c).some((w) => !VERBS.has(w)));
+
+/** The parts of the task no matched field (and not the finishing button) accounts for. */
+function uncovered(task, matched, finishEl) {
+  const names = [...matched, ...(finishEl ? [finishEl.name] : [])]
+    .map((n) => String(n).replace(/\([^)]*\)/g, ' '));
+  return clausesOf(task).filter((clause) => {
+    const have = new Set(words(clause).map(stem));
+    return !names.some((n) => {
+      const need = words(n).filter((w) => !['the', 'a', 'an', 'of', 'for', 'to'].includes(w));
+      /* A long name that is a label plus what the control shows — "Dropdown
+         (select) Open this select menu" — is named by its first word. Only
+         a long one: "Enable notifications" must not cover "enable dark mode". */
+      return need.length > 0 && (need.every((w) => have.has(stem(w)))
+        || (need.length > 3 && !ON.test(need[0]) && !OFF.test(need[0]) && have.has(stem(need[0]))));
+    });
+  });
+}
+
 /**
  * @param {string} task
  * @param {Array} elements   sense.look() elements
@@ -75,7 +101,7 @@ export function planForm(task, elements = []) {
       if (Math.abs(el.range[2] - n) < 0.5) continue;
       steps.push({ action: 'set_value', el, text: String(n), why: `Setting ${el.name} to ${n}` });
     } else if (el.type === 'ComboBox') {
-      const option = requestedOption(task, el.name);
+      const option = requestedOption(task, el.name, el.value);
       if (!option) continue;
       used.add(key);
       if (String(el.value ?? '').trim().toLowerCase() === option.toLowerCase()) continue;
@@ -97,10 +123,21 @@ export function planForm(task, elements = []) {
      task names; or settings that carry their own exact value (a dropdown
      choice, a slider number), which cannot be misread. */
   const exact = steps.length > 0 && steps.every((st) => st.action === 'select_option' || st.action === 'set_value');
-  if (!(steps.length >= 2 || (steps.length >= 1 && finish.length === 1) || exact)) return null;
+  /* Finishing is only for a form the plan covers completely. Every part of
+     the task — each clause between the commas and the ands — has to be one
+     of the planned fields or the button itself. Measured on a real page:
+     a dropdown the planner could not match was skipped, Submit was pressed
+     anyway, and the form went off half filled — after which there is no
+     putting it right. Anything left over and the fields are filled, the
+     button is not, and the ordinary loop does the rest. */
+  // Every field the task named counts, including one already right and so not planned.
+  const matched = [...used].map((k) => k.slice(k.indexOf('|') + 1));
+  const covered = uncovered(task, matched, finish[0]).length === 0;
+  const finishing = finish.length === 1 && covered;
+  if (!(steps.length >= 2 || (steps.length >= 1 && finishing) || exact)) return null;
 
   // Top to bottom, the way a person fills a form in.
   steps.sort((a, b) => (a.el.rect[1] - b.el.rect[1]) || (a.el.rect[0] - b.el.rect[0]));
-  if (finish.length === 1) steps.push({ action: 'click', el: finish[0], why: `Clicking ${finish[0].name}` });
+  if (finishing) steps.push({ action: 'click', el: finish[0], why: `Clicking ${finish[0].name}` });
   return steps;
 }

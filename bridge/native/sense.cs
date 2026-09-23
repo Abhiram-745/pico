@@ -33,6 +33,8 @@
 //    <id> near <x> <y> <r>       operable controls within r pixels of a point
 //    <id> scrollable <x> <y>     the scrollable container under a point
 //    <id> elements <hwnd> [max]  named, operable controls in a window
+//    <id> composer <hwnd>        the box a chat app is typed into, and the
+//                                send/stop buttons beside it
 //    <id> focus <hwnd>           bring a window to the foreground
 //
 //  Every accessibility call runs on its own thread with a deadline. The call
@@ -229,6 +231,13 @@ static class Sense
         "Button", "SplitButton", "MenuItem", "TabItem", "ListItem", "TreeItem",
         "Hyperlink", "CheckBox", "RadioButton", "ComboBox", "DataItem",
         "HeaderItem", "Edit", "Image", "Thumb", "Slider", "Spinner", "MenuBar",
+    };
+
+    /// Form controls worth keeping without a name (see look): the role and
+    /// the value say what they are.
+    static readonly HashSet<string> UNNAMED_OK = new HashSet<string>
+    {
+        "ComboBox", "CheckBox", "RadioButton", "Edit", "Slider", "Spinner",
     };
 
     /// Controls where the exact point matters more than the middle: a caret
@@ -843,6 +852,171 @@ static class Sense
         return new Json().Raw("controls", arr.ToString()).N("ms", sw.ElapsedMilliseconds).ToString();
     }
 
+    // ----------------------------------------------------------------------
+    //  The box a chat app is typed into
+    //
+    //  ChatGPT, Claude, Lovable, Discord, WhatsApp: the thing a person types
+    //  into sits at the bottom of the window, across the middle, with a send
+    //  button at its right-hand end that turns into a stop button while the
+    //  reply is being written. Finding it by reading the whole window does not
+    //  work where it matters most: measured on a ChatGPT window holding a long
+    //  conversation, `elements` ran into its deadline and came back with
+    //  nothing at all, because the tree was thousands of nodes of messages.
+    //
+    //  So this does not read the window. It asks what is under a handful of
+    //  points near the bottom, walks up from each to the nearest text field,
+    //  and then reads only the few dozen nodes around that field for its
+    //  buttons. A few hit tests and a small walk, whatever the conversation
+    //  above it holds.
+    //
+    //  The window has to be the one on top at those points — a hit test sees
+    //  what a click would hit — so the caller brings it forward first.
+    // ----------------------------------------------------------------------
+    public static string Composer(IntPtr h)
+    {
+        var sw = Stopwatch.StartNew();
+        if (!Win.IsWindow(h)) return new Json().B("found", false).S("error", "no such window").ToString();
+        var b = Win.Bounds(h);
+        int w = b.Right - b.Left;
+        int ht = b.Bottom - b.Top;
+        if (w < 160 || ht < 160) return new Json().B("found", false).S("error", "too small").ToString();
+        if (Wake(h)) Thread.Sleep(260);
+
+        // From the bottom up, across the middle first. Chat boxes grow upwards
+        // as they fill, and sit in the conversation column — which in an app
+        // with a sidebar is right of the window's own centre.
+        int[] ups = { 52, 76, 100, 126, 156, 190, 230, 276, 330, 392, 462 };
+        double[] across = { 0.55, 0.45, 0.66, 0.34, 0.76 };
+        AutomationElement field = null;
+        for (int i = 0; i < ups.Length && field == null; i++)
+        {
+            foreach (double f in across)
+            {
+                if (sw.ElapsedMilliseconds > 1300) break;
+                int x = b.Left + (int)Math.Round(w * f);
+                int y = b.Bottom - ups[i];
+                if (y <= b.Top + 40) continue;
+                if (RootAt(x, y) != h) continue;   // something else is over the window here
+                AutomationElement at;
+                try { at = AutomationElement.FromPoint(new System.Windows.Point(x, y)); } catch { continue; }
+                if (at == null) continue;
+                field = TextFieldAbove(at);
+                if (field != null) break;
+            }
+        }
+        if (field == null) return new Json().B("found", false).N("ms", sw.ElapsedMilliseconds).ToString();
+
+        System.Windows.Rect fr;
+        try { fr = field.Current.BoundingRectangle; } catch { fr = System.Windows.Rect.Empty; }
+        var buttons = ButtonsAround(field, fr, sw);
+        return new Json()
+            .B("found", true)
+            .Raw("field", Describe(field))
+            .Raw("buttons", buttons)
+            .N("ms", sw.ElapsedMilliseconds)
+            .ToString();
+    }
+
+    /// The nearest text field at or above an element: what a click at the
+    /// point would put the caret in. A read-only document — a web page's own
+    /// root, which is focusable and has a value, its address — is not one.
+    static AutomationElement TextFieldAbove(AutomationElement at)
+    {
+        var walker = TreeWalker.ControlViewWalker;
+        AutomationElement el = at;
+        for (int depth = 0; el != null && depth < 8; depth++)
+        {
+            try
+            {
+                var c = el.Current;
+                string type = TypeName(el);
+                if (type == "Window") return null;
+                var r = c.BoundingRectangle;
+                if (c.IsEnabled && !c.IsPassword && !r.IsEmpty && r.Width >= 80 && r.Height >= 14)
+                {
+                    bool writable = false;
+                    if (Pattern(el, AutomationElement.IsValuePatternAvailableProperty))
+                    {
+                        try { writable = !((ValuePattern)el.GetCurrentPattern(ValuePattern.Pattern)).Current.IsReadOnly; }
+                        catch { }
+                    }
+                    if (type == "Edit" && (c.IsKeyboardFocusable || writable)) return el;
+                    if (writable && c.IsKeyboardFocusable && type != "ComboBox" && type != "Spinner") return el;
+                }
+            }
+            catch { }
+            try { el = walker.GetParent(el); } catch { el = null; }
+        }
+        return null;
+    }
+
+    /// The buttons that belong to a chat box: send, stop, attach, voice.
+    /// Read from the field's own surroundings, a level or four up, and kept
+    /// to the band of the screen the box is in — a send button is beside the
+    /// box, not in the message above it.
+    static string ButtonsAround(AutomationElement field, System.Windows.Rect fr, Stopwatch sw)
+    {
+        var arr = new StringBuilder("[");
+        int n = 0;
+        var seen = new HashSet<string>();
+        var walker = TreeWalker.ControlViewWalker;
+        AutomationElement scope = field;
+        double top = fr.IsEmpty ? double.MinValue : fr.Top - 90;
+        double bottom = fr.IsEmpty ? double.MaxValue : fr.Bottom + 90;
+        for (int up = 0; up < 5 && scope != null && sw.ElapsedMilliseconds < 1900; up++)
+        {
+            try { scope = walker.GetParent(scope); } catch { scope = null; }
+            if (scope == null) break;
+            try { if (TypeName(scope) == "Window") break; } catch { break; }
+
+            var queue = new Queue<KeyValuePair<AutomationElement, int>>();
+            queue.Enqueue(new KeyValuePair<AutomationElement, int>(scope, 0));
+            int visited = 0;
+            while (queue.Count > 0 && visited < 140 && sw.ElapsedMilliseconds < 1900)
+            {
+                var pair = queue.Dequeue();
+                var node = pair.Key;
+                visited++;
+                try
+                {
+                    var c = node.Current;
+                    var r = c.BoundingRectangle;
+                    if (!r.IsEmpty && r.Bottom >= top && r.Top <= bottom && TypeName(node) == "Button" && !c.IsOffscreen)
+                    {
+                        string key = string.Join(".", node.GetRuntimeId());
+                        if (seen.Add(key))
+                        {
+                            if (n++ > 0) arr.Append(',');
+                            arr.Append(new Json()
+                                .S("name", Trim(c.Name, 80))
+                                .S("id", Trim(c.AutomationId, 60))
+                                .Raw("rect", RectJson(r))
+                                .B("enabled", c.IsEnabled)
+                                .ToString());
+                        }
+                    }
+                }
+                catch { }
+                if (pair.Value >= 7) continue;
+                try
+                {
+                    var child = walker.GetFirstChild(node);
+                    while (child != null)
+                    {
+                        queue.Enqueue(new KeyValuePair<AutomationElement, int>(child, pair.Value + 1));
+                        child = walker.GetNextSibling(child);
+                    }
+                }
+                catch { }
+            }
+            // The first level that holds a button is the box's own row. Going
+            // further up only adds the page's furniture.
+            if (n > 0) break;
+        }
+        arr.Append(']');
+        return arr.ToString();
+    }
+
     /// Named, operable controls inside a window, on screen: what a person
     /// could click there, with where each one is. Bounded in count and time,
     /// because a browser can hold thousands of nodes.
@@ -1046,7 +1220,15 @@ static class Sense
                     places.Append(new Json().S("type", type).S("name", "(unnamed picture)").Raw("rect", RectJson(r)).ToString());
                     continue;
                 }
-                if (string.IsNullOrEmpty(c.Name) || !c.IsEnabled || type == "Window") continue;
+                if (!c.IsEnabled || type == "Window") continue;
+                /* Nameless is dropped, except a form control. On real pages
+                   an unlabelled select or checkbox is common — measured on
+                   two of them — and dropping it left nothing to number on
+                   the screenshot, so the model guessed a pixel and clicked
+                   the page behind it, turn after turn. Unnamed, it is still
+                   "the dropdown showing Please select" or "the second
+                   checkbox", which the marks can say. */
+                if (string.IsNullOrEmpty(c.Name) && !UNNAMED_OK.Contains(type)) continue;
 
                 bool operable = CLICKABLE.Contains(type)
                     || (bool)el.GetCachedPropertyValue(AutomationElement.IsInvokePatternAvailableProperty)
@@ -1382,6 +1564,12 @@ static class Program
                     {
                         int x = Int(p[2]), y = Int(p[3]), r = Int(p[4]);
                         Deadline(id, 2500, () => Sense.Near(x, y, r));
+                        break;
+                    }
+                    case "composer":
+                    {
+                        var h = new IntPtr(long.Parse(p[2], CultureInfo.InvariantCulture));
+                        Deadline(id, 2600, () => Sense.Composer(h));
                         break;
                     }
                     case "scrollable":

@@ -189,6 +189,16 @@ export class Sense {
     return (await this.request(cmd, 2000))?.elements ?? null;
   }
 
+  /**
+   * The box a chat app is typed into, and the buttons beside it:
+   * `{ found, field: {type,name,rect,value,…}, buttons: [{name,rect,enabled}] }`.
+   *
+   * A few hit tests near the bottom of the window rather than a read of the
+   * whole of it, which in a long conversation runs out of time and returns
+   * nothing (see Composer in native/sense.cs). The window must be in front.
+   */
+  composer(hwnd) { return this.request(`composer ${hwnd}`, 2800); }
+
   /** The controls AND what the window says — one call, see Cached(). */
   async look(hwnd, max = 200) {
     const r = await this.request(`elements ${hwnd} ${max}`, 2000);

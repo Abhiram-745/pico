@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>QA Notes</title>
+<link rel="stylesheet" href="qa.css">
+<!--
+  A notes/doc page for copy tasks — "copy X from here and paste it into Y" —
+  standing in for the kind of page a table of image prompts actually turns
+  up on before anyone pastes it anywhere. Same table shape as chat.html's
+  attachment (# | Time | Spec | Prompt), different rows, and a same-page
+  copy target rather than a second app: the harness opens one page per
+  task, so a page that only makes sense combined with another one is not
+  a task this can run yet.
+-->
+<style>
+table { border-collapse: collapse; width: 100%; margin: 18px 0 28px; font-size: 15px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd; vertical-align: top; }
+th { color: #444; font-weight: 600; }
+td.n, th.n { width: 30px; }
+td.time, th.time { width: 56px; color: #777; font-variant-numeric: tabular-nums; }
+td.spec, th.spec { width: 64px; color: #777; }
+textarea { font: inherit; width: 90%; min-height: 76px; padding: 9px 10px; border: 1px solid #bbb;
+  border-radius: 8px; display: block; }
+form { margin-top: 4px; }
+form button { margin-top: 10px; }
+</style>
+<h1>Body systems — image batch notes</h1>
+<p class="lead">Eight prompts for this week's diagram set, in the order we're rendering them. Times are from the recording and specs are internal shot codes — ignore both unless you're asked for them.</p>
+<p>Row 5 keeps getting mistyped when it's copied out by hand, so before it goes anywhere else, paste it into the box below exactly as written, punctuation included.</p>
+<table>
+  <thead><tr><th class="n">#</th><th class="time">Time</th><th class="spec">Spec</th><th>Prompt</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<form id="f">
+  <label>Prompt 5, pasted here<br><textarea id="field" aria-label="Prompt 5, pasted here"></textarea></label>
+  <button type="submit">Save</button>
+</form>
+<output id="out">Nothing saved yet.</output>
+<script src="qa.js"></script>
+<script>
+const PROMPTS = [
+  { n: 1, time: ':05', spec: 'B12.1', title: 'Digestion assembly line',
+    body: 'The gut drawn as a factory conveyor belt, food parcels moving station to station, each organ a labelled kiosk doing one job, warm workshop lighting, cutaway diagram style.' },
+  { n: 2, time: ':24', spec: 'B12.1', title: 'Immune patrol',
+    body: 'White blood cells as small patrol boats on a red river, one boat spotlighting a spiky virus shape ahead, comic-panel line art, bold flat colours.' },
+  { n: 3, time: ':41', spec: 'B12.2', title: 'Skeletal scaffolding',
+    body: 'The skeleton rendered as construction scaffolding around a glowing human silhouette, blueprint-blue lines, dimension arrows at the major joints.' },
+  { n: 4, time: ':58', spec: 'B12.2', title: 'Circulatory highway',
+    body: 'Arteries and veins as a highway interchange at dusk, red lanes flowing out from a central roundabout heart, blue lanes flowing back in, aerial view.' },
+  { n: 5, time: ':77', spec: 'B12.3', title: 'Respiratory bellows',
+    body: 'Lungs drawn as a pair of old leather bellows inside a glass ribcage case, visible air currents in pale blue, steampunk illustration style.' },
+  { n: 6, time: ':90', spec: 'B12.3', title: 'Kidney filter room',
+    body: 'A kidney as a water-treatment filter room, murky fluid entering one pipe, clean fluid leaving another, sediment collecting in a side tank.' },
+  { n: 7, time: ':103', spec: 'B12.4', title: 'Eye as camera obscura',
+    body: 'Cross-section of an eye styled as a vintage camera obscura, light rays bending through the lens onto an inverted image on the back wall.' },
+  { n: 8, time: ':121', spec: 'B12.4', title: 'Sleep cycle tide chart',
+    body: 'A night sky turned into a tide chart, the sleep stages as rising and falling water levels, moon phases marking each stage, soft navy and silver palette.' },
+];
+
+const rows = document.getElementById('rows');
+for (const p of PROMPTS) {
+  const tr = rows.insertRow();
+  tr.innerHTML = `<td class="n">${p.n}</td><td class="time">${p.time}</td><td class="spec">${p.spec}</td>`
+    + `<td data-qa="prompt-${p.n}"><strong>${p.title}</strong> — ${p.body}</td>`;
+}
+
+let saved = '';
+document.getElementById('f').addEventListener('submit', (e) => {
+  e.preventDefault();
+  saved = document.getElementById('field').value;
+  document.getElementById('out').textContent = saved.trim() ? `Saved: ${saved.trim().slice(0, 70)}…` : 'Nothing saved yet.';
+});
+
+qa.task = 'On the Image batch notes page, copy the Prompt text for image 5 from the table into the box below, then save it.';
+/* Either reading is right: "the prompt" fairly means the whole cell (title
+   and all) or just the description after the title, and both are accepted. */
+qa.check = () => {
+  const p5 = PROMPTS.find((p) => p.n === 5);
+  const full = qa.normalize(`${p5.title} — ${p5.body}`);
+  const bodyOnly = qa.normalize(p5.body);
+  const got = qa.normalize(saved);
+  return { pass: got === full || got === bodyOnly, detail: saved.trim() || 'nothing saved' };
+};
+</script>
+</html>

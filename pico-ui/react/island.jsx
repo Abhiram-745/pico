@@ -34,13 +34,13 @@ import { chats } from '../src/chats.js';
 import { permissions, LEVELS } from '../src/permissions.js';
 import { TAUGHT, written } from '../src/keybinds.js';
 import { useStore, useStoreEvent, sel, usePetName, ago } from './hooks.js';
-import { Beam, MetalButton } from './fx.jsx';
+import { Beam } from './fx.jsx';
 import {
   ActivityLog, Composer, Decision, Icon, IconButton, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
 } from './parts.jsx';
 
 /** Content width for each size. Height is whatever the content needs. */
-export const WIDTHS = { compact: 232, peek: 380, live: 460, voice: 550, open: 620, card: 396 };
+export const WIDTHS = { compact: 216, peek: 340, live: 420, voice: 480, open: 540, card: 380 };
 
 const SHORT = {
   Idle: 'Ready',
@@ -48,6 +48,9 @@ const SHORT = {
   Observing: 'Looking',
   Thinking: 'Thinking',
   Acting: 'Working',
+  // Sent a prompt into a chat app and is polling for it to finish — a live
+  // run, just not one with a mouse in it. See ACTIVE_PHASES in store.js.
+  Waiting: 'Waiting',
   Paused: 'Paused',
   AwaitingApproval: 'Needs you',
   AwaitingTakeover: 'Your turn',
@@ -399,7 +402,14 @@ function Island({ onMeasure }) {
   } else if (view === 'live') {
     if (running) {
       head = step?.do || doing || PHASE_COPY[phase]?.title || SHORT[phase];
-      line = [doing && doing !== head ? doing : null, total > 1 && step ? `Step ${plan.index + 1} of ${total}` : SHORT[phase]].filter(Boolean).join(' · ');
+      // The list runner keeps its own line of what it is doing right now —
+      // "Prompt 7 of 20 · waiting for it to finish · 34s" — which says more
+      // than the generic step counter below it and is already current to
+      // the second, so it wins whenever it is there. Only the list runner's
+      // (bridge/job.mjs marks its plan `list`): the desktop loop's plan has
+      // a `live` line too, and there the step counter is the useful half.
+      line = (plan?.list && plan.live)
+        || [doing && doing !== head ? doing : null, total > 1 && step ? `Step ${plan.index + 1} of ${total}` : SHORT[phase]].filter(Boolean).join(' · ');
     } else if (streaming) {
       head = last.text || 'Thinking…';
       line = petName;
@@ -453,7 +463,7 @@ function Island({ onMeasure }) {
   const lvl = LEVELS[level];
 
   return (
-    <Beam active={running && view !== 'compact'} size="md" color="colorful" strength={0.55} radius={view === 'compact' ? 18 : 26} className="h-island-beam">
+    <Beam active={running && view !== 'compact'} size="md" color="colorful" radius={view === 'compact' ? 16 : 22} className="h-island-beam">
       <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'}>
         {/* --- the bar ---------------------------------------------------- */}
         <div className="h-island__bar" onClick={onBarClick}
@@ -544,8 +554,10 @@ function Island({ onMeasure }) {
                   </span>
                   <div className="h-run__meter"><i style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }} /></div>
                 </header>
-                <PlanSteps limit={6} dense />
-                <ActivityLog />
+                <div className="h-run__body">
+                  <PlanSteps limit={6} dense />
+                  <ActivityLog />
+                </div>
                 {plan.finished && <div className="h-run__after"><SaveShortcut /></div>}
               </section>
             )}
@@ -562,9 +574,9 @@ function Island({ onMeasure }) {
                     <div className="h-group__label">Your shortcuts</div>
                     <div className="h-chips">
                       {routines.slice(0, 6).map((r) => (
-                        <MetalButton key={r.id} className="h-chip h-chip--metal" title={r.task} onClick={() => bridge.send('routineRun', { id: r.id })}>
+                        <button key={r.id} type="button" className="h-chip h-chip--metal" title={r.task} onClick={() => bridge.send('routineRun', { id: r.id })}>
                           <Icon name="bolt" size={12} />{r.name}
-                        </MetalButton>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -605,7 +617,7 @@ function Island({ onMeasure }) {
           </div>
         )}
         <div className="h-island__composer" hidden={!(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
-          <Composer petName={petName} inputRef={inputRef} acceptShortcut />
+          <Composer petName={petName} inputRef={inputRef} acceptShortcut taskStopShown={view !== 'compact' && running} />
         </div>
       </div>
     </Beam>

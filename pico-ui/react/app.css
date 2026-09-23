@@ -108,6 +108,10 @@ body {
 .h-chatrow__actions { position: absolute; right: 6px; top: 50%; translate: 0 -50%; display: none; gap: 2px; padding-left: 16px; background: linear-gradient(90deg, transparent, #151518 30%); }
 .h-chatrow:hover .h-chatrow__actions { display: flex; }
 .h-chatrow:hover .h-chatrow__when { visibility: hidden; }
+/* The fade behind the buttons has to end in the row's own colour: the open
+   chat's row is lighter than a hovered one, and the hover colour left a
+   darker block sitting behind its rename and delete. */
+.h-chatrow[data-current="true"] .h-chatrow__actions { background: linear-gradient(90deg, transparent, #1f1f21 30%); }
 .h-chatrow__actions .h-ibtn { width: 26px; height: 26px; background: transparent; }
 .h-chatrow__actions .h-ibtn:hover { background: var(--h-well-hi); }
 .h-chatrow__actions .h-ibtn.is-confirm { color: #fff; background: color-mix(in oklab, var(--h-bad) 60%, #000); }
@@ -154,7 +158,38 @@ body {
 .h-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* --- chat ------------------------------------------------------------------ */
-.h-chatview { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.h-chatview { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* A file dragged in from anywhere lands on the whole view, not just the
+   composer pill — see ChatView's drop handlers. This sits above everything
+   else in the window while it is showing, and nothing under it is
+   interactive until the file lands or the drag leaves. */
+.h-drop-overlay {
+  position: absolute;
+  inset: 10px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  border-radius: 22px;
+  border: 1.5px dashed rgba(156, 196, 255, .55);
+  background: rgba(10, 12, 18, .82);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  animation: h-rise .16s var(--h-out) both;
+}
+.h-drop-overlay__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 30px;
+  border-radius: 18px;
+  background: var(--h-well-hi);
+  color: var(--h-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+.h-drop-overlay__card .h-icon { color: #9cc4ff; }
 .h-chatview__head {
   display: flex;
   align-items: baseline;
@@ -374,7 +409,13 @@ body {
 
 /* The update button at the foot of the sidebar: only there when a newer build is. */
 .h-update { margin-top: auto; padding: 10px 4px 2px; display: grid; gap: 6px; }
-.h-update__btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 12px; border-radius: 999px; font-weight: 600; }
+/* The metal wrapper is inline-flex and shrinks to its label, so the button's
+   own width: 100% had nothing to fill; the wrapper takes the column first. */
+.h-update > .h-metal { width: 100%; }
+.h-update__btn { width: 100%; height: 36px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 12px; border-radius: 18px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-update__btn > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .h-update__meter { margin: 0 6px; }
-.h-update__sub { font-size: 11.5px; color: var(--h-muted, #8a8f98); text-align: center; }
-.h-update__sub--error { color: var(--h-deny, #e5484d); }
+/* --h-muted and --h-deny were never defined anywhere, so these only ever
+   showed their fallbacks; the palette's own dim and danger inks instead. */
+.h-update__sub { font-size: 11.5px; line-height: 1.45; color: var(--h-dim); text-align: center; }
+.h-update__sub--error { color: #ff8a82; }

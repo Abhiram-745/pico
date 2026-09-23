@@ -11,13 +11,20 @@
    METAL (metal-fx)
    The buttons that do something — send, allow, run, save — and nothing
    else. A liquid-metal ring on every button would make none of them stand
-   out, which is the one job it has.
+   out, which is the one job it has. And even on those it was too much: a
+   dozen rings all moving and glowing at once is a light show, not a hint.
+   So there are two tones now. Most metal buttons are calm — a thin, still
+   ring at half strength with no halo, that only starts to move while the
+   pointer or the keyboard is on it. `hero` is for the one button a screen
+   is really about (New chat, the update): the metal moves on its own, and
+   the halo still only comes up when you reach for it.
 
    BEAM (border-beam)
    Light travelling round an edge, for "something is happening here": the
    island while a task runs, the box you type into while a run can be
    steered, and — as a steady pulse — a question or an approval that is
-   waiting on you.
+   waiting on you. Slow and faint by default (see CALM_BEAM): it is there
+   to be noticed out of the corner of an eye, not to be watched.
 
    All three fall back to the plain element when WebGL or the canvas is not
    there, and all three hold still under prefers-reduced-motion.
@@ -61,6 +68,10 @@ export function orbStateFor({ phase, streaming = false, waiting = false, replann
     case 'Observing': return 'searching';
     case 'Thinking': return replanning ? 'shaping' : 'solving';
     case 'Acting': return 'working';
+    // Halo has let go of the mouse and is only polling a chat app for its
+    // answer — nothing to point at, so the same idle-but-alive orb as a
+    // pause, not "working".
+    case 'Waiting': return 'breathing';
     case 'Paused': return 'breathing';
     case 'AwaitingApproval':
     case 'AwaitingTakeover': return 'listening';
@@ -108,23 +119,39 @@ export function Orb({ state, px = 20, paused = false, speed = 1, className = '' 
 
 /**
  * A button with a liquid-metal ring. `circle` for icon buttons.
+ *
+ *   calm (default)  still ring, strength 0.5, no halo; moves while hovered
+ *                   or focused, so it answers the hand without shouting
+ *   hero            moving ring, strength 0.8; the halo comes up, softly,
+ *                   only while hovered or focused. One per screen at most.
+ *
+ * `strength` overrides either; `quiet` keeps the halo off even on a hero.
  * Everything else a button takes passes straight through to the button.
  */
 export const MetalButton = forwardRef(function MetalButton(
-  { circle = false, preset = 'chromatic', strength = 1, quiet = false, className = '', children, disabled, ...rest },
+  { circle = false, hero = false, preset = 'chromatic', strength, quiet = false, className = '', children, disabled, ...rest },
   ref,
 ) {
   const reduced = useReducedMotion();
+  // Whether a hand is on it — pointer over it, or keyboard focus inside it.
+  const [near, setNear] = useState(false);
+  const base = strength ?? (hero ? 0.8 : 0.5);
+  const moving = !reduced && !disabled && (hero || near);
   return (
     <MetalFx
       preset={preset}
       variant={circle ? 'circle' : 'button'}
       theme="dark"
-      strength={disabled ? 0.35 * strength : strength}
+      strength={disabled ? 0.35 * base : base}
+      glowGain={0.55}
       innerShadow={circle}
-      disableGlow={quiet || disabled}
-      paused={reduced || disabled}
-      className={`h-metal ${circle ? 'h-metal--circle' : ''}`}
+      disableGlow={quiet || disabled || !hero || !near}
+      paused={!moving}
+      onPointerEnter={() => setNear(true)}
+      onPointerLeave={() => setNear(false)}
+      onFocus={() => setNear(true)}
+      onBlur={() => setNear(false)}
+      className={`h-metal ${circle ? 'h-metal--circle' : ''}${hero ? ' h-metal--hero' : ''}`}
     >
       <button ref={ref} type="button" className={`h-mbtn ${circle ? 'h-mbtn--circle' : ''} ${className}`} disabled={disabled} {...rest}>
         {children}
@@ -134,20 +161,37 @@ export const MetalButton = forwardRef(function MetalButton(
 });
 
 /**
+ * How loud each kind of beam is when the call site does not say. Half or
+ * less of the library's own defaults, and a good deal slower: at full
+ * strength a rotating beam round the island read as a warning light, and
+ * the approval pulse at 1.8s was closer to a strobe than to breathing.
+ * The library's own defaults, for comparison: strength 1, and a cycle of
+ * 1.96s (md/sm), 3.1s (line), 2.3s (pulses).
+ */
+const CALM_BEAM = {
+  sm: { strength: 0.45, duration: 3.2 },
+  md: { strength: 0.45, duration: 3.6 },
+  line: { strength: 0.4, duration: 4.4 },
+  'pulse-inner': { strength: 0.55, duration: 2.9 },
+  'pulse-outside': { strength: 0.45, duration: 2.9 },
+};
+
+/**
  * Light round an edge. `active` false leaves the child exactly as it was —
  * the beam is a state, not a decoration.
  */
-export function Beam({ active = true, size = 'md', color = 'colorful', strength = 0.7, radius, className = '', children, duration }) {
+export function Beam({ active = true, size = 'md', color = 'colorful', strength, radius, className = '', children, duration }) {
   const reduced = useReducedMotion();
+  const calm = CALM_BEAM[size] ?? CALM_BEAM.md;
   return (
     <BorderBeam
       size={size}
       colorVariant={color}
-      strength={strength}
+      strength={strength ?? calm.strength}
       theme="dark"
       active={active && !reduced}
       borderRadius={radius}
-      duration={duration}
+      duration={duration ?? calm.duration}
       className={`h-beam ${className}`}
     >
       {children}

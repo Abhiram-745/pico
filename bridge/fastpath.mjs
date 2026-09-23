@@ -586,6 +586,14 @@ export function valueAfterLabel(goal, label) {
   if (name.length < 3 || name.length > 60) return null;
   const at = text.toLowerCase().indexOf(name.toLowerCase());
   if (at < 0) return null;
+  /* The value can come first: "type Halo test into Text input" — the way a
+     real task on a real form was worded, where every field then cost a
+     model call to be told what was in the sentence already. Only inside the
+     one clause, and never a description ("put the order number from the
+     receipt into …" names something on screen, not the words to type). */
+  const head = text.slice(Math.max(0, at - 90), at).replace(/["“'‘]$/, '');
+  const first = head.match(/(?:^|[\s,;])(?:type|enter|write|put|input|paste)\s+["“'‘]?([^,;"“”]{1,60}?)["”'’]?\s+(?:into|in|in to)\s+(?:the\s+)?$/i);
+  if (first && !/^(?:the|a|an|my|your|our|this|that|their|his|her|its)\b/i.test(first[1].trim())) return first[1].trim();
   const after = text.slice(at + name.length).replace(/^["”’']+/, '');
   const connector = after.match(/^\s*(?:field|box)?\s*(to|as|=|:|is|of|with|for)?\s*/i);
   let tail = after.slice(connector[0].length);

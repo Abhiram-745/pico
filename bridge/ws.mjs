@@ -19,10 +19,14 @@ const OP = {
   CLOSE: 0x8, PING: 0x9, PONG: 0xa,
 };
 
-/* A single frame's payload is capped well below anything legitimate here.
-   The phone sends short JSON commands; anything larger is either a bug or an
-   attempt to exhaust memory. */
-const MAX_MESSAGE = 256 * 1024;
+/* A single frame's payload used to be capped well below anything legitimate:
+   the phone sent short JSON commands, and anything larger was either a bug
+   or an attempt to exhaust memory. A message can now carry an attachment —
+   pasted text, a file, a picture (see bridge/attachments.mjs) — up to 6 of
+   them, each an image at most 8MB decoded. 32MB leaves comfortable headroom
+   for that whole payload once base64 and JSON overhead are added, while
+   still refusing a frame built only to exhaust memory. */
+const MAX_MESSAGE = 32 * 1024 * 1024;
 
 export class WebSocketConnection extends EventEmitter {
   constructor(socket) {
@@ -31,8 +35,15 @@ export class WebSocketConnection extends EventEmitter {
     this.open = true;
     this.id = randomBytes(8).toString('hex');
 
-    this._buf = Buffer.alloc(0);
+    // Bytes read off the socket, not yet enough to make a whole frame.
+    // Buffered as a list of chunks rather than one growing Buffer — see
+    // _readFrame and _take for why: a large message can arrive as hundreds
+    // of small TCP reads, and re-concatenating everything seen so far on
+    // every single one of them is quadratic in the chunk count.
+    this._chunks = [];
+    this._chunksLen = 0;
     this._fragments = [];
+    this._fragmentsLen = 0;
     this._fragmentOp = null;
 
     socket.on('data', (chunk) => this._onData(chunk));
@@ -57,19 +68,69 @@ export class WebSocketConnection extends EventEmitter {
   }
 
   _onData(chunk) {
-    this._buf = this._buf.length ? Buffer.concat([this._buf, chunk]) : chunk;
+    // A connection already closed — too large, unmasked, gone — reads no
+    // further: what is still arriving is the rest of the frame it refused.
+    if (!this.open) { this._chunks = []; this._chunksLen = 0; return; }
+    this._chunks.push(chunk);
+    this._chunksLen += chunk.length;
 
     for (;;) {
       const frame = this._readFrame();
       if (!frame) break;
       this._handleFrame(frame);
+      if (!this.open) { this._chunks = []; this._chunksLen = 0; return; }
     }
+  }
+
+  /** The first `n` buffered bytes (fewer when fewer are here), left in place. */
+  _head(n) {
+    const out = Buffer.allocUnsafe(Math.min(n, this._chunksLen));
+    let filled = 0;
+    for (const c of this._chunks) {
+      if (filled >= out.length) break;
+      filled += c.copy(out, filled, 0, Math.min(c.length, out.length - filled));
+    }
+    return out;
+  }
+
+  /* The next `n` buffered bytes, removed from the buffer. Each byte is
+     copied at most once, when its whole frame is here — never again on every
+     later read, which is what one growing Buffer.concat per TCP read did: a
+     24MB picture arriving in 64KB pieces meant hundreds of copies of
+     everything that had arrived so far. */
+  _take(n) {
+    if (n <= 0) return Buffer.alloc(0);
+    const first = this._chunks[0];
+    if (first.length >= n) {
+      if (first.length === n) this._chunks.shift();
+      else this._chunks[0] = first.subarray(n);
+      this._chunksLen -= n;
+      return first.subarray(0, n);
+    }
+    const out = Buffer.allocUnsafe(n);
+    let filled = 0;
+    while (filled < n) {
+      const c = this._chunks[0];
+      const need = n - filled;
+      if (c.length <= need) {
+        c.copy(out, filled);
+        filled += c.length;
+        this._chunks.shift();
+      } else {
+        c.copy(out, filled, 0, need);
+        this._chunks[0] = c.subarray(need);
+        filled += need;
+      }
+    }
+    this._chunksLen -= n;
+    return out;
   }
 
   /** Returns a frame, or null when more bytes are needed. */
   _readFrame() {
-    const b = this._buf;
-    if (b.length < 2) return null;
+    if (this._chunksLen < 2) return null;
+    // The longest header there is: 2 bytes, 8 of length, 4 of mask.
+    const b = this._head(14);
 
     const fin = (b[0] & 0x80) !== 0;
     const opcode = b[0] & 0x0f;
@@ -94,15 +155,13 @@ export class WebSocketConnection extends EventEmitter {
     // RFC 6455 §5.1: every client frame must be masked.
     if (!masked) { this.close(1002, 'unmasked frame'); return null; }
 
-    if (b.length < offset + 4 + len) return null;
-    const mask = b.subarray(offset, offset + 4);
-    offset += 4;
+    if (this._chunksLen < offset + 4 + len) return null;
+    const mask = Buffer.from(b.subarray(offset, offset + 4));
+    this._take(offset + 4);
 
+    const data = this._take(len);
     const payload = Buffer.allocUnsafe(len);
-    for (let i = 0; i < len; i++) payload[i] = b[offset + i] ^ mask[i & 3];
-    offset += len;
-
-    this._buf = b.subarray(offset);
+    for (let i = 0; i < len; i++) payload[i] = data[i] ^ mask[i & 3];
     return { fin, opcode, payload };
   }
 
@@ -125,16 +184,21 @@ export class WebSocketConnection extends EventEmitter {
         if (fin) { this._deliver(opcode, payload); return; }
         this._fragmentOp = opcode;
         this._fragments = [payload];
+        this._fragmentsLen = payload.length;
         return;
 
       case OP.CONT: {
+        // A continuation with no message begun is a protocol error, not the
+        // first piece of one.
+        if (this._fragmentOp === null) { this.close(1002, 'unexpected continuation'); return; }
         this._fragments.push(payload);
-        const total = this._fragments.reduce((n, f) => n + f.length, 0);
-        if (total > MAX_MESSAGE) { this.close(1009, 'too large'); return; }
+        this._fragmentsLen += payload.length;
+        if (this._fragmentsLen > MAX_MESSAGE) { this.close(1009, 'too large'); return; }
         if (!fin) return;
-        const full = Buffer.concat(this._fragments);
+        const full = Buffer.concat(this._fragments, this._fragmentsLen);
         const op = this._fragmentOp;
         this._fragments = [];
+        this._fragmentsLen = 0;
         this._fragmentOp = null;
         this._deliver(op, full);
         return;

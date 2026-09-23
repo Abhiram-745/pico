@@ -163,8 +163,44 @@ function ChatView({ petName }) {
   const title = chatState.list.find((c) => c.id === chatState.current)?.title;
   const empty = !messages.length && !plan && !decision;
 
+  /* A file dropped anywhere on the chat view, not just on the composer pill
+     itself. The composer (parts.jsx) is the thing that actually knows how
+     to turn a File into an attachment, so this only ever hands the raw
+     FileList across as a window event and lets it do that work — the same
+     event the composer's own onDrop would have produced. dragenter/dragleave
+     fire on every child as the pointer crosses it, which is what the depth
+     counter is for: without it the overlay flickers off every time the drag
+     passes over a message bubble on the way to the bottom. */
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
+  const acceptsDrop = decision?.kind !== 'question'; // no composer mounted to hand it to
+  const hasFiles = (e) => Boolean(e.dataTransfer?.types?.includes('Files'));
+  const onDragEnter = (e) => {
+    if (!acceptsDrop || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragOver(true);
+  };
+  const onDragOver = (e) => { if (acceptsDrop && hasFiles(e)) e.preventDefault(); };
+  const onDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragOver(false);
+  };
+  const onDrop = (e) => {
+    if (!acceptsDrop || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragOver(false);
+    if (e.dataTransfer.files?.length) window.dispatchEvent(new CustomEvent('halo:attach-files', { detail: e.dataTransfer.files }));
+  };
+
   return (
-    <div className="h-chatview">
+    <div className="h-chatview" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {dragOver && (
+        <div className="h-drop-overlay" aria-hidden="true">
+          <div className="h-drop-overlay__card"><Icon name="paperclip" size={22} /><span>Drop files to attach</span></div>
+        </div>
+      )}
       <header className="h-chatview__head">
         <div className="h-chatview__title">{empty ? 'New chat' : (title || 'This chat')}</div>
         <div className="h-chatview__state">
@@ -185,9 +221,9 @@ function ChatView({ petName }) {
             {routines.length > 0 && (
               <div className="h-chips h-welcome__chips">
                 {routines.slice(0, 6).map((r) => (
-                  <MetalButton key={r.id} className="h-chip h-chip--metal" title={r.task} onClick={() => bridge.send('routineRun', { id: r.id })}>
+                  <button key={r.id} type="button" className="h-chip h-chip--metal" title={r.task} onClick={() => bridge.send('routineRun', { id: r.id })}>
                     <Icon name="bolt" size={12} />{r.name}
-                  </MetalButton>
+                  </button>
                 ))}
               </div>
             )}
@@ -205,7 +241,7 @@ function ChatView({ petName }) {
       <footer className="h-chatview__foot">
         <div className="h-chatview__column">
           {plan && (
-            <Beam active={running && !plan.finished} size="line" color="colorful" strength={0.6} className="h-runcard-beam">
+            <Beam active={running && !plan.finished} size="line" color="colorful" className="h-runcard-beam">
               <section className="h-runcard" data-finished={plan.finished ? 'true' : 'false'}>
                 <header className="h-runcard__head">
                   {running && !plan.finished ? <Presence px={20} /> : <span className={`h-runcard__done${plan.succeeded ? '' : ' is-bad'}`}><Icon name={plan.succeeded ? 'check' : 'x'} size={11} /></span>}
@@ -224,7 +260,7 @@ function ChatView({ petName }) {
             </Beam>
           )}
           {decision && <Decision decision={decision} />}
-          {decision?.kind !== 'question' && <Composer petName={petName} big autoFocus={!running} />}
+          {decision?.kind !== 'question' && <Composer petName={petName} big autoFocus={!running} taskStopShown={Boolean(plan)} />}
           <div className="h-chatview__hint">
             {running ? 'Esc stops · what you type now steers the task in hand' : 'Halo keeps your chats on this computer'}
           </div>
@@ -608,7 +644,7 @@ function UpdateButton({ demo }) {
   const label = state.done ? 'Restart to update' : state.busy ? `${state.msg || 'Downloading…'}${state.pct ? ` ${Math.round(state.pct)}%` : ''}` : 'Download update';
   return (
     <div className="h-update">
-      <MetalButton className="h-update__btn" disabled={state.busy} onClick={state.done ? restartForUpdate : installUpdate}>
+      <MetalButton hero className="h-update__btn" disabled={state.busy} onClick={state.done ? restartForUpdate : installUpdate}>
         <Icon name="update" size={15} />
         <span>{label}</span>
       </MetalButton>
@@ -762,7 +798,7 @@ function App({ demo, conn }) {
           <span className="h-side__conn" data-conn={conn}>{demo ? 'Preview' : conn === 'connected' ? '' : conn}</span>
         </div>
 
-        <MetalButton className="h-newchat" onClick={() => { chats.newChat(); go('chat'); }}>
+        <MetalButton hero className="h-newchat" onClick={() => { chats.newChat(); go('chat'); }}>
           <Icon name="plus" size={15} /> New chat
         </MetalButton>
 

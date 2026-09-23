@@ -25,7 +25,7 @@
 
 import { MockAgent } from '../pico-ui/mock/agent.js';
 import { route } from './intent.mjs';
-import { runTask } from './driver.mjs';
+import { runJob, planJob } from './job.mjs';
 import { matchShortcut, runShortcut } from './shortcuts.mjs';
 import * as apps from './apps.mjs';
 import { ALLOW } from './policy.mjs';
@@ -55,6 +55,55 @@ const newSessionId = () =>
 
 /** How much conversation the chat side remembers. */
 const CHAT_MEMORY = 12;
+
+/* How much of one message the conversation keeps. A message can now be a
+   hundred thousand characters (see attachments.mjs), and every one of the
+   twelve turns kept goes back to the model with every reply — so what is
+   remembered is what a message used to be at most, and the whole of it goes
+   only to the run or the reply it was sent for. */
+const REMEMBERED_CHARS = 2000;
+
+/* What one pasted text or file may put in front of the chat model. The rest
+   is still the person's, and still pasted whole by a job (driver.mjs,
+   job.mjs); a reply only needs to have read it. */
+const CHAT_ATTACHMENT_CHARS = 40_000;
+
+/** The attachments a message came with, as the one line the conversation keeps. */
+function attachedLine(attachments = []) {
+  if (!attachments.length) return '';
+  const names = attachments.map((a) => `${a.name || (a.kind === 'image' ? 'a picture' : 'pasted text')}${a.kind === 'image' ? ' (picture)' : ''}`);
+  return `[Attached: ${names.join(', ')}]`;
+}
+
+/** A message as the conversation remembers it: the words, cut to size, and what came with them. */
+function turnFor(text, attachments = []) {
+  const said = String(text || '');
+  const words = said.length > REMEMBERED_CHARS ? `${said.slice(0, REMEMBERED_CHARS)}…` : said;
+  return [words, attachedLine(attachments)].filter(Boolean).join('\n');
+}
+
+/**
+ * A message as the chat model is sent it, this once: pasted text and files
+ * written out in full (up to CHAT_ATTACHMENT_CHARS each), pictures as images.
+ * A plain string when nothing was attached, so an ordinary message is sent
+ * exactly as it always was.
+ */
+function withAttachments(text, attachments = []) {
+  if (!attachments.length) return text;
+  const parts = [String(text || '').trim() || '(They sent this with no message.)'];
+  for (const a of attachments) {
+    if (a.kind !== 'text') continue;
+    const body = String(a.text ?? '');
+    const cut = body.length > CHAT_ATTACHMENT_CHARS;
+    parts.push(`--- Attached: ${a.name || 'Pasted text'}${cut ? ` (first ${CHAT_ATTACHMENT_CHARS} of ${body.length} characters)` : ''} ---\n${cut ? body.slice(0, CHAT_ATTACHMENT_CHARS) : body}`);
+  }
+  const images = attachments.filter((a) => a.kind === 'image' && typeof a.dataUrl === 'string');
+  if (!images.length) return parts.join('\n\n');
+  return [
+    { type: 'text', text: parts.join('\n\n') },
+    ...images.map((a) => ({ type: 'image_url', image_url: { url: a.dataUrl } })),
+  ];
+}
 
 /** Phases a paused run must not be shown leaving on its own. */
 const SETTLED = new Set(['Paused', 'Completed', 'Stopped', 'Failed', 'Idle', 'AwaitingApproval', 'AwaitingTakeover']);
@@ -279,7 +328,11 @@ export class HostAgent extends MockAgent {
      ---------------------------------------------------------------------- */
   async run(text = '', opts = {}) {
     const task = fixTypos(String(text || '').trim());
-    if (!task) return;
+    /* What came with the words: pasted text, files, pictures — already
+       checked on the way in (attachments.mjs). A message can be only that:
+       a picture with nothing said about it is still something to answer. */
+    const attachments = Array.isArray(opts.attachments) ? opts.attachments.filter(Boolean) : [];
+    if (!task && !attachments.length) return;
 
     // Cancel anything still in flight. Without this a second message leaves
     // the first run's loop going and the two interleave phase changes.
@@ -297,8 +350,10 @@ export class HostAgent extends MockAgent {
     /* Something to keep, or to forget. Said outright ("remember …",
        "forget …"), that is the whole message and it is answered here. Said
        in passing ("my brother is Ravi"), it is kept and the conversation
-       carries on as normal — so the reply can use it. */
-    const told = detectMemory(task);
+       carries on as normal — so the reply can use it. Not with something
+       attached: "remember this" then means the attachment, which is not a
+       fact to keep in a sentence. */
+    const told = task && !attachments.length ? detectMemory(task) : null;
     if (told?.kind === 'forget') {
       const gone = this.memory.forget(told.about);
       const reply = gone.length
@@ -319,8 +374,9 @@ export class HostAgent extends MockAgent {
       }
     }
 
-    // A saved shortcut, by name.
-    const saved = opts.mode !== 'chat' ? this.routines.match(task) : null;
+    // A saved shortcut, by name. A shortcut replays its own saved words, so
+    // a message that brought something with it is never one.
+    const saved = opts.mode !== 'chat' && task && !attachments.length ? this.routines.match(task) : null;
     if (saved) {
       this.emit('routed', { mode: 'agent', why: `your shortcut "${saved.name}"`, source: 'shortcut' });
       return this.runRoutine(saved, { alreadyAnnounced: true, token });
@@ -330,25 +386,32 @@ export class HostAgent extends MockAgent {
     // fixed list of app names, and anything off it went to a model to be
     // classified — which could, and did, call it conversation.
     const hint = opts.mode || 'auto';
-    const decision = hint === 'auto' && apps.parseOpen(task)
+    let decision = hint === 'auto' && task && apps.parseOpen(task)
       ? { mode: 'agent', why: 'asks to open something', source: 'rules' }
-      : await route(task, { hint, llm: this.llm });
+      : await route(task, { hint, llm: this.llm, attachments });
+    /* Something attached and no words at all, with the switch on "do it":
+       there is no job in that — nothing says where it goes or what to do
+       with it — so it is answered, as the router would have answered it. */
+    if (decision.mode === 'agent' && !task) {
+      decision = { mode: 'chat', why: 'something was attached with nothing said about it', source: 'rules' };
+    }
     this.emit('routed', { mode: decision.mode, why: decision.why, source: decision.source });
 
     if (token !== this.runToken) return;
-    if (decision.mode === 'chat') return this.converse(task, token);
-    return this.work(task, { token });
+    if (decision.mode === 'chat') return this.converse(task, token, attachments);
+    return this.work(task, { token, attachments });
   }
 
   /* The chat model worked out that this is a job — "yes", "do it", "opne a
      chat on discord" after it offered. It used to answer "switching to task
      mode" and then do nothing, because chat cannot touch the desktop and
      nothing ever switched. Now it names the job, and the job is started. */
-  async handOff(job, token) {
+  async handOff(job, token, attachments = []) {
     if (token !== this.runToken) return;
     this.emit('routed', { mode: 'agent', why: 'the conversation asked for it', source: 'model' });
     this.history.pop();                      // the user turn; work() adds it again
-    return this.work(job, { token });
+    // What was attached goes with the job: "put this in my notes" is about it.
+    return this.work(job, { token, attachments });
   }
 
   /** Run a saved shortcut: planned fresh, with the last run as a hint. */
@@ -372,13 +435,17 @@ export class HostAgent extends MockAgent {
   /* ------------------------------------------------------------------------
      Talking
      ---------------------------------------------------------------------- */
-  async converse(text, token = this.runToken) {
+  async converse(text, token = this.runToken, attachments = []) {
     this._chatAbort?.abort();
     const abort = new AbortController();
     this._chatAbort = abort;
     const id = `msg_${Date.now()}`;
-    this.history.push({ role: 'user', content: text });
+    // Kept small (turnFor); sent whole, this once, as the last turn below.
+    this.history.push({ role: 'user', content: turnFor(text, attachments) });
     this.history = this.history.slice(-CHAT_MEMORY);
+    const turns = attachments.length
+      ? [...this.history.slice(0, -1), { role: 'user', content: withAttachments(text, attachments) }]
+      : this.history;
 
     if (!this.llm) {
       this.emit('message', {
@@ -399,7 +466,7 @@ export class HostAgent extends MockAgent {
     let timedOut = false;
     const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, 90_000);
     try {
-      full = await this.llm.converse(this.history, {
+      full = await this.llm.converse(turns, {
         signal: abort.signal,
         name: this.petName,
         facts: this.memory.forPrompt(),
@@ -429,7 +496,7 @@ export class HostAgent extends MockAgent {
     const job = String(full).match(/^\s*TASK:\s*(.+)/is)?.[1]?.split('\n')[0].trim();
     if (job) {
       this.emit('message', { id, text: '', done: true, remove: true });
-      return this.handOff(job, token);
+      return this.handOff(job, token, attachments);
     }
     this.history.push({ role: 'assistant', content: full });
     this.emit('message', { id, text: full, done: true });
@@ -450,7 +517,8 @@ export class HostAgent extends MockAgent {
       return;
     }
 
-    this.history.push({ role: 'user', content: task });
+    const attachments = Array.isArray(context.attachments) ? context.attachments : [];
+    this.history.push({ role: 'user', content: turnFor(task, attachments) });
     this.history = this.history.slice(-CHAT_MEMORY);
     this.lastRun = null;
     this.plan = null;
@@ -471,8 +539,17 @@ export class HostAgent extends MockAgent {
     // It took down the whole server once, which also killed the phone's
     // connection and the interface along with it.
     try {
-      if (await this.tryOpen(task, context)) return;
-      if (!context.routine && await this.tryShortcut(task, context.token)) return;
+      /* Messages for a chat app — "paste each prompt into ChatGPT" — find
+         and open their own window (job.mjs), and need the app's name to know
+         how each one is sent. Opened here first, "open ChatGPT and paste
+         each prompt" would reach it as "paste each prompt" with the name
+         already spent, and every item would go the slow way. So the openers
+         and the address shortcut stand aside for one. A list of anything
+         else still opens first: "open Notepad and type each line" wants
+         Notepad opened once, not once per line. */
+      const chatJob = planJob(task, attachments)?.how === 'chat';
+      if (!chatJob && await this.tryOpen(task, context)) return;
+      if (!chatJob && !context.routine && await this.tryShortcut(task, context.token)) return;
       await this.drive(task, context);
     } catch (err) {
       console.error('[bridge] run crashed:', err);
@@ -647,8 +724,12 @@ export class HostAgent extends MockAgent {
    */
   async drive(task, context = {}, whole = task) {
     const helpers = this.openHelpers();
-    const result = await runTask({
+    /* runJob, not runTask: most jobs go straight through it to the loop,
+       unchanged; a list, or a single message for an assistant app, is sent
+       exactly in code instead (job.mjs). */
+    const result = await runJob({
       task,
+      attachments: Array.isArray(context.attachments) ? context.attachments : [],
       computer: this.computer,
       llm: this.llm,
       context: {

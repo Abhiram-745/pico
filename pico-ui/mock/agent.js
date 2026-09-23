@@ -122,7 +122,7 @@ export class MockAgent {
   handle({ command, payload = {} }) {
     switch (command) {
       case 'submitTask':
-        this.run(payload.text, { mode: payload.mode });
+        this.run(payload.text, { mode: payload.mode, attachments: payload.attachments });
         break;
 
       case 'setName':
@@ -284,6 +284,13 @@ export class MockAgent {
 
     this.cancelled = false;
     this.sessionId = newSessionId();
+
+    // A message with attachments is its own small scenario — see
+    // scenarioAttachments — so the preview can show the round trip (thumbs
+    // in the thread, a reply that knows they arrived) without pretending an
+    // unwired preview can actually look inside a picture or a file.
+    const attachments = Array.isArray(opts.attachments) ? opts.attachments.filter(Boolean) : [];
+    if (attachments.length) return this.scenarioAttachments(text, attachments);
 
     // The same fork the real host makes, so the preview demonstrates the
     // behaviour rather than describing it. The rules are shared code; only
@@ -554,6 +561,36 @@ export class MockAgent {
 
     // Typed out rather than dropped in whole, because that is what the real
     // one does and the difference is the thing worth showing.
+    this.emit('message', { id, text: '', done: false });
+    const words = reply.split(' ');
+    let acc = '';
+    for (let i = 0; i < words.length; i++) {
+      if (this.cancelled) return;
+      acc += (i ? ' ' : '') + words[i];
+      this.emit('message', { id, text: acc, done: false });
+      await sleep(26);
+    }
+    this.emit('message', { id, text: reply, done: true });
+  }
+
+  /**
+   * A message that carried attachments. This exists so the preview can show
+   * the whole round trip — the composer's own thumbnails, sent up, echoed
+   * straight back under the same id, and a reply that noticed them —
+   * without claiming a browser preview with no model wired up can actually
+   * read a picture or a file.
+   */
+  async scenarioAttachments(text, attachments) {
+    this.emit('routed', { mode: 'chat', why: 'a message with attachments talks, rather than acting', source: 'rules' });
+    const names = attachments.map((a) => a.name).filter(Boolean);
+    const list = names.length <= 1 ? names.join('')
+      : names.length === 2 ? names.join(' and ')
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    const reply = `Got your ${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`
+      + `${list ? ` — ${list}` : ''}. `
+      + 'This is the preview, so I can show them in the thread but nothing here actually reads them.';
+
+    const id = `msg_${Date.now()}`;
     this.emit('message', { id, text: '', done: false });
     const words = reply.split(' ');
     let acc = '';

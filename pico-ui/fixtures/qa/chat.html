@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Chat</title>
+<link rel="stylesheet" href="qa.css">
+<!--
+  A faithful stand-in for ChatGPT's own chat screen — for testing Halo's
+  "paste each item from a list into the chat, wait for it to finish, then
+  the next" engine (bridge/repeat.mjs + bridge/job.mjs) against something
+  that behaves like the real app, not a friendly pretend one: a composer
+  that refuses a second send while one is still generating, an assistant
+  reply that takes a few real seconds to "arrive", and state Halo can read
+  back — the window title, and window.chatState — instead of having to
+  guess it from a picture.
+
+  ?case=each   six-row table, told to send prompts 3-6 and wait each time.
+  ?case=one    one long attachment, told to send it once.
+  ?gen=<ms>    how long "generating" takes, instead of a random 3-7s.
+-->
+<style>
+/* This page is dark where every other fixture is light — a stand-in for
+   ChatGPT has to look like ChatGPT — so it overrides qa.css's body rule
+   wholesale rather than layering on top of it. */
+:root {
+  --bg-main: #212121;
+  --bg-sidebar: #171717;
+  --bg-composer: #2f2f2f;
+  --bg-hover: #2a2a2a;
+  --text: #ececec;
+  --text-muted: #9b9b9b;
+  --border: #2b2b2b;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; max-width: none; padding: 0; background: var(--bg-main); color: var(--text);
+  font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+
+.app { display: flex; height: 100vh; }
+
+/* ---- sidebar ---- */
+.sidebar { flex: 0 0 260px; width: 260px; background: var(--bg-sidebar); display: flex;
+  flex-direction: column; padding: 12px; overflow-y: auto; }
+.new-chat { display: flex; align-items: center; gap: 8px; width: 100%; background: transparent;
+  border: 1px solid var(--border); color: var(--text); padding: 10px 12px; border-radius: 10px;
+  cursor: pointer; font: inherit; font-size: 14px; margin-bottom: 16px; }
+.new-chat:hover { background: var(--bg-hover); }
+.chat-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.chat-item { display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text-muted); padding: 9px 10px; border-radius: 8px; cursor: pointer; font: inherit;
+  font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item:hover { background: var(--bg-hover); color: var(--text); }
+.chat-item.is-active { background: var(--bg-composer); color: var(--text); }
+.sidebar-footer { display: flex; align-items: center; gap: 10px; padding: 10px 6px 4px;
+  border-top: 1px solid var(--border); margin-top: 8px; color: var(--text-muted); font-size: 13px; }
+.avatar { width: 26px; height: 26px; border-radius: 50%; background: #6e56cf; color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex: 0 0 auto; }
+
+/* ---- main column ---- */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+.topbar { flex: 0 0 auto; padding: 14px 20px; font-weight: 600; border-bottom: 1px solid var(--border); }
+.model-pill { font-size: 11px; font-weight: 500; color: var(--text-muted); border: 1px solid var(--border);
+  padding: 2px 8px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
+
+.conversation { flex: 1 1 auto; overflow-y: auto; padding: 24px 16px 12px; display: flex;
+  flex-direction: column; gap: 22px; }
+/* Every message centres the same 700px column; inside it, the user's pill
+   hugs the right edge (real ChatGPT), the assistant's reply stays plain
+   text at the left. */
+.msg { display: flex; width: 100%; justify-content: center; }
+.msg .bubble { width: 100%; max-width: 700px; }
+.msg.user .bubble { display: flex; justify-content: flex-end; }
+.msg.user .bubble > span { background: var(--bg-composer); color: var(--text); padding: 10px 16px;
+  border-radius: 20px; white-space: pre-wrap; max-width: 80%; }
+.msg.assistant .bubble { color: var(--text); white-space: pre-wrap; }
+
+.status { margin: 0 0 8px; color: var(--text-muted); }
+.thumb { width: 256px; height: 256px; border-radius: 12px; display: block; }
+.thumb.shimmer { background: linear-gradient(100deg, #2a2a2a 20%, #3d3d3d 40%, #2a2a2a 60%);
+  background-size: 200% 100%; animation: shimmer 1.6s ease-in-out infinite; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.caption { margin: 10px 0 4px; color: var(--text-muted); font-size: 13px; }
+.msg-actions { display: flex; gap: 2px; margin-top: 2px; }
+.msg-actions button { background: none; border: none; color: var(--text-muted); font-size: 14px;
+  width: 30px; height: 30px; border-radius: 6px; cursor: pointer; }
+.msg-actions button:hover { background: var(--bg-hover); color: var(--text); }
+
+/* ---- composer ---- */
+.composer-area { flex: 0 0 auto; padding: 8px 16px 20px; }
+.composer { display: flex; align-items: flex-end; gap: 6px; background: var(--bg-composer);
+  border-radius: 26px; padding: 8px 8px 8px 16px; max-width: 700px; margin: 0 auto; }
+.attach-btn { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: none;
+  background: transparent; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+.attach-btn:hover { background: var(--bg-hover); color: var(--text); }
+.composer-input { flex: 1; background: transparent; border: none; outline: none; resize: none;
+  color: var(--text); font: inherit; font-size: 15px; max-height: 200px; overflow-y: auto;
+  padding: 7px 4px; }
+.composer-input::placeholder { color: var(--text-muted); }
+.send-btn { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: none;
+  background: #424242; color: #6f6f6f; font-size: 15px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; }
+.send-btn:not(:disabled) { background: #ececec; color: #0d0d0d; cursor: pointer; }
+.send-btn.stop { background: #ececec; color: #0d0d0d; }
+.refused-note { max-width: 700px; margin: 8px auto 0; text-align: center; color: #f0a0a0; font-size: 12.5px; }
+.refused-note[hidden] { display: none; }
+</style>
+
+<div class="app">
+  <nav class="sidebar" aria-label="Chat history">
+    <button type="button" class="new-chat"><span aria-hidden="true">+</span> New chat</button>
+    <ul class="chat-list">
+      <li><button type="button" class="chat-item is-active">Image prompt batch</button></li>
+      <li><button type="button" class="chat-item">Weekend trip planning</button></li>
+      <li><button type="button" class="chat-item">Logo ideas for Meridian</button></li>
+      <li><button type="button" class="chat-item">Resume rewrite — ops role</button></li>
+      <li><button type="button" class="chat-item">Trip budget spreadsheet</button></li>
+    </ul>
+    <div class="sidebar-footer"><span class="avatar" aria-hidden="true">A</span> My workspace</div>
+  </nav>
+  <div class="main">
+    <header class="topbar">ChatGPT<span class="model-pill">5</span></header>
+    <div id="conversation" class="conversation" role="log" aria-label="Conversation"></div>
+    <div class="composer-area">
+      <div class="composer">
+        <button type="button" class="attach-btn" aria-label="Add photos and files">+</button>
+        <textarea id="composerInput" class="composer-input" placeholder="Ask anything"
+          aria-label="Message ChatGPT" rows="1"></textarea>
+        <button type="button" id="sendBtn" class="send-btn" aria-label="Send prompt" disabled>&uarr;</button>
+      </div>
+      <p id="refusedNote" class="refused-note" role="status" hidden>Please wait for the response to finish.</p>
+    </div>
+  </div>
+</div>
+
+<script src="qa.js"></script>
+<script>
+/* ---- which run this is ------------------------------------------------- */
+const params = new URLSearchParams(location.search);
+const CASE = params.get('case') === 'one' ? 'one' : 'each';
+const GEN_MS = Number(params.get('gen'));
+const genDuration = () => (Number.isFinite(GEN_MS) && GEN_MS > 0) ? GEN_MS : 3000 + Math.random() * 4000;
+
+/* ---- page state ----------------------------------------------------------
+   Not part of qa.js — this is this page's own business, exactly like
+   `confirmed` in copy.html or `saved` in form.html. `sent` is appended the
+   moment a message is accepted (which can only happen while idle), so a
+   refused attempt made mid-generation never shows up in it — only in
+   `dropped`. That is what makes "wait for each image before sending the
+   next" a real, checkable requirement instead of a suggestion. */
+window.chatState = { sent: [], dropped: 0, generating: false };
+
+const normalize = qa.normalize;
+
+/* ---- elements ---- */
+const conversation = document.getElementById('conversation');
+const composer = document.getElementById('composerInput');
+const sendBtn = document.getElementById('sendBtn');
+const refusedNote = document.getElementById('refusedNote');
+
+/* Halo reads window titles rather than reading a picture to guess whether a
+   reply is still being written — so the title says so directly. */
+function setTitle() {
+  document.title = chatState.generating
+    ? 'Chat — generating…'
+    : (chatState.sent.length ? `Chat — ${chatState.sent.length} sent` : 'Chat');
+}
+
+/* ---- composer growth and enablement ---- */
+function autoGrow() {
+  composer.style.height = 'auto';
+  composer.style.height = Math.min(composer.scrollHeight, 200) + 'px';
+}
+function updateSendEnabled() {
+  sendBtn.disabled = chatState.generating ? false : normalize(composer.value).length === 0;
+}
+composer.addEventListener('input', () => { autoGrow(); updateSendEnabled(); });
+composer.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); trySend(); }
+  // Shift+Enter: no handler needed, the textarea's own default inserts the newline.
+});
+sendBtn.addEventListener('click', () => { chatState.generating ? stopGenerating() : trySend(); });
+
+let refuseTimer = null;
+function flashRefused() {
+  refusedNote.hidden = false;
+  clearTimeout(refuseTimer);
+  refuseTimer = setTimeout(() => { refusedNote.hidden = true; }, 1600);
+}
+
+function trySend() {
+  const text = composer.value.trim();
+  if (!text) return;                    // real ChatGPT won't send an empty box either
+  if (chatState.generating) {
+    chatState.dropped += 1;
+    flashRefused();
+    return;
+  }
+  chatState.sent.push(text);
+  addUserBubble(text);
+  composer.value = '';
+  autoGrow();
+  updateSendEnabled();
+  startGenerating(text);
+}
+
+/* ---- conversation rendering ---- */
+function addUserBubble(text) {
+  const row = document.createElement('div');
+  row.className = 'msg user';
+  row.innerHTML = '<div class="bubble"><span></span></div>';
+  row.querySelector('span').textContent = text;
+  conversation.appendChild(row);
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+let genTimer = null;
+function startGenerating(promptText) {
+  chatState.generating = true;
+  setTitle();
+  toggleSendStop(true);
+  const row = document.createElement('div');
+  row.className = 'msg assistant generating';
+  row.innerHTML = '<div class="bubble"><p class="status">Creating image…</p>'
+    + '<div class="thumb shimmer" aria-hidden="true"></div></div>';
+  conversation.appendChild(row);
+  conversation.scrollTop = conversation.scrollHeight;
+  genTimer = setTimeout(() => finishGenerating(promptText, row), genDuration());
+}
+
+function finishGenerating(promptText, row) {
+  chatState.generating = false;
+  genTimer = null;
+  const bubble = row.querySelector('.bubble');
+  const words = promptText.trim().split(/\s+/).slice(0, 6).join(' ');
+  bubble.querySelector('.status')?.remove();
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 256;
+  canvas.className = 'thumb';
+  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('aria-label', `Generated image for: ${words}`);
+  paintGradient(canvas, promptText);
+  bubble.querySelector('.thumb').replaceWith(canvas);
+  const caption = document.createElement('p');
+  caption.className = 'caption';
+  caption.textContent = `Image created — ${words}`;
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+  actions.innerHTML = '<button type="button" aria-label="Copy">&#10697;</button>'
+    + '<button type="button" aria-label="Download image">&#11015;</button>'
+    + '<button type="button" aria-label="Good response">&#128077;</button>'
+    + '<button type="button" aria-label="Bad response">&#128078;</button>';
+  bubble.append(caption, actions);
+  row.classList.remove('generating');
+  toggleSendStop(false);
+  setTitle();
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+function stopGenerating() {
+  if (!chatState.generating || !genTimer) return;
+  clearTimeout(genTimer);
+  genTimer = null;
+  chatState.generating = false;
+  const row = conversation.querySelector('.msg.assistant.generating');
+  if (row) {
+    const status = row.querySelector('.status');
+    if (status) status.textContent = 'Stopped generating.';
+    row.querySelector('.thumb')?.remove();
+    row.classList.remove('generating');
+  }
+  toggleSendStop(false);
+  setTitle();
+}
+
+function toggleSendStop(isGenerating) {
+  sendBtn.setAttribute('aria-label', isGenerating ? 'Stop generating' : 'Send prompt');
+  sendBtn.classList.toggle('stop', isGenerating);
+  sendBtn.innerHTML = isGenerating ? '&#9632;' : '&uarr;';
+  updateSendEnabled();
+}
+
+/* A gradient "image", seeded from the prompt so the same prompt always
+   paints the same thumbnail rather than a new random one every time. */
+function hashSeed(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+function paintGradient(canvas, seedText) {
+  const g = canvas.getContext('2d');
+  const h = hashSeed(seedText);
+  const hue1 = h % 360, hue2 = (hue1 + 70 + ((h >> 8) % 160)) % 360;
+  const grad = g.createLinearGradient(0, 0, canvas.width, canvas.height);
+  grad.addColorStop(0, `hsl(${hue1} 70% 55%)`);
+  grad.addColorStop(1, `hsl(${hue2} 70% 38%)`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+/* ---- case data -----------------------------------------------------------
+   Both cases are the same real task in two shapes: several prompts from an
+   attached table, paced one at a time; and one long prompt, sent once. Both
+   travel as `qa.attachments`, the same shape bridge/job.mjs takes from the
+   host — see pico-ui/src/attachments.js's toBridgeAttachment. */
+const PROMPTS = [
+  { n: 1, time: ':47', spec: 'B11.1', title: 'Nervous vs hormonal response',
+    body: 'Split-screen concept art. Left half: cool electric blue circuit-board texture, a glowing pulse racing down a single neuron to one muscle fiber, sharp and immediate. Right half: warm amber gradient, a hormone molecule drifting through the bloodstream like a slow tide, reaching many cells at once.' },
+  { n: 2, time: ':69', spec: 'B11.1', title: 'Gland map',
+    body: 'The human body drawn as a night-time city skyline seen from a hillside. Each gland is a lit tower with its own glow: the pituitary a lighthouse beacon at the top, the thyroid a warm hearth-orange building at the throat, the adrenals two small bright kiosks at the kidneys.' },
+  { n: 3, time: ':92', spec: 'B11.2', title: 'Feedback loop',
+    body: 'A thermostat dial made of living tissue, the needle swinging between too much and too little, a thin glowing line looping from the dial back up to a brain icon at the top of the frame. Clean flat vector illustration, muted teal and coral palette.' },
+  { n: 4, time: ':118', spec: 'B11.2', title: 'Synapse close-up',
+    body: 'Macro photography style. Two neurons almost touching, a shower of glowing blue-white vesicles crossing the gap between them, background soft-blurred into bokeh. Dramatic rim lighting against a near-black backdrop.' },
+  { n: 5, time: ':140', spec: 'B11.3', title: 'Stress response',
+    body: 'Split composition: top half a calm forest clearing in soft greens, bottom half the same clearing seen through a cracked, adrenaline-red lens with a figure mid-stride. Motion blur on the lower half only, sharp focus on the upper half.' },
+  { n: 6, time: ':165', spec: 'B11.3', title: 'Homeostasis dashboard',
+    body: 'A cockpit control panel with three analogue gauges labelled Temperature, Glucose and Water, each needle centred in a green zone, soft backlight, brushed-metal texture, one small red warning lamp unlit in the corner.' },
+];
+
+/* A real header row before the separator, on its own line, exactly as the
+   person's table had it — bridge/repeat.mjs only promotes the row above a
+   separator to a header when that row does NOT look like data (no leading
+   number, no long cell); skip the header here and row 1 is indistinguishable
+   from a headerless table whose first row is prompt 1, which is a different
+   case than this one is meant to exercise. */
+const rowLine = (p) => `| **${p.n}** | \`${p.time}\` | ${p.spec} | **${p.title}** — ${p.body} |`;
+const TABLE_MD = ['| # | Time | Spec | Prompt |', '| --- | --- | --- | --- |', ...PROMPTS.map(rowLine)].join('\n');
+
+const ONE_TEXT = `Build a landing page for a small-batch coffee subscription called Meridian Roasters. The tone should feel warm and unhurried, more independent bookstore than tech startup — cream and charcoal, one accent color, a serif headline paired with a plain sans-serif body.
+
+Structure it as a hero with a short promise ("Coffee, sent when it's actually good"), a three-step how-it-works section, a roaster's-note block that rotates a different origin story each month, and a simple plan picker with three tiers. Keep the whole page to about a scroll and a half on a laptop — no endless sections just to look thorough.
+
+Skip the usual dashboard-style stat counters and stock-photo testimonials. If you need placeholder copy, write it like someone who actually roasts coffee for a living, not a marketer. End with a single email field and a button that says "Get the next bag."`;
+
+/* Byte length the way pico-ui/src/attachments.js's byteLengthOf computes it. */
+const byteLength = (s) => { try { return new TextEncoder().encode(String(s ?? '')).length; } catch { return String(s ?? '').length; } };
+const attachment = (id, name, mime, text) => ({ id, name, kind: 'text', mime, size: byteLength(text), text });
+
+if (CASE === 'one') {
+  qa.attachments = [attachment('att_prompt_txt', 'Prompt.txt', 'text/plain', ONE_TEXT)];
+  qa.task = 'Send the attached prompt in the chat.';
+  qa.check = () => {
+    const ok = chatState.sent.length > 0 && normalize(chatState.sent[0]) === normalize(ONE_TEXT) && chatState.dropped === 0;
+    return {
+      pass: ok,
+      detail: chatState.sent.length
+        ? `sent "${chatState.sent[0].slice(0, 60)}…", dropped ${chatState.dropped}`
+        : `nothing sent, dropped ${chatState.dropped}`,
+    };
+  };
+} else {
+  qa.attachments = [attachment('att_image_prompts', 'Image prompts.md', 'text/markdown', TABLE_MD)];
+  qa.task = 'In the chat, from prompt 3 onwards paste each prompt from the attached table into the message box, send it, and wait for each image to be created before sending the next — do this up to the last prompt.';
+  /* What Halo is actually expected to paste is the Prompt cell with markdown
+     stripped but the bold title and em dash kept — bridge/repeat.mjs's
+     plain() on the cell, e.g. "Nervous vs hormonal response — Split-screen
+     concept art…". The plainer reading, "just the description," is accepted
+     too, rather than failing a perfectly reasonable read of "the prompt". */
+  qa.check = () => {
+    const want = PROMPTS.slice(2); // prompts 3-6
+    const got = chatState.sent.map(normalize);
+    const orderOk = got.length === want.length && want.every((p, i) => {
+      const full = normalize(`${p.title} — ${p.body}`);
+      const bodyOnly = normalize(p.body);
+      return got[i] === full || got[i] === bodyOnly;
+    });
+    return {
+      pass: orderOk && chatState.dropped === 0,
+      detail: `sent ${JSON.stringify(chatState.sent.map((s) => s.slice(0, 40)))}, dropped ${chatState.dropped}`,
+    };
+  };
+}
+
+updateSendEnabled();
+setTitle();
+</script>
+</html>

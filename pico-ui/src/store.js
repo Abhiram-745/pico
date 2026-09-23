@@ -6,7 +6,7 @@
    ========================================================================== */
 
 export const PHASES = [
-  'Idle', 'Starting', 'Observing', 'Thinking', 'Acting', 'Paused',
+  'Idle', 'Starting', 'Observing', 'Thinking', 'Acting', 'Waiting', 'Paused',
   'AwaitingApproval', 'AwaitingTakeover', 'Completed', 'Stopped', 'Failed',
 ];
 
@@ -17,6 +17,12 @@ export const PHASE_COPY = {
   Observing:        { title: 'Reading the active desktop',    detail: '' },
   Thinking:         { title: 'Planning the next safe step',   detail: '' },
   Acting:           { title: 'Working on your desktop',       detail: '' },
+  // Halo has sent something off (a prompt into a chat app, say) and is
+  // waiting on it to finish, hands off the mouse and keyboard entirely — see
+  // the list runner. Unlike Acting there is nothing to watch happen on
+  // screen, but it is still a live run: steerable, stoppable, the island
+  // still open.
+  Waiting:          { title: 'Waiting for the app to finish',  detail: '' },
   Paused:           { title: 'Paused',                        detail: 'No actions will run until you resume.' },
   AwaitingApproval: { title: 'Needs your approval',           detail: 'A consequential action needs approval.' },
   AwaitingTakeover: { title: 'Your turn',                     detail: 'Please complete this step manually.' },
@@ -40,7 +46,7 @@ export const ACTION_COPY = {
 
 /** Phases in which a run is live, so Esc must stay the emergency stop. */
 export const ACTIVE_PHASES = new Set([
-  'Starting', 'Observing', 'Thinking', 'Acting', 'Paused',
+  'Starting', 'Observing', 'Thinking', 'Acting', 'Waiting', 'Paused',
   'AwaitingApproval', 'AwaitingTakeover',
 ]);
 
@@ -81,6 +87,24 @@ function saveRecents(list) {
   }
 }
 
+/**
+ * Reconcile a message's attachments across an upsert. `next` is whatever the
+ * latest call brought (often nothing at all — most setMessage calls are a
+ * streaming pico reply, which never has attachments); `prev` is what the
+ * message already showed. The one thing this must never do is blank a
+ * thumbnail the composer already rendered from the file itself just because
+ * the host's echo came back without one.
+ */
+function mergeAttachments(prev, next) {
+  if (!next) return prev;
+  if (!prev) return next;
+  const byId = new Map(prev.map((a) => [a.id, a]));
+  return next.map((a) => {
+    const before = byId.get(a.id);
+    return before?.thumb && !a.thumb ? { ...a, thumb: before.thumb } : a;
+  });
+}
+
 const initial = () => ({
   phase: 'Idle',
   task: '',
@@ -106,7 +130,15 @@ const initial = () => ({
 
   // The conversation lives here rather than inside a view, so what you type
   // in the notch is the same thread you see in the app window.
-  messages: [],            // { id, from: 'you'|'pico'|'event', text, done }
+  //
+  // A message may carry `attachments`: [{ id, name, kind: 'image'|'text',
+  // mime, size, thumb?, chars?, preview? }]. This is deliberately the small
+  // shape, not the one sent to the host — an image keeps only its thumbnail
+  // and a text file only its char count and a short preview, so a long
+  // conversation with pictures in it does not become a conversation made of
+  // pictures. See src/attachments.js for the full shape and how one becomes
+  // the other.
+  messages: [],            // { id, from: 'you'|'pico'|'event', text, done, attachments? }
   routed: null,            // { mode, why, source } — which fork the last message took
   question: null,          // { id, text } — asked before starting, answered in the composer
   mode: 'auto',            // what the composer is set to: auto | chat | agent
@@ -260,9 +292,10 @@ class Store {
 
   // --- conversation --------------------------------------------------------
   /** Append a finished message. Returns it, so the caller can keep the id. */
-  addMessage({ id, from, text, done = true, memoryId }) {
+  addMessage({ id, from, text, done = true, memoryId, attachments }) {
     const entry = { id: id ?? `m_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`, from, text, done };
     if (memoryId) entry.memoryId = memoryId;
+    if (Array.isArray(attachments) && attachments.length) entry.attachments = attachments;
     this.state.messages = [...this.state.messages, entry].slice(-120);
     this.emit({ type: 'message', message: entry });
     return entry;
@@ -272,8 +305,14 @@ class Store {
    * A streaming reply from the host. The same id arrives many times with a
    * longer `text` each time, so this replaces in place rather than appending
    * — otherwise one sentence becomes forty bubbles.
+   *
+   * A message the composer already put on screen (with attachments it built
+   * itself, thumbnails and all) can also arrive here again as the host's own
+   * echo of the same id — upserted, not duplicated. That echo's attachments
+   * win on every field except a missing thumb, where the local one already
+   * on screen is kept rather than blanked: see mergeAttachments below.
    */
-  setMessage({ id, from = 'pico', text, done, memoryId, remove }) {
+  setMessage({ id, from = 'pico', text, done, memoryId, remove, attachments }) {
     const list = this.state.messages;
     const i = list.findIndex((m) => m.id === id);
     // A reply that turned out to be a job handed to the desktop loop: the
@@ -285,11 +324,13 @@ class Store {
       return;
     }
     if (i === -1) {
-      this.addMessage({ id, from, text, done: Boolean(done), memoryId });
+      this.addMessage({ id, from, text, done: Boolean(done), memoryId, attachments });
       return;
     }
     const next = [...list];
-    next[i] = { ...next[i], text, done: Boolean(done) };
+    const prev = next[i];
+    const merged = mergeAttachments(prev.attachments, attachments);
+    next[i] = { ...prev, text, done: Boolean(done), ...(merged ? { attachments: merged } : {}) };
     this.state.messages = next;
     this.emit({ type: 'message', message: next[i], streaming: !done });
   }

@@ -15,6 +15,7 @@
    ========================================================================== */
 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { store, isActive } from '../src/store.js';
 import { bridge } from '../src/bridge.js';
 import { Mascot } from '../src/mascot.js';
@@ -24,6 +25,10 @@ import { speak, stopVoice, setVoiceEnabled } from '../src/voice.js';
 import { createMicrophone } from '../src/microphone.js';
 import { claimVoice, updateVoice, endVoice, releaseVoice, stopEverything, onVoiceSession, isSpokenStop, voiceOwner } from '../src/voice-session.js';
 import { byId as keybind } from '../src/keybinds.js';
+import {
+  MAX_ATTACHMENTS, MAX_PAYLOAD_BYTES, attachmentFromFile, buildPastedTextAttachment,
+  estimateAttachmentBytes, formatBytes, shouldAttachPaste, toBridgeAttachment, toDisplayAttachment,
+} from '../src/attachments.js';
 
 /* --------------------------------------------------------------------------
    Icons — Lucide-style paths on a 24 unit grid, 2px round stroke.
@@ -56,6 +61,8 @@ const PATHS = {
   hand: 'M18 11V6a2 2 0 0 0-4 0 M14 10V4a2 2 0 0 0-4 0v2 M10 10.5V6a2 2 0 0 0-4 0v8 M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15',
   expand: 'M15 3h6v6 M9 21H3v-6 M21 3l-7 7 M3 21l7-7',
   bookmark: 'M6 3h12v18l-6-4-6 4z',
+  paperclip: 'm21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48',
+  file: 'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z M14 2v6h6',
 };
 
 export function Icon({ name, size = 16, className = '' }) {
@@ -117,9 +124,258 @@ export function Presence({ px = 26 }) {
 }
 
 /* --------------------------------------------------------------------------
+   A tiny, safe markdown subset for Halo's replies.
+
+   Paragraphs, **bold**, *italic*, `code`, fenced code blocks, bullet and
+   numbered lists, and simple pipe tables — built as React elements, never
+   as HTML, so there is no dangerouslySetInnerHTML anywhere near a message
+   that came from a model. The user's own messages never go through this:
+   they stay plain text, pre-wrap, exactly what was typed.
+   -------------------------------------------------------------------------- */
+const MD_INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*)/;
+
+/** Bold, italic and inline code within one line of already-block-split text. */
+function mdInline(text, keyBase) {
+  const nodes = [];
+  let rest = text;
+  let i = 0;
+  while (rest) {
+    const m = MD_INLINE.exec(rest);
+    if (!m) { nodes.push(rest); break; }
+    if (m.index > 0) nodes.push(rest.slice(0, m.index));
+    const token = m[0];
+    if (token[0] === '`') nodes.push(<code key={`${keyBase}i${i++}`} className="h-md-code">{token.slice(1, -1)}</code>);
+    else if (token.startsWith('**')) nodes.push(<strong key={`${keyBase}i${i++}`}>{token.slice(2, -2)}</strong>);
+    else nodes.push(<em key={`${keyBase}i${i++}`}>{token.slice(1, -1)}</em>);
+    rest = rest.slice(m.index + token.length);
+  }
+  return nodes;
+}
+
+const mdSplitRow = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+const mdIsTableRule = (line) => {
+  const cells = mdSplitRow(line);
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+};
+
+function MdTable({ lines, mkey }) {
+  const header = mdSplitRow(lines[0]);
+  const rows = lines.slice(2).map(mdSplitRow);
+  return (
+    <div className="h-md-tablewrap" key={mkey}>
+      <table className="h-md-table">
+        <thead><tr>{header.map((c, i) => <th key={i}>{mdInline(c, `${mkey}h${i}`)}</th>)}</tr></thead>
+        <tbody>{rows.map((r, ri) => <tr key={ri}>{r.map((c, ci) => <td key={ci}>{mdInline(c, `${mkey}r${ri}c${ci}`)}</td>)}</tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+const isFence = (l) => /^\s*```/.test(l);
+const isBullet = (l) => /^\s*[-*+]\s+/.test(l);
+const isNumbered = (l) => /^\s*\d+[.)]\s+/.test(l);
+
+/** Text -> an array of block-level React nodes. */
+function renderMarkdownLite(text) {
+  const lines = String(text ?? '').split('\n');
+  const blocks = [];
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (isFence(line)) {
+      const body = [];
+      i += 1;
+      while (i < lines.length && !isFence(lines[i])) { body.push(lines[i]); i += 1; }
+      i += 1; // the closing fence, if the stream ever finishes it
+      blocks.push(<pre className="h-md-pre" key={`b${key++}`}><code>{body.join('\n')}</code></pre>);
+      continue;
+    }
+
+    if (line.includes('|') && lines[i + 1] !== undefined && mdIsTableRule(lines[i + 1])) {
+      const tableLines = [line, lines[i + 1]];
+      i += 2;
+      while (i < lines.length && lines[i].trim() && lines[i].includes('|')) { tableLines.push(lines[i]); i += 1; }
+      blocks.push(<MdTable lines={tableLines} mkey={`b${key++}`} />);
+      continue;
+    }
+
+    if (isBullet(line)) {
+      const items = [];
+      while (i < lines.length && isBullet(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, '')); i += 1; }
+      blocks.push(<ul className="h-md-list" key={`b${key++}`}>{items.map((it, idx) => <li key={idx}>{mdInline(it, `b${key}i${idx}`)}</li>)}</ul>);
+      continue;
+    }
+
+    if (isNumbered(line)) {
+      const items = [];
+      while (i < lines.length && isNumbered(lines[i])) { items.push(lines[i].replace(/^\s*\d+[.)]\s+/, '')); i += 1; }
+      blocks.push(<ol className="h-md-list" key={`b${key++}`}>{items.map((it, idx) => <li key={idx}>{mdInline(it, `b${key}o${idx}`)}</li>)}</ol>);
+      continue;
+    }
+
+    if (!line.trim()) { i += 1; continue; }
+
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !isFence(lines[i]) && !isBullet(lines[i]) && !isNumbered(lines[i])
+      && !(lines[i].includes('|') && lines[i + 1] !== undefined && mdIsTableRule(lines[i + 1]))) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    blocks.push(
+      <p className="h-md-p" key={`b${key++}`}>
+        {para.map((l, idx) => <span key={idx}>{idx > 0 && <br />}{mdInline(l, `b${key}p${idx}`)}</span>)}
+      </p>,
+    );
+  }
+  return blocks;
+}
+
+/* --------------------------------------------------------------------------
+   Attachments — chips inside the composer, and read-only in the thread.
+
+   The same two small components draw both: with `onRemove` they are the
+   composer's own queue, with `onOpenImage` they are what a sent message
+   shows. Never both at once — a message already sent cannot be edited.
+   -------------------------------------------------------------------------- */
+function AttachmentImage({ att, onRemove, onOpenImage }) {
+  const openable = Boolean(onOpenImage);
+  return (
+    <span className="h-att h-att--image">
+      <img
+        className="h-att__thumb"
+        src={att.thumb}
+        alt={att.name}
+        title={att.name}
+        role={openable ? 'button' : undefined}
+        tabIndex={openable ? 0 : undefined}
+        onClick={openable ? () => onOpenImage(att) : undefined}
+        onKeyDown={openable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenImage(att); } } : undefined}
+      />
+      {onRemove && (
+        <button type="button" className="h-att__x" aria-label={`Remove ${att.name}`} onClick={() => onRemove(att.id)}>
+          <Icon name="x" size={9} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+function AttachmentText({ att, onRemove }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const wrap = useRef(null);
+  const chip = useRef(null);
+  const popover = useRef(null);
+  // The composer's own copy counts lines; the thread's (toDisplayAttachment) does not.
+  const lines = att.lines ?? null;
+  const sub = lines != null ? `${lines} line${lines === 1 ? '' : 's'}` : formatBytes(att.size) || 'text';
+
+  // The chip can sit inside the composer's beam, which clips anything that
+  // pokes out of its own rounded box — a popover positioned the ordinary
+  // way (absolute, inside the chip) would be sliced off at that edge. So
+  // this one is measured against the chip and portalled to the document
+  // body instead, the same reasoning as the picture's Lightbox above.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const r = chip.current?.getBoundingClientRect();
+    if (!r) return;
+    setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - 258)), bottom: window.innerHeight - r.top + 8 });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => {
+      if (wrap.current?.contains(e.target) || popover.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  return (
+    <span className={`h-att h-att--text${open ? ' is-open' : ''}`} ref={wrap}>
+      <button type="button" className="h-att__chip" ref={chip} onClick={() => setOpen((v) => !v)} title={att.name}>
+        <Icon name="file" size={13} />
+        <span className="h-att__name">{att.name}</span>
+        <span className="h-att__sub">{sub}</span>
+      </button>
+      {onRemove && (
+        <button type="button" className="h-att__x" aria-label={`Remove ${att.name}`} onClick={() => onRemove(att.id)}>
+          <Icon name="x" size={9} />
+        </button>
+      )}
+      {open && pos && typeof document !== 'undefined' && createPortal(
+        <div
+          className="h-att__preview"
+          style={{ position: 'fixed', left: pos.left, bottom: pos.bottom }}
+          ref={popover}
+          role="dialog"
+          aria-label={`Preview of ${att.name}`}
+        >
+          <pre>{att.preview || att.text || ''}</pre>
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
+function AttachmentRow({ items, onRemove, onOpenImage, className = '' }) {
+  if (!items?.length) return null;
+  return (
+    <div className={`h-atts ${className}`}>
+      {items.map((att) => (att.kind === 'image'
+        ? <AttachmentImage key={att.id} att={att} onRemove={onRemove} onOpenImage={onOpenImage} />
+        : <AttachmentText key={att.id} att={att} onRemove={onRemove} />))}
+    </div>
+  );
+}
+
+/** The one place a picture gets shown at size. Portalled to the document
+    body so it sits above everything regardless of which effect wrapper
+    (Beam, MetalFx) the thread happens to be nested inside. */
+function Lightbox({ att, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  if (!att || typeof document === 'undefined') return null;
+  return createPortal(
+    <div className="h-lightbox" role="dialog" aria-modal="true" aria-label={att.name} onClick={onClose}>
+      <img className="h-lightbox__img" src={att.thumb} alt={att.name} onClick={(e) => e.stopPropagation()} />
+      <button type="button" className="h-lightbox__x" aria-label="Close" onClick={onClose}><Icon name="x" size={16} /></button>
+    </div>,
+    document.body,
+  );
+}
+
+/* --------------------------------------------------------------------------
    The thread
    -------------------------------------------------------------------------- */
-const Message = memo(function Message({ id, from, text, done, memoryId, remembered }) {
+const CLAMP_LINES = 12;
+const CLAMP_CHARS = 900;
+
+/** A long typed message, cut to a readable first screenful. Cut by lines
+    first and then by characters, so one 900-character line does not slip
+    through just because it never breaks. */
+function clampUserText(text) {
+  if (!text) return { clamped: false, shown: text };
+  const lines = text.split('\n');
+  const byLines = lines.length > CLAMP_LINES ? lines.slice(0, CLAMP_LINES).join('\n') : text;
+  const shown = byLines.length > CLAMP_CHARS ? byLines.slice(0, CLAMP_CHARS) : byLines;
+  return { clamped: shown.length < text.length, shown };
+}
+
+const Message = memo(function Message({ id, from, text, done, memoryId, remembered, attachments, onOpenImage }) {
+  const [expanded, setExpanded] = useState(false);
+  const { clamped, shown } = useMemo(() => clampUserText(text), [text]);
+  const md = useMemo(() => (from === 'pico' ? renderMarkdownLite(text) : null), [from, text]);
+
   if (from === 'event') {
     return (
       <div className="h-msg h-msg--event" data-id={id}>
@@ -131,7 +387,7 @@ const Message = memo(function Message({ id, from, text, done, memoryId, remember
       </div>
     );
   }
-  if (from === 'pico' && !text && !done) {
+  if (from === 'pico' && !text && !done && !attachments?.length) {
     return (
       <div className="h-msg h-msg--pico h-msg--waiting" data-id={id}>
         <Orb state="breathing" px={20} />
@@ -139,9 +395,27 @@ const Message = memo(function Message({ id, from, text, done, memoryId, remember
       </div>
     );
   }
+  if (from === 'you') {
+    return (
+      <div className="h-msg h-msg--you" data-id={id}>
+        {text && (
+          <div className={`h-msg__text${clamped && !expanded ? ' is-clamped' : ''}`}>
+            {expanded || !clamped ? text : shown}
+          </div>
+        )}
+        {clamped && (
+          <button type="button" className="h-msg__more" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? 'Show less' : 'Show more'}
+          </button>
+        )}
+        <AttachmentRow items={attachments} onOpenImage={onOpenImage} className="h-msg__atts" />
+      </div>
+    );
+  }
   return (
     <div className={`h-msg h-msg--${from}${done ? '' : ' is-streaming'}`} data-id={id}>
-      {text}
+      {text && <div className="h-msg__md">{md}</div>}
+      <AttachmentRow items={attachments} onOpenImage={onOpenImage} className="h-msg__atts" />
       {from === 'pico' && done && text && <button type="button" className="h-link" onClick={() => speak(text)} aria-label="Listen to this reply"> Listen</button>}
     </div>
   );
@@ -153,14 +427,42 @@ export function Thread({ className = '', stickToBottom = true }) {
   const kept = useMemo(() => new Set(memory.map((f) => f.id)), [memory]);
   const ref = useRef(null);
   const pinned = useRef(true);
+  const lastId = useRef(null);
+  const prevMessages = useRef(messages);
+  const [showJump, setShowJump] = useState(false);
+  const [lightboxAtt, setLightboxAtt] = useState(null);
 
   // Follow the conversation down, unless the person has scrolled up to read.
   const onScroll = () => {
     const el = ref.current;
+    if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (pinned.current) setShowJump(false);
   };
+
+  const jump = () => {
+    pinned.current = true;
+    setShowJump(false);
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  };
+
   useLayoutEffect(() => {
-    if (stickToBottom && pinned.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    const el = ref.current;
+    const changed = prevMessages.current !== messages;
+    const last = messages[messages.length - 1];
+    // Sending is never a moment to leave someone scrolled up looking at an
+    // old part of the conversation — the thing they just did belongs on
+    // screen, whatever they were reading before.
+    if (changed && last && last.id !== lastId.current && last.from === 'you') pinned.current = true;
+    lastId.current = last ? last.id : null;
+    prevMessages.current = messages;
+    if (!el || !messages.length) return;
+    if (stickToBottom && pinned.current) {
+      el.scrollTop = el.scrollHeight;
+      if (changed) setShowJump(false);
+    } else if (changed) {
+      setShowJump(true);
+    }
   });
 
   if (!messages.length) return null;
@@ -168,8 +470,15 @@ export function Thread({ className = '', stickToBottom = true }) {
     <div className={`h-thread ${className}`} ref={ref} onScroll={onScroll}>
       {messages.map((m) => (
         <Message key={m.id} id={m.id} from={m.from} text={m.text} done={m.done}
-          memoryId={m.memoryId} remembered={m.memoryId ? kept.has(m.memoryId) : false} />
+          memoryId={m.memoryId} remembered={m.memoryId ? kept.has(m.memoryId) : false}
+          attachments={m.attachments} onOpenImage={setLightboxAtt} />
       ))}
+      {showJump && (
+        <button type="button" className="h-thread__jump" onClick={jump}>
+          Jump to latest <Icon name="chevron" size={12} className="h-thread__jump-icon" />
+        </button>
+      )}
+      <Lightbox att={lightboxAtt} onClose={() => setLightboxAtt(null)} />
     </div>
   );
 }
@@ -225,7 +534,7 @@ export function Decision({ decision, compact = false }) {
   };
 
   return (
-    <Beam size="pulse-inner" color={look.color} strength={0.9} duration={1.8} className="h-decision-beam">
+    <Beam size="pulse-inner" color={look.color} className="h-decision-beam">
       <section className={`h-decision h-decision--${kind}${compact ? ' is-compact' : ''}`} role="alertdialog" aria-label={look.label}>
         <header className="h-decision__flag">
           <i className="h-decision__dot" />
@@ -475,7 +784,10 @@ export function Keycaps({ keys = [] }) {
   );
 }
 
-export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null, big = false, acceptShortcut = false }) {
+/* `taskStopShown`: the run's own controls, with their Stop, are on screen
+   beside this box, so its Stop is only for voice — two Stop buttons one
+   above the other was what the open island showed while a task ran. */
+export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null, big = false, acceptShortcut = false, taskStopShown = false }) {
   const [micState, setMicState] = useState({ phase: 'idle', message: '' });
   const voice = useStore(sel.voice);
   const conversationOn = voice.active;
@@ -564,10 +876,105 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
   const [text, setText] = useState('');
   const own = useRef(null);
   const ref = inputRef ?? own;
+  const composing = useRef(false);   // an IME candidate is open — Enter confirms it, never sends
 
   const steering = isActive(phase) && Boolean(plan && !plan.finished);
   const blocked = isActive(phase) && !steering;
-  const canSend = Boolean(text.trim()) && guardian.ready && !blocked;
+
+  /* --------------------------------------------------------------------
+     Attachments — files queued in the browser, waiting to go up with the
+     next message. Never touched while steering: a correction mid-run is
+     text only, so the paperclip and the chip row both disappear then.
+     -------------------------------------------------------------------- */
+  const [attachments, setAttachments] = useState([]);
+  const [attachNote, setAttachNote] = useState('');
+  const attachNoteTimer = useRef(null);
+  const fileInputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const showAttachNote = (message) => {
+    setAttachNote(message);
+    clearTimeout(attachNoteTimer.current);
+    attachNoteTimer.current = setTimeout(() => setAttachNote(''), 5000);
+  };
+  useEffect(() => () => clearTimeout(attachNoteTimer.current), []);
+
+  // A ref, not the function itself, because the window listener below is
+  // registered once — the same pattern transcriptHandler uses above — so it
+  // always calls whatever this render's version closes over.
+  const handleFilesRef = useRef(null);
+  handleFilesRef.current = async (fileList) => {
+    if (steering) return;
+    const incoming = Array.from(fileList || []).filter(Boolean);
+    if (!incoming.length) return;
+    const room = Math.max(0, MAX_ATTACHMENTS - attachments.length);
+    const take = incoming.slice(0, room);
+    const notes = [];
+    if (incoming.length > take.length) {
+      notes.push(`Halo carries up to ${MAX_ATTACHMENTS} attachments at a time — the rest were left out.`);
+    }
+    let budget = attachments.reduce((sum, a) => sum + estimateAttachmentBytes(a), 0);
+    const added = [];
+    for (const file of take) {
+      let result;
+      try { result = await attachmentFromFile(file); } catch { result = { ok: false, note: `Halo couldn't read ${file.name}.` }; }
+      if (!result.ok) { notes.push(result.note); continue; }
+      const size = estimateAttachmentBytes(result.attachment);
+      if (budget + size > MAX_PAYLOAD_BYTES) { notes.push('That would make the message too large to send.'); continue; }
+      budget += size;
+      added.push(result.attachment);
+    }
+    if (added.length) setAttachments((prev) => [...prev, ...added]);
+    if (notes.length) showAttachNote(notes.join(' '));
+  };
+  // The app window also accepts a drop anywhere on the chat view, not just
+  // on the pill — see the ChatView drop target in app.jsx, which only ever
+  // dispatches this one event rather than reaching into composer state.
+  useEffect(() => {
+    const onExternalFiles = (e) => { handleFilesRef.current?.(e.detail); };
+    window.addEventListener('halo:attach-files', onExternalFiles);
+    return () => window.removeEventListener('halo:attach-files', onExternalFiles);
+  }, []);
+
+  const removeAttachment = (id) => setAttachments((prev) => prev.filter((a) => a.id !== id));
+
+  const onPaste = (e) => {
+    if (steering) return;
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const files = Array.from(cd.files || []);
+    if (files.length) {
+      e.preventDefault();
+      handleFilesRef.current?.(files);
+      return;
+    }
+    const pasted = cd.getData('text/plain');
+    if (!pasted || !shouldAttachPaste(pasted)) return; // a normal-sized paste: let the textarea take it, newlines and all
+    e.preventDefault();
+    if (attachments.length >= MAX_ATTACHMENTS) {
+      showAttachNote(`Halo carries up to ${MAX_ATTACHMENTS} attachments at a time.`);
+      return;
+    }
+    setAttachments((prev) => [...prev, buildPastedTextAttachment(pasted)]);
+  };
+
+  const onComposerDragOver = (e) => {
+    if (steering || !e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    setDragOver(true);
+  };
+  const onComposerDragLeave = () => setDragOver(false);
+  const onComposerDrop = (e) => {
+    if (steering || !e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    setDragOver(false);
+    handleFilesRef.current?.(e.dataTransfer.files);
+  };
+
+  const hasText = Boolean(text.trim());
+  const hasAttachments = attachments.length > 0;
+  const hasContent = hasText || hasAttachments;
+  const canSend = guardian.ready && !blocked && (steering ? hasText : hasContent);
 
   useEffect(() => {
     if (['Stopped', 'Failed'].includes(phase) && conversation.current) {
@@ -580,20 +987,48 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
 
   useEffect(() => { if (autoFocus) ref.current?.focus({ preventScroll: true }); }, [autoFocus, ref]);
 
+  // One line at rest, growing with what is typed, scrolling past the cap
+  // rather than pushing the rest of the window around.
+  const maxTextareaHeight = big ? 220 : 150;
+  /* Measured again whenever its width changes, not only when the text does:
+     the island hides the composer while it is small, a hidden box measures
+     0px tall, and that 0 stayed put when it was shown again — or a box laid
+     out at one width kept a height worked out at another. A hidden box is
+     left alone rather than measured as nothing. */
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const fit = () => {
+      if (!el.clientWidth) return;
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, maxTextareaHeight)}px`;
+    };
+    fit();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => { if (el.clientWidth !== width) { width = el.clientWidth; fit(); } });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, maxTextareaHeight, ref]);
+
   const submit = (value) => {
     const t = (typeof value === 'string' ? value : text).trim();
-    if (!t || !guardian.ready || blocked) return;
+    const queued = attachments;
+    if ((!t && !queued.length) || !guardian.ready || blocked) return;
     if (steering) {
+      if (!t) return; // attachments do not steer a run — see the brief
       bridge.send('steer', { text: t });
     } else {
       const id = `you_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       // A finished plan belongs to the task before; the conversation has moved on.
       if (store.state.plan?.finished) store.setPlan(null);
-      store.addMessage({ id, from: 'you', text: t, done: true });
-      store.addRecent(t);
-      bridge.send('submitTask', { text: t, mode, id });
+      store.addMessage({ id, from: 'you', text: t, done: true, attachments: queued.map(toDisplayAttachment) });
+      if (t) store.addRecent(t);
+      bridge.send('submitTask', { text: t, mode, id, ...(queued.length ? { attachments: queued.map(toBridgeAttachment) } : {}) });
     }
     setText('');
+    setAttachments([]);
+    setAttachNote('');
   };
   transcriptHandler.current = (value) => {
     if (isSpokenStop(value)) { stopEverything(); return; }
@@ -673,58 +1108,94 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     : 'type here, or click the mic :)';
 
   return (
-    <Beam active={steering} size="line" color="ocean" strength={0.85} className="h-composer-beam">
-      <div className={`h-composer h-clicky${big ? ' is-big' : ''}${conversationOn ? ' is-voice' : ''}`} data-steering={steering ? 'true' : 'false'}>
-        <VoiceOrb phase={voice.phase} level={voice.level} active={conversationOn}
-          onClick={() => { if (!conversationOn) startConversation(); else if (voice.owner === voiceOwner) endConversation(); else endVoice(); }} />
-        {conversationOn ? <>
-          <Waveform level={voice.level} phase={voice.phase} />
-          <span className="h-voice__status" role="status">{voiceMessage}</span>
-          {voice.phase === 'error' && voice.owner === voiceOwner && <button type="button" className="h-voice__end" onClick={() => microphone.start()}>Retry</button>}
-        </> : <>
-          {!focused && !text && <Waveform phase="idle" />}
-          {steering && <span className="h-composer__tag">Steer</span>}
-          <input
-            ref={ref}
-            className="h-composer__input"
-            value={text}
-            disabled={!guardian.ready}
-            placeholder={focused || steering || blocked ? placeholder : hint}
-            aria-label={steering ? 'Steer the task in hand' : 'Message or task'}
-            autoComplete="off"
-            spellCheck={false}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
-          />
-          {!steering && (focused || text) && (
-            <button type="button" className="h-composer__mode" data-mode={mode} title={MODE_HINT[mode]}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => { store.setMode(MODE_ORDER[(MODE_ORDER.indexOf(mode) + 1) % MODE_ORDER.length]); ref.current?.focus(); }}>
-              {MODE_LABEL[mode]}
-            </button>
-          )}
-          {(focused || text) && (
-            <button type="button" className="h-clicky__speak" aria-pressed={voiceOn} title={voiceOn ? 'Replies are read aloud' : 'Read replies aloud'}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => { setVoiceEnabled(!voiceOn); setVoiceOn(!voiceOn); }}>
-              <Icon name="volume" size={15} />
-            </button>
-          )}
-          {text
-            ? (
-              <MetalButton circle aria-label={steering ? 'Send to the task' : 'Send'} disabled={!canSend} onClick={submit} className="h-send">
-                <Icon name="send" size={big ? 17 : 15} />
-              </MetalButton>
-            )
-            : !working && shortcutOk && talkKeys.length > 0 && <Keycaps keys={talkKeys} />}
-        </>}
-        {(conversationOn || working || voiceStatus) && (
-          <button type="button" className="h-stop-button h-clicky__stop" title="Stop everything · Esc" onClick={stopEverything}>
-            <Icon name="stop" size={11} /> Stop
-          </button>
+    <Beam active={steering} size="line" color="ocean" className="h-composer-beam">
+      <div
+        className={`h-composer h-clicky${big ? ' is-big' : ''}${conversationOn ? ' is-voice' : ''}${dragOver ? ' is-dragover' : ''}`}
+        data-steering={steering ? 'true' : 'false'}
+        onDragOver={onComposerDragOver}
+        onDragLeave={onComposerDragLeave}
+        onDrop={onComposerDrop}
+      >
+        {!conversationOn && !steering && attachments.length > 0 && (
+          <AttachmentRow items={attachments} onRemove={removeAttachment} className="h-composer__chips" />
         )}
+        {!conversationOn && attachNote && <div className="h-composer__note" role="status">{attachNote}</div>}
+
+        <div className="h-composer__row">
+          <VoiceOrb phase={voice.phase} level={voice.level} active={conversationOn}
+            onClick={() => { if (!conversationOn) startConversation(); else if (voice.owner === voiceOwner) endConversation(); else endVoice(); }} />
+          {conversationOn ? <>
+            <Waveform level={voice.level} phase={voice.phase} />
+            <span className="h-voice__status" role="status">{voiceMessage}</span>
+            {voice.phase === 'error' && voice.owner === voiceOwner && <button type="button" className="h-voice__end" onClick={() => microphone.start()}>Retry</button>}
+          </> : <>
+            {!focused && !text && !hasAttachments && <Waveform phase="idle" />}
+            {steering && <span className="h-composer__tag">Steer</span>}
+            {!steering && (
+              <IconButton icon="paperclip" label="Attach a file" size={16} className="h-composer__attach"
+                onMouseDown={(e) => e.preventDefault()} onClick={() => fileInputRef.current?.click()} />
+            )}
+            {!steering && (
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.tsv,.json,.log,.xml,.html,.yaml,.yml,.js,.ts,.py,.java,.c,.cpp,.cs,.go,.rs,.sql,text/*"
+                onChange={(e) => { handleFilesRef.current?.(e.target.files); e.target.value = ''; }}
+              />
+            )}
+            <textarea
+              ref={ref}
+              className="h-composer__input"
+              rows={1}
+              value={text}
+              disabled={!guardian.ready}
+              placeholder={focused || steering || blocked ? placeholder : hint}
+              aria-label={steering ? 'Steer the task in hand' : 'Message or task'}
+              autoComplete="off"
+              spellCheck={false}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              onChange={(e) => setText(e.target.value)}
+              onPaste={onPaste}
+              onCompositionStart={() => { composing.current = true; }}
+              onCompositionEnd={() => { composing.current = false; }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !composing.current && !e.nativeEvent?.isComposing) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+            {!steering && (focused || hasContent) && (
+              <button type="button" className="h-composer__mode" data-mode={mode} title={MODE_HINT[mode]}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { store.setMode(MODE_ORDER[(MODE_ORDER.indexOf(mode) + 1) % MODE_ORDER.length]); ref.current?.focus(); }}>
+                {MODE_LABEL[mode]}
+              </button>
+            )}
+            {(focused || hasContent) && (
+              <button type="button" className="h-clicky__speak" aria-pressed={voiceOn} title={voiceOn ? 'Replies are read aloud' : 'Read replies aloud'}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { setVoiceEnabled(!voiceOn); setVoiceOn(!voiceOn); }}>
+                <Icon name="volume" size={15} />
+              </button>
+            )}
+            {hasContent
+              ? (
+                <MetalButton circle aria-label={steering ? 'Send to the task' : 'Send'} disabled={!canSend} onClick={submit} className="h-send">
+                  <Icon name="send" size={big ? 17 : 15} />
+                </MetalButton>
+              )
+              : !working && shortcutOk && talkKeys.length > 0 && <Keycaps keys={talkKeys} />}
+          </>}
+          {(conversationOn || voiceStatus || (working && !taskStopShown)) && (
+            <button type="button" className="h-stop-button h-clicky__stop" title="Stop everything · Esc" onClick={stopEverything}>
+              <Icon name="stop" size={11} /> Stop
+            </button>
+          )}
+        </div>
       </div>
       {!conversationOn && micState.phase === 'error' && micState.message && <small className="h-clicky__note" role="status">{micState.message}</small>}
     </Beam>

@@ -1,15 +1,42 @@
 /** Extract a requested choice only when it is explicitly attached to a named control. */
-export function requestedOption(goal, controlName) {
+/* The label as a person would write it in a task. Windows names a control
+   from its whole <label>, and on a real page that is often more than the
+   words in front of it: "Dropdown (select) Open this select menu" is the
+   label AND the option the select is showing. Each of these is tried. */
+function labelVariants(name, value) {
+  const out = new Set([name]);
+  const v = String(value ?? '').trim();
+  const bare = v && name.toLowerCase().endsWith(v.toLowerCase()) ? name.slice(0, name.length - v.length).trim() : name;
+  out.add(bare);
+  for (const n of [name, bare]) {
+    out.add(n.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim());   // "Dropdown (select)" -> "Dropdown"
+    out.add(n.replace(/[()]/g, '').replace(/\s+/g, ' ').trim());                 // -> "Dropdown select"
+  }
+  return [...out].filter((n) => n.length >= 2).sort((a, b) => b.length - a.length);
+}
+
+const cut = (raw) => {
+  const option = String(raw || '').split(/\s+(?:and|then|before|after|while|in|from|on|for)\b|[.,;'"()]/i)[0].trim();
+  return option && option.split(/\s+/).length <= 4 ? option : null;
+};
+
+export function requestedOption(goal, controlName, currentValue = '') {
   const text = String(goal || '');
   const name = String(controlName || '').trim();
-  if (!name || name.length > 80) return null;
-  const at = text.toLowerCase().indexOf(name.toLowerCase());
-  if (at < 0) return null;
-  const tail = text.slice(at + name.length, at + name.length + 90);
-  const match = tail.match(/\b(?:is\s+set\s+to|set\s+to|to|as|shows|equals|is)\s+['"]?([a-z0-9][a-z0-9 -]{0,40})/i);
-  if (!match) return null;
-  const option = match[1].split(/\s+(?:and|then|before|after|while)\b|[.,;'"()]/i)[0].trim();
-  return option && option.split(/\s+/).length <= 4 ? option : null;
+  if (!name || name.length > 120) return null;
+  for (const label of labelVariants(name, currentValue)) {
+    const at = text.toLowerCase().indexOf(label.toLowerCase());
+    if (at < 0) continue;
+    // After it: "set Priority to High", "Priority dropdown shows 'High'".
+    const tail = text.slice(at + label.length, at + label.length + 90);
+    const after = tail.match(/^\s*(?:dropdown|select|menu|list|field|box|slider)?\s*(?:is\s+set\s+to|set\s+to|to|as|shows|equals|is|=|:)\s+['"“]?([a-z0-9][a-z0-9 .-]{0,40})/i);
+    if (after) { const o = cut(after[1]); if (o) return o; }
+    // Before it: "choose Two in the Dropdown (select)", "pick High from Priority".
+    const head = text.slice(Math.max(0, at - 70), at);
+    const before = head.match(/\b(?:choose|select|pick|set|use)\s+(?:the\s+)?(?:option\s+)?['"“]?([a-z0-9][a-z0-9 .-]{0,40}?)['"”]?\s+(?:in|from|for|on|as)\s+(?:the\s+)?$/i);
+    if (before) { const o = cut(before[1]); if (o) return o; }
+  }
+  return null;
 }
 
 export async function upgradeDropdownClick(action, { goal, shot, sense, windowHwnd = null }) {

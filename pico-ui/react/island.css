@@ -24,31 +24,84 @@ body {
 #island { position: absolute; top: 0; left: 50%; translate: -50% 0; }
 
 .h-island-beam { display: block; }
+/* The Beam's wrapper clips what it holds to a rounded rectangle, all four
+   corners (border-radius and overflow: hidden, from border-beam's own
+   stylesheet). The island hangs from the top edge of the screen, so its top
+   two corners go back to square here. Left alone, the wrapper quietly
+   rounded off the island's own square top — invisible on the black page of
+   the real window, but wherever what is behind it is not black it showed
+   as two bites out of the top corners. The card keeps all four. */
+.h-island-beam:has(> .h-island:not([data-view="card"])) {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+/* The same goes for the light itself: the beam draws a rounded rectangle,
+   and on an island that meant a bright curve travelling round two top
+   corners that are square, and along the top edge of the screen. So it is
+   kept to the edges the island really has — down the sides and round the
+   bottom — and slips out of sight where the island meets the bezel. */
+.h-island-beam:has(> .h-island:not([data-view="card"]))::after,
+.h-island-beam:has(> .h-island:not([data-view="card"]))::before,
+.h-island-beam:has(> .h-island:not([data-view="card"])) > [data-beam-bloom] {
+  clip-path: inset(14px 0 0 0 round 0 0 22px 22px);
+}
 
+/* Each width here must be exactly WIDTHS in island.jsx: that is the size
+   the page reports and the window is cut to, and #island is centred in it,
+   so an island even a few pixels wider loses that much off both sides —
+   the face on the left and the status light on the right were the first
+   things to go. The radius follows the curve the window is clipped to
+   (Clip() in island-host.cs: 16px at 216 wide, rising to 22px at 540), so
+   the page's own corner and the window's are the same corner. */
 .h-island {
   position: relative;
   width: var(--w);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   background: #000;
   border-radius: 0 0 var(--r) var(--r);
   transition: border-radius .35s var(--h-out);
 }
-.h-island[data-view="compact"] { --w: 232px; --r: 18px; }
-.h-island[data-view="peek"]    { --w: 380px; --r: 26px; }
-.h-island[data-view="live"]    { --w: 460px; --r: 26px; }
-.h-island[data-view="voice"]   { --w: 550px; --r: 28px; }
-.h-island[data-view="open"]    { --w: 620px; --r: 28px; }
+.h-island[data-view="compact"] { --w: 216px; --r: 16px; }
+.h-island[data-view="peek"]    { --w: 340px; --r: 18px; }
+.h-island[data-view="live"]    { --w: 420px; --r: 20px; }
+.h-island[data-view="voice"]   { --w: 480px; --r: 21px; }
+.h-island[data-view="open"]    { --w: 540px; --r: 22px; }
 .h-island[data-view="voice"] .h-island__bar { display: none; }
 .h-island__composer { padding: 3px 6px 7px; }
 .h-island__composer[hidden] { display: none !important; }
 .h-island[data-view="open"] .h-island__composer, .h-island[data-view="card"] .h-island__composer { padding: 0 14px 14px; }
-.h-island[data-view="voice"] .h-composer { height: 52px; border-radius: 25px; }
+/* The composer, a size smaller. The HeyClicky pill was drawn for the app
+   window's 760px column; here it has 352–512px, and at rest the mic, the
+   waveform, the paperclip and the chord's keycaps left the box you type
+   into ~170px in the open island and a sliver in the card. So in the island
+   everything in the pill is a notch tighter (52px tall rather than 58), the
+   keycaps go once you are in the box — they are the hint for reaching it,
+   and have done their job by then — and the card, narrower still, leaves
+   them off and keeps a shorter waveform. Voice gets the same pill: it used
+   to ask for 52px with a 25px radius, lost to the pill's 58px min-height,
+   and came out a rounded box rather than round-ended. */
+.h-island .h-composer.h-clicky { min-height: 52px; padding: 6px 8px 6px 6px; border-radius: 26px; }
+.h-island .h-composer__row { gap: 7px; }
+.h-island button.h-orb { width: 40px; height: 40px; }
+.h-island .h-composer.h-clicky .h-composer__input { min-height: 40px; padding: 10px 2px 9px; font-size: 14px; }
+.h-island .h-wave { gap: 2px; }
+.h-island .h-keycaps { gap: 4px; padding: 4px; border-radius: 12px; }
+.h-island .h-keycaps kbd { min-width: 24px; height: 24px; padding: 0 6px; border-radius: 7px; font-size: 11.5px; }
+.h-island .h-composer.h-clicky:focus-within .h-keycaps { display: none; }
+.h-island[data-view="card"] .h-keycaps { display: none; }
+.h-island[data-view="card"] .h-wave i:nth-child(n + 11) { display: none; }
 
 /* Folded into the room the window really has — see useMeasure. */
 .h-island.is-capped { width: min(var(--w), 100vw); max-height: 100vh; overflow: hidden; }
 .h-island.is-capped .h-island__panel { min-height: 0; }
 .h-island.is-capped .h-island__thread { flex: 1 1 auto; min-height: 0; }
+/* Only the thread gives up room. A question or an approval sits in a Beam,
+   whose wrapper is overflow: hidden — which makes its flex minimum zero, so
+   on a short screen it was the decision that got squeezed, its buttons cut
+   off, while the conversation above it kept all its lines. */
+.h-island__panel > .h-decision-beam, .h-island__panel > .h-run { flex: none; }
 
 /* Content comes in with the frame, rather than after it. */
 .h-island__bar, .h-island__panel, .h-rail, .h-island__after { animation: h-island-in .38s var(--h-out) both; }
@@ -69,7 +122,14 @@ body {
   padding: 0 12px 0 10px;
   cursor: pointer;
 }
-.h-island[data-view="peek"] .h-island__bar { min-height: 72px; padding: 10px 24px 10px 18px; gap: 18px; }
+/* At rest: 216 by 36, face · words · light. The light's box is trimmed to
+   little more than the dot so the dot sits as far in from the right edge as
+   the face does from the left, and the words get the room that frees. */
+.h-island[data-view="compact"] .h-island__bar { height: 36px; min-height: 0; gap: 9px; padding: 0 11px 0 9px; }
+.h-island[data-view="compact"] .h-glyph { width: 16px; }
+/* Hovered: a nameplate, but a modest one. It was 72px tall with 19px type,
+   which on a laptop screen is a lot of black for "you are pointing at me". */
+.h-island[data-view="peek"] .h-island__bar { min-height: 58px; padding: 9px 18px 9px 12px; gap: 13px; }
 .h-island[data-view="live"] .h-island__bar { min-height: 60px; padding: 9px 12px 9px 14px; }
 .h-island[data-view="open"] .h-island__bar { min-height: 60px; padding: 10px 12px 8px 16px; }
 
@@ -97,7 +157,7 @@ body {
   animation: none;
 }
 @keyframes h-title-in { from { opacity: 0; transform: translateY(3px); filter: blur(3px); } to { opacity: 1; transform: none; filter: none; } }
-.h-island[data-view="peek"] .h-island__title { font-size: 19px; letter-spacing: -.03em; }
+.h-island[data-view="peek"] .h-island__title { font-size: 17px; letter-spacing: -.028em; }
 .h-island[data-view="open"] .h-island__title { font-size: 16px; letter-spacing: -.025em; }
 .h-island[data-view="live"] .h-island__title,
 .h-island[data-view="open"] .h-island__title {
@@ -117,7 +177,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.h-island[data-view="live"] .h-island__sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* Single line, on purpose, unlike the title above it: this is where the list
+   runner's own live status lands ("Prompt 7 of 20 · waiting for it to
+   finish · 34s"), ticking over every second while a Wait phase runs. Letting
+   it wrap to a second line whenever the text's width crossed the bar would
+   change how many lines it took — and the window springs to fit whatever the
+   page measures, so the island would visibly resize on every such tick. One
+   line, cleanly cut off with an ellipsis, stays a fixed height instead. */
 
 .h-island__trail { flex: none; display: flex; align-items: center; gap: 6px; }
 
@@ -215,6 +281,23 @@ body {
 .h-run__meter { flex: 1; height: 3px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
 .h-run__meter i { display: block; height: 100%; background: linear-gradient(90deg, #7c5cff, #3ddc84); border-radius: 2px; transition: width .5s var(--h-out); }
 .h-run[data-finished="true"] .h-run__meter i { background: var(--h-good); }
+/* The steps, and the activity under them: laid out as the app's run card
+   lays out the same two pieces (steps, then the activity a little below),
+   but this is the part that scrolls. Six dense steps fit without it; open
+   the activity as well and the list would push the island past the bottom
+   of a laptop screen, so it scrolls here instead, and the head with its
+   meter and "Save as shortcut" underneath stay where they are. */
+.h-run__body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 264px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #26262b transparent;
+}
+.h-island[data-view="card"] .h-run__body { max-height: 30vh; }
 .h-run__after { padding: 8px 6px 2px; }
 
 .h-empty { display: flex; flex-direction: column; gap: 14px; padding: 6px 4px 2px; }
@@ -280,9 +363,13 @@ body {
    reports where it was dragged to and the bridge places the window (see
    moveCard in notch-window.mjs).
    ========================================================================== */
+/* 380 is WIDTHS.card, border included (box-sizing on .h-island). The radius
+   is the one island.jsx gives the Beam round every view but compact: the
+   Beam's wrapper clips to it, and a card any less round than that had the
+   ends of its hairline shaved off at all four corners. */
 .h-island[data-view="card"] {
-  --w: 396px;
-  --r: 18px;
+  --w: 380px;
+  --r: 22px;
   border-radius: var(--r);
   background: linear-gradient(180deg, #0b0c0e, #060607);
   border: 1px solid rgba(255, 255, 255, .075);

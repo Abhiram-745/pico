@@ -165,7 +165,7 @@ function Stage({ demo, live }) {
 function KeyChip({ label, done, i }) {
   return (
     <span className="h-chipwrap" style={{ '--i': i }}>
-      <MetalButton className={`h-chip${done ? ' is-done' : ''}`} preset="chromatic" strength={done ? 1.15 : 0.85} tabIndex={-1}>
+      <MetalButton className={`h-chip${done ? ' is-done' : ''}`} preset="chromatic" strength={done ? 0.75 : 0.5} tabIndex={-1}>
         {label}
       </MetalButton>
     </span>
@@ -263,7 +263,7 @@ export function Onboard({ onDone }) {
           </div>
 
           <div className="h-onboard__go">
-            <MetalButton className="h-onboard__next" disabled={beat !== 'done'} onClick={next} strength={1.1}>
+            <MetalButton hero className="h-onboard__next" disabled={beat !== 'done'} onClick={next}>
               {last ? 'Start using Halo' : 'Next'}
             </MetalButton>
             <span className="h-onboard__nudge">

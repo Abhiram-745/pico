@@ -14,8 +14,10 @@
 //  Protocol, one command per line on stdin, one reply per line on stdout:
 //
 //    pin <hwnd>                    always on top, out of taskbar and Alt-Tab
-//    trim <hwnd>                   drop the resize border, round the corners
-//    place <hwnd> <x> <y> <w> <h>  move and size in a single call
+//    trim <hwnd>                   drop the resize border (place rounds it)
+//    place <hwnd> <x> <y> <w> <h> [<side> <top> <squareTop>]
+//                                  move and size in a single call; with the
+//                                  frame inset, also clip to the content
 //    hide <hwnd>                   take it off the screen, still running
 //    show <hwnd>                   put it back, without taking the focus
 //    hotkey <id> <mods> <vk>       register a chord with Windows
@@ -34,9 +36,20 @@
 //  front, so the chords live here — on their own thread with its own message
 //  loop, because the main thread is busy reading commands off stdin.
 //
-//  Rounding is left to DWM (DWMWA_WINDOW_CORNER_PREFERENCE) rather than a
-//  window region: SetWindowRgn reports success on a browser window and then
-//  clips nothing, because the frame is drawn by the compositor.
+//  THE GREY FRAME
+//  Trim() removes the resize border style, but the pixels it used to occupy
+//  are still there — a few pixels of browser chrome along the left, right
+//  and bottom edges that Chrome goes on painting its own (light grey)
+//  background into, because nothing told it the window is any smaller than
+//  its full rectangle. place() now clips the window to exactly its content
+//  with SetWindowRgn (see Clip()), which is a region the compositor honours
+//  regardless of what the page underneath draws — the frame has nothing
+//  left to be painted on. Corner rounding moved here too, for the same
+//  reason DWMWA_WINDOW_CORNER_PREFERENCE was tried first and dropped: DWM
+//  rounds the whole window by a fixed system radius it does not take
+//  suggestions on, which fought visibly with a region already rounded to
+//  the island's own radius. Trim() now asks DWM not to round at all, and
+//  Clip()'s region is the only rounding left.
 //
 //  THERE IS NO SECOND CURSOR HERE ANY MORE
 //  There was, for a while: a drawn mascot that followed the work, the system
@@ -108,6 +121,48 @@ static class Native
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int value, int size);
 
+    // Clipping the window to its content — see Clip() — rather than trusting
+    // the browser to paint its own edges black. All four coordinates are in
+    // the window's own units, the same ones place's x/y/w/h already arrive
+    // in: island-host.exe carries no manifest, so it is DPI-unaware, and
+    // Windows quietly rescales every one of these calls it makes against a
+    // per-monitor-aware window (Chrome) from that assumption — the same
+    // virtualisation that already makes SetWindowPos agree with libnut's
+    // logical-pixel rectangles in notch-window.mjs. Were this ever made
+    // DPI-aware, these would need converting to physical pixels first.
+    /* Whether SetWindowRgn is rescaled like SetWindowPos is not something to
+       rely on, and if it is not, the region lands at 1/1.25 of the window
+       at 125% — the island cut short on the right and bottom. So Clip()
+       measures instead: for the length of the call the thread is made
+       per-monitor aware, the window's real size is read in real pixels, and
+       the region is built at that scale. Measured, not assumed, either way. */
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+    public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WinRect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out WinRect rect);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int cellWidth, int cellHeight);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    public static extern int CombineRgn(IntPtr dest, IntPtr src1, IntPtr src2, int mode);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr obj);
+
+    [DllImport("user32.dll")]
+    public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
+
+    public const int RGN_OR = 2;
+
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
     public const long WS_THICKFRAME = 0x00040000;
@@ -120,7 +175,7 @@ static class Native
 
     public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     public const int DWMWA_BORDER_COLOR = 34;
-    public const int DWMWCP_ROUND = 2;
+    public const int DWMWCP_DONOTROUND = 1;
     public const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
 
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
@@ -184,7 +239,10 @@ static class IslandHost
     ///
     /// What this removes is the ~7px invisible resize margin, which Windows
     /// fills with the window's frame colour and which showed as a grey band
-    /// down the right and bottom edges of the island.
+    /// down the right and bottom edges of the island. Clip() (called from
+    /// every place) is what actually gets rid of it; removing the style bit
+    /// here on top stops Windows offering a resize cursor along an edge that
+    /// no longer looks like one.
     static void Trim(IntPtr h)
     {
         long style = Native.GetWindowLongPtr(h, Native.GWL_STYLE).ToInt64();
@@ -193,15 +251,19 @@ static class IslandHost
 
         int none = Native.DWMWA_COLOR_NONE;
         Native.DwmSetWindowAttribute(h, Native.DWMWA_BORDER_COLOR, ref none, sizeof(int));
-        int round = Native.DWMWCP_ROUND;
-        Native.DwmSetWindowAttribute(h, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+        // Not DWMWCP_ROUND: DWM would round the window's whole bounding
+        // rectangle by its own fixed radius, on top of the shape Clip()
+        // already cuts — two different curves at the same corner. Clip() is
+        // the only rounding now, so DWM is told to leave the corners alone.
+        int noRound = Native.DWMWCP_DONOTROUND;
+        Native.DwmSetWindowAttribute(h, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref noRound, sizeof(int));
 
         Native.SetWindowPos(h, Native.HWND_TOPMOST, 0, 0, 0, 0,
             Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE
             | Native.SWP_FRAMECHANGED | Native.SWP_SHOWWINDOW);
     }
 
-    static void Place(IntPtr h, int x, int y, int w, int hgt)
+    static void Place(IntPtr h, int x, int y, int w, int hgt, int side, int top, bool haveInset, bool squareTop)
     {
         // Re-asserting topmost every frame is deliberate: another app going
         // topmost after us would otherwise quietly cover the island.
@@ -211,7 +273,101 @@ static class IslandHost
         // between the two.
         Native.SetWindowPos(h, Native.HWND_TOPMOST, x, y, w, hgt,
             Native.SWP_NOACTIVATE | Native.SWP_NOOWNERZORDER);
+
+        if (haveInset) Clip(h, w, hgt, side, top, squareTop);
     }
+
+    /// Clip the window to exactly its visible content.
+    ///
+    /// The window is drawn a few pixels bigger than the island on screen —
+    /// room for the resize border Trim() strips and the title bar parked
+    /// above the top edge (see notch-window.mjs's `frame`) — and Chrome goes
+    /// on painting its own light-grey background into that leftover space
+    /// whether or not anything is there to see it, because nothing told it
+    /// the window is really any smaller. A region is what tells it: nothing
+    /// outside this shape is drawn, by this window or by DWM's compositor,
+    /// no matter what the page underneath thinks its own size is. Recomputed
+    /// on every place, since the content's own size changes constantly as
+    /// the island springs between shapes.
+    ///
+    /// Only the bottom two corners are rounded when `squareTop` is set, to
+    /// match the island's own CSS (border-radius: 0 0 r r): the top sits
+    /// flush with the screen edge like a real notch, and rounding it would
+    /// open a sliver at the very top where the desktop shows through instead
+    /// of the island. The card is not flush with anything and rounds every
+    /// corner. The radius itself grows a little with the window's own width
+    /// — a small, calm curve on the resting pill, a slightly fuller one on
+    /// the open panel — so every shape looks proportioned to its own size
+    /// rather than sharing one fixed number.
+    static void Clip(IntPtr h, int w, int hgt, int side, int top, bool squareTop)
+    {
+        int cl = Math.Max(0, side);
+        int ct = Math.Max(0, top);
+        int cr = w - cl;
+        int cb = hgt - cl;  // the bottom inset mirrors the sides — see learnFrame() in notch-window.mjs
+        if (cr <= cl || cb <= ct) return;   // too small to mean anything yet
+
+        // The island's radius rises with its width, as island.css's --r does
+        // (16px at compact, 22px open). The card is one size and one radius
+        // — 22px, the card's own --r — whatever its width.
+        double t = Clamp((double)(cr - cl - 216) / (540 - 216), 0, 1);
+        int radius = squareTop ? (int)Math.Round(16 + (t * 6)) : 22;
+
+        // The window's real size, in its own pixels (see the note on
+        // SetThreadDpiAwarenessContext). Windows older than 10 1607 have no
+        // such call, and there the units are left as they come.
+        IntPtr previous = IntPtr.Zero;
+        bool switched = false;
+        try
+        {
+            previous = Native.SetThreadDpiAwarenessContext(Native.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            switched = previous != IntPtr.Zero;
+        }
+        catch (EntryPointNotFoundException) { }
+        try
+        {
+            double sx = 1, sy = 1;
+            Native.WinRect real;
+            if (switched && Native.GetWindowRect(h, out real) && w > 0 && hgt > 0)
+            {
+                int pw = real.Right - real.Left, ph = real.Bottom - real.Top;
+                if (pw > 0 && ph > 0) { sx = (double)pw / w; sy = (double)ph / hgt; }
+            }
+            int L = (int)Math.Round(cl * sx), T = (int)Math.Round(ct * sy);
+            int R = (int)Math.Round(cr * sx), B = (int)Math.Round(cb * sy);
+            int r = (int)Math.Round(radius * sx);
+            int d = r * 2;                                  // CreateRoundRectRgn wants a diameter, not a radius
+
+            IntPtr rgn = Native.CreateRoundRectRgn(L, T, R, B, d, d);
+            if (rgn == IntPtr.Zero) return;
+
+            if (squareTop && r > 0)
+            {
+                // Fill the two rounded-away top corners back in to a square
+                // edge: the union of the round rect with a plain strip across
+                // its top `radius` pixels tall, which covers exactly the bite
+                // CreateRoundRectRgn took out of those two corners and no more.
+                IntPtr topStrip = Native.CreateRectRgn(L, T, R, T + r);
+                if (topStrip != IntPtr.Zero)
+                {
+                    Native.CombineRgn(rgn, rgn, topStrip, Native.RGN_OR);
+                    Native.DeleteObject(topStrip);
+                }
+            }
+
+            // On success SetWindowRgn takes ownership of the region and frees it
+            // itself; deleting it here as well would be a use-after-free the
+            // next time DWM touches the window. Only a refused region is still
+            // this code's to clean up.
+            if (Native.SetWindowRgn(h, rgn, true) == 0) Native.DeleteObject(rgn);
+        }
+        finally
+        {
+            if (switched) Native.SetThreadDpiAwarenessContext(previous);
+        }
+    }
+
+    static double Clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
     /* ----------------------------------------------------------------------
        Chords
@@ -360,8 +516,17 @@ static class IslandHost
                         Deaf(Handle(p[1]), p.Length > 2 && p[2] == "1");
                         break;
                     case "place":
-                        Place(Handle(p[1]), Int(p[2]), Int(p[3]), Int(p[4]), Int(p[5]));
+                    {
+                        // The frame inset is optional: three more numbers
+                        // when the bridge knows it (see place() in
+                        // island-host.mjs), none from an older caller —
+                        // which is placed exactly as before, unclipped.
+                        bool haveInset = p.Length >= 9;
+                        Place(Handle(p[1]), Int(p[2]), Int(p[3]), Int(p[4]), Int(p[5]),
+                            haveInset ? Int(p[6]) : 0, haveInset ? Int(p[7]) : 0,
+                            haveInset, haveInset && p[8] == "1");
                         break;
+                    }
                     case "hide":
                         Native.ShowWindow(Handle(p[1]), Native.SW_HIDE);
                         break;

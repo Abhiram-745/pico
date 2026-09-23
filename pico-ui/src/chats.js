@@ -87,7 +87,16 @@ class LocalArchive {
       this.current = chat.id;
       this.chats.push(chat);
     }
-    chat.messages = messages.map(({ id, from, text, memoryId }) => ({ id, from, text: String(text ?? ''), done: true, ...(memoryId ? { memoryId } : {}) }));
+    chat.messages = messages.map(({ id, from, text, memoryId, attachments }) => ({
+      id,
+      from,
+      text: String(text ?? ''),
+      done: true,
+      ...(memoryId ? { memoryId } : {}),
+      // Only ever the thread's own trimmed shape (thumbnails and previews,
+      // never a full picture or a whole file) — see src/attachments.js.
+      ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
+    }));
     if (!chat.named) chat.title = titleFor(chat.messages);
     chat.updated = now();
     clearTimeout(this.timer);

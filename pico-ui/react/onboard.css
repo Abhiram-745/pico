@@ -73,14 +73,17 @@
    chord reads as a sequence rather than three things at once. */
 .h-chipwrap { display: inline-flex; animation: h-chip-in .42s var(--h-spring) both; animation-delay: calc(var(--i) * .07s); }
 .h-onboard__chips .h-metal { border-radius: 11px; }
-.h-chip {
+/* Held to the keys here: app.html loads this sheet last, so a bare .h-chip
+   restyled every chip in the window — the suggestions, the shortcuts — with
+   a keycap's padding that no longer fitted their 30px. */
+.h-onboard__chips .h-chip {
   min-width: 56px;
   padding: 9px 13px;
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: .01em;
 }
-.h-chip.is-done { color: #bfe3ff; }
+.h-onboard__chips .h-chip.is-done { color: #bfe3ff; }
 @keyframes h-chip-in { from { opacity: 0; transform: translateY(6px) scale(.94); } to { opacity: 1; transform: none; } }
 
 .h-onboard__state {
