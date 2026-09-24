@@ -361,7 +361,7 @@ export class LLM {
       const apiKey = env[p.envKey];
       if (!apiKey) continue;
 
-      return new LLM({
+      const made = new LLM({
         apiKey,
         baseUrl: env.PICO_BASE_URL || p.baseUrl,
         provider: name,
@@ -380,8 +380,46 @@ export class LLM {
         },
         gatewayKey,
       });
+      /* A second provider to turn to when this one says "rate limited".
+         OpenAI's limit is per minute and per key: measured in a run of
+         real-site tasks, the key ran out mid-task and the run ended with
+         "Rate limited" while nothing else was wrong. With an xkiro key in
+         .env as well, the same call goes there instead, on the model that
+         does the same job, and the run carries on. */
+      if (name !== 'xkiro' && env[PROVIDERS.xkiro.envKey] && !/^(?:0|false|off)$/i.test(env.PICO_FALLBACK ?? '')) {
+        const x = PROVIDERS.xkiro;
+        made.useFallback(new LLM({ apiKey: env[x.envKey], baseUrl: x.baseUrl, provider: 'xkiro', tiers: { ...x.tiers, text: x.tiers.text || x.tiers.fast }, gatewayKey }));
+      }
+      return made;
     }
     return null;
+  }
+
+  /**
+   * Turn to `other` when a call here ends rate limited — after the patient
+   * retries fetchPatiently already made. The call is made again, whole, on
+   * the other provider's model for the same job (see, plan, fast…), so the
+   * run neither fails nor notices beyond a slower step.
+   */
+  useFallback(other) {
+    this.fallback = other;
+    // Said in the bridge's log, so a slower step has a reason anyone can see.
+    this.onFallback ??= (name, to) => console.log(`[llm] rate limited — ${name} sent to ${to} instead`);
+    const jobOf = (model, dflt) => Object.keys(this.tiers).find((t) => this.tiers[t] === model) ?? dflt;
+    const swap = (model, dflt) => other.tiers[jobOf(model, dflt)] ?? other.tiers[dflt];
+    const wrap = (name, fix) => {
+      const own = this[name].bind(this);
+      this[name] = async (...args) => {
+        try { return await own(...args); } catch (err) {
+          if (err?.status !== 429) throw err;
+          this.onFallback?.(name, other.provider);
+          return other[name](...fix(args));
+        }
+      };
+    };
+    wrap('chat', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast') }]);
+    wrap('stream', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast') }]);
+    wrap('respond', ([req = {}]) => [{ ...req, model: swap(req.model ?? this.tiers.see, 'see') }]);
   }
 
   /** Strip the key from anything on its way to a log or a client. */
@@ -454,7 +492,7 @@ export class LLM {
     const msg = body?.error?.message || `HTTP ${status}`;
     if (status === 401) return new Error('The API key was rejected. Check your key in .env.');
     if (status === 402) return new Error('Out of credits with this provider.');
-    if (status === 429) return new Error('Rate limited. Try again in a moment.');
+    if (status === 429) return Object.assign(new Error('Rate limited. Try again in a moment.'), { status });
     if (status === 404) return new Error(`Model not available to this key: ${this.redact(msg)}`);
     return new Error(this.redact(msg));
   }
