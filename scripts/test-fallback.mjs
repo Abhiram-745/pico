@@ -150,7 +150,7 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   seen.length = 0;
   const t0 = Date.now();
   const err = await openai.chat([{ role: 'user', content: 'hi' }]).catch((e) => e);
-  assert.match(err.message, /^OpenAI has no credits left.*xkiro's allowance for today is used up — it resets at \d\d:\d\d\.$/, err.message);
+  assert.match(err.message, /^OpenAI has no credits left.*xkiro's allowance for today is used up — it resets at \d{1,2}:\d\d(?:\s?[AP]M)?\.$/i, err.message);
   assert.ok(Date.now() - t0 < 1000, 'no sitting through a limit that lifts in hours');
   assert.equal(seen.length, 2, 'each asked once');
   seen.length = 0;

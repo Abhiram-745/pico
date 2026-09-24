@@ -49,6 +49,7 @@ import { memory } from './memory.mjs';
 import { routines } from './routines.mjs';
 import { runbook } from './runbook.mjs';
 import { migrateFromPico, readJson, writeJson } from './home.mjs';
+import { logToDisk } from './log.mjs';
 import { findBrowser } from './notch-window.mjs';
 import { warmInstalled } from './apps.mjs';
 import { buildUI } from '../scripts/build-ui.mjs';
@@ -886,6 +887,7 @@ process.on('exit', () => {
 });
 
 const BUILD = await localBuild();
+logToDisk({ build: BUILD?.sha });
 
 /* Anything the old name left in %LOCALAPPDATA%\Pico comes across first, so
    the archive and memory below read what is already there. */
