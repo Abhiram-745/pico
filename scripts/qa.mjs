@@ -20,6 +20,8 @@
    Run:   node scripts/qa.mjs                    every page, once
           node scripts/qa.mjs sort kanban -n 3   those pages, three times each
           node scripts/qa.mjs --label baseline   name the results file
+          node scripts/qa.mjs --limited          OpenAI "rate limited" throughout, so
+                                                  every call goes to the fallback
           node scripts/qa.mjs each one notes     the list-repeat cases and the notes page,
                                                   by name only — see EXTRA below for why
                                                   they're not in ALL
@@ -87,6 +89,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
    stays free for whoever is working on it. Set before Halo's own screen code
    starts, which reads it. */
 process.env.HALO_DISPLAY = opt('display', process.env.HALO_DISPLAY || 'secondary');
+
+/* --limited: every request to OpenAI is answered the way a key that has used
+   up its day is, so the run shows what Halo does on the fallback provider. */
+const LIMITED = argv.includes('--limited');
+if (LIMITED) {
+  const real = globalThis.fetch;
+  globalThis.fetch = (url, init) => (/api\.openai\.com/.test(String(url)) && init?.method === 'POST'
+    ? Promise.resolve(new Response(JSON.stringify({ error: { message: 'Rate limit reached on requests per day (RPD). Please try again in 6m0s.', code: 'rate_limit_exceeded' } }), { status: 429 }))
+    : real(url, init));
+}
 
 /* --- the pages ------------------------------------------------------------ */
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
@@ -223,6 +235,17 @@ for (const name of ['respond', 'chat', 'stream', 'evaluate']) {
     }
   };
 }
+/* The calls the fallback provider answered, on the model it answered with. */
+const served = [];
+for (const name of ['respond', 'chat', 'stream']) {
+  const original = llm.fallback?.[name]?.bind(llm.fallback);
+  if (!original) continue;
+  llm.fallback[name] = async (...args) => {
+    try { return await original(...args); } finally {
+      served.push(`${llm.fallback.provider}:${args[0]?.model || args[1]?.model || '?'}`);
+    }
+  };
+}
 
 /* Bring the QA window to the front, and make sure it got there. Windows does
    not always hand over the focus, and a task started with another window in
@@ -244,7 +267,7 @@ async function raise(title) {
 await mkdir(join(ROOT, 'artifacts', 'qa'), { recursive: true });
 const outFile = join(ROOT, 'artifacts', 'qa', `${label}.jsonl`);
 const rows = [];
-console.log(`Halo QA — ${pages.join(', ')} × ${repeat} — see ${llm.tiers.see}, plan ${llm.tiers.plan}, jev ${llm.gatewayKey ? 'on' : 'off'}`);
+console.log(`Halo QA — ${pages.join(', ')} × ${repeat} — see ${llm.tiers.see}, plan ${llm.tiers.plan}, jev ${llm.gatewayKey ? 'on' : 'off'}, fallback ${llm.fallback?.provider ?? 'none'}${LIMITED ? ' — OpenAI forced to "rate limited"' : ''}`);
 console.log('Hands off the mouse and keyboard.\n');
 
 for (let round = 1; round <= repeat; round++) {
@@ -272,6 +295,7 @@ for (let round = 1; round <= repeat; round++) {
     }
 
     calls.length = 0;
+    served.length = 0;
     const actions = [];
     const t0 = performance.now();
     taskStart = t0;
@@ -319,6 +343,8 @@ for (let round = 1; round <= repeat; round++) {
       calls: calls.length,
       callLog: calls.map((c) => ({ ...c })),
       byKind: calls.reduce((m, c) => ({ ...m, [c.model]: (m[c.model] || 0) + 1 }), {}),
+      fallback: served.reduce((m, c) => ({ ...m, [c]: (m[c] || 0) + 1 }), {}),
+      summary: outcome?.summary ?? null,
       modelMs: calls.reduce((s, c) => s + c.ms, 0),
       error,
       log: actions,
@@ -327,7 +353,7 @@ for (let round = 1; round <= repeat; round++) {
     rows.push(row);
     await appendFile(outFile, `${JSON.stringify(row)}\n`);
     console.log(`${row.pass ? 'PASS' : 'FAIL'}  ${page.padEnd(7)} ${String(total).padStart(6)}ms  first ${String(firstAction ?? '-').padStart(5)}ms  `
-      + `actions ${row.actions}  misses ${row.misses}/${row.presses}  calls ${row.calls}  ${row.pass ? '' : `— ${row.detail}${error ? ` · ${error}` : ''}`}`);
+      + `actions ${row.actions}  misses ${row.misses}/${row.presses}  calls ${row.calls} ${JSON.stringify(row.byKind)}${served.length ? ` via ${JSON.stringify(row.fallback)}` : ''}  ${row.pass ? '' : `— ${row.detail}${error ? ` · ${error}` : ''}`}`);
   }
 }
 

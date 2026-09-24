@@ -1069,6 +1069,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     ? maxTurns
     : Math.min(maxTurns, (steps.length * TURNS_PER_STEP) + 2);
   const done = [];            // what happened, in plain words, oldest first
+  const recaps = [];          // the same, as the person is told it at the end (recap()), where it differs
   const acted = new Set();    // the kinds of action actually carried out, for the verdict
   let stepIndex = 0;
   let lastSignature = null;
@@ -3430,6 +3431,7 @@ Do only that step.`,
 
     if (changed || result?.ok) {
       done.push(result?.said || detail);
+      recaps[done.length - 1] = recap(action, result?.said);
       repeats = 0;
       lastSignature = null;
     }
@@ -3486,7 +3488,7 @@ Do only that step.`,
     && (!milestoneMode || milestones.every((m) => m.status === 'done'));
   let verdict;
   if (provenNow) {
-    const said = done.slice(-5).map((d) => String(d).replace(/\.$/, ''));
+    const said = told(done.map((d, i) => recaps[i] ?? d)).slice(-5);
     verdict = {
       succeeded: true,
       summary: said.length ? `Done — ${said.join(', ')}.` : 'Done.',
@@ -3615,6 +3617,56 @@ async function agreesItIsWrong(llm, want, landed) {
      0.16. So the veto needs the model to be fairly sure they are different,
      not merely unconvinced that they are the same. */
   return p < 0.25;
+}
+
+/* The verbs a plan's own words for an action start with, as it is being
+   done ("Ticking checkbox 1") or asked for ("Click Search"), and as it is
+   told afterwards. */
+const PAST = new Map();
+for (const row of ('click clicking clicked|double-click double-clicking double-clicked|right-click right-clicking right-clicked'
+  + '|type typing typed|tick ticking ticked|untick unticking unticked|check checking checked|uncheck unchecking unchecked'
+  + '|choose choosing chose|select selecting selected|pick picking picked|set setting set|drag dragging dragged|drop dropping dropped'
+  + '|add adding added|search searching searched|press pressing pressed|open opening opened|close closing closed|sort sorting sorted'
+  + '|hover hovering hovered|save saving saved|scroll scrolling scrolled|move moving moved|paste pasting pasted|copy copying copied'
+  + '|send sending sent|bring bringing brought|go going went|write writing wrote|put putting put|leave leaving left|find finding found'
+  + '|enter entering entered|fill filling filled|submit submitting submitted|switch switching switched|wait waiting waited'
+  + '|delete deleting deleted|remove removing removed|rename renaming renamed|edit editing edited|change changing changed'
+  + '|focus focusing focused|play playing played|turn turning turned|toggle toggling toggled|upload uploading uploaded|attach attaching attached').split('|')) {
+  const [base, ing, past] = row.split(' ');
+  PAST.set(ing, { past, planned: true });
+  PAST.set(base, { past, planned: false });
+}
+
+/**
+ * What an action did, as the person is told it at the end: "ticked
+ * checkbox 1", not "clicked (233, 156)" — the executor's words are for the
+ * model, which wants the point. A plan from the task's words names each
+ * action as it is done, and that turned round is the clearest account there
+ * is; otherwise what the executor said, unless that is only a point on the
+ * screen, which tells a person nothing.
+ */
+export function recap(action = {}, said = '') {
+  const why = String(action.why || '').trim();
+  const [first = '', ...rest] = why.split(/\s+/);
+  const verb = PAST.get(first.toLowerCase());
+  const turned = verb ? [verb.past, ...rest].join(' ') : '';
+  const plain = String(said || '').trim().replace(/\.$/, '');
+  if (verb?.planned) return turned;
+  if (plain && !/\(\d+,\s*\d+\)/.test(plain)) return plain;
+  return turned || (why ? why.charAt(0).toLowerCase() + why.slice(1) : plain);
+}
+
+/** A run's recaps as said: the same thing done several times over once. */
+export function told(list = []) {
+  const words = ['', 'once', 'twice', 'three times', 'four times', 'five times', 'six times', 'seven times', 'eight times', 'nine times', 'ten times'];
+  const out = [];
+  for (const raw of list) {
+    const one = String(raw ?? '').replace(/\.$/, '').replace(/\s*\(\d+ of \d+\)$/, '').trim();
+    if (!one) continue;
+    const last = out.at(-1);
+    if (last?.text === one) last.n += 1; else out.push({ text: one, n: 1 });
+  }
+  return out.map(({ text, n }) => (n > 1 ? `${text} ${words[n] ?? `${n} times`}` : text));
 }
 
 /** "Button 'Send'", or where it was, for the model and the log. */
@@ -3818,9 +3870,9 @@ export async function execute({ computer, sense, shot, action, openThing, switch
         if (value.toLowerCase() === option.toLowerCase()) break;
       }
       if (value.toLowerCase() !== option.toLowerCase()) {
-        return { ok: false, said: `${control.name} still shows ${value || 'an unconfirmed value'}; ${option} was not selected` };
+        return { ok: false, said: `${control.name || 'the dropdown'} still shows ${value || 'an unconfirmed value'}; ${option} was not selected` };
       }
-      return { ok: true, said: `${control.name} now shows ${option}` };
+      return { ok: true, said: `${control.name || 'the dropdown'} now shows ${option}` };
     }
     case 'click':
     case 'double_click':
