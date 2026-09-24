@@ -37,13 +37,24 @@ body {
 }
 /* The same goes for the light itself: the beam draws a rounded rectangle,
    and on an island that meant a bright curve travelling round two top
-   corners that are square, and along the top edge of the screen. So it is
-   kept to the edges the island really has — down the sides and round the
-   bottom — and slips out of sight where the island meets the bezel. */
+   corners that are square, and along the top edge of the screen. So the
+   beam's box starts above the island, off the top of the screen, and its top
+   edge and the glow along it are out of sight: the light runs down the sides
+   and round the bottom, the edges the island really has.
+
+   It used to be cut off with a clip 14px down instead, and the glow's tail
+   below the cut began on a hard line — a faint seam across the island,
+   under the words, whenever Halo was working. Out of sight above, the glow
+   fades in on its own. Only the island is measured (useMeasure), so the
+   window never grows by what hangs above it. */
+.h-island-beam:has(> .h-island:not([data-view="card"])) {
+  margin-top: -18px;
+  padding-top: 18px;
+}
 .h-island-beam:has(> .h-island:not([data-view="card"]))::after,
 .h-island-beam:has(> .h-island:not([data-view="card"]))::before,
 .h-island-beam:has(> .h-island:not([data-view="card"])) > [data-beam-bloom] {
-  clip-path: inset(14px 0 0 0 round 0 0 22px 22px);
+  clip-path: none;
 }
 
 /* Each width here must be exactly WIDTHS in island.jsx: that is the size
@@ -142,6 +153,10 @@ body {
    36px tall. */
 .h-island[data-view="compact"] .h-island__text { visibility: visible; width: auto; }
 .h-island[data-view="compact"] .h-island__title { font-size: 12.5px; font-weight: 550; letter-spacing: -.01em; color: var(--h-dim); }
+/* Who, bright; what it is doing, quieter. All of it in the dim grey was
+   hard to read on the black at 12.5px, and read as switched off. */
+.h-island[data-view="compact"] .h-island__name { color: var(--h-ink); font-weight: 600; }
+.h-island[data-view="compact"] .h-island__dot { opacity: .55; white-space: pre; }
 .h-island[data-view="compact"] .h-island__sub { display: none; }
 
 .h-island__title {

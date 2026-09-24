@@ -415,13 +415,17 @@ function Island({ onMeasure }) {
       line = petName;
       mark = 'busy';
     } else if (flash) {
-      head = flash.text;
+      /* A run's summary opens with "Done — " (driver.mjs), and the line
+         under it already says Done: once is enough. */
+      head = flash.kind === 'done'
+        ? String(flash.text).replace(/^\s*done\s*[—–-]\s*(\S)/i, (_, c) => c.toUpperCase())
+        : flash.text;
       line = flash.kind === 'done' ? 'Done' : flash.kind === 'fail' ? SHORT.Failed : petName;
       mark = flash.kind === 'done' ? 'tick' : flash.kind === 'fail' ? 'cross' : 'dot';
     }
   } else if (view === 'compact') {
     // One line, because there is only room for one: "Halo · Ready".
-    head = `${petName} · ${guardian.canAct === false ? 'Chat only' : line}`;
+    head = <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{guardian.canAct === false ? 'Chat only' : line}</>;
   } else if (view === 'open' || view === 'card') {
     line = running
       ? [total > 1 && step ? `Step ${plan.index + 1} of ${total}` : null, doing || SHORT[phase]].filter(Boolean).join(' · ')
@@ -433,7 +437,7 @@ function Island({ onMeasure }) {
   if (!connected) {
     line = 'Reconnecting';
     mark = 'dot';
-    if (view === 'compact') head = `${petName} · Reconnecting`;
+    if (view === 'compact') head = <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>Reconnecting</>;
   }
 
   /* --- dragging the card -------------------------------------------------
