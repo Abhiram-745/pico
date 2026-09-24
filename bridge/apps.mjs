@@ -147,10 +147,27 @@ function powershell(script) {
  * Cached, because it is a PowerShell launch and the answer changes when
  * somebody installs something, which is not often. Never throws — a machine
  * that will not answer is treated as one with nothing installed.
+ *
+ * An old list is answered at once and replaced in the background. Every
+ * task reads it before its first move (driver.mjs, mentionedApps), and the
+ * launch costs two to two and a half seconds — measured — so a task typed
+ * more than five minutes after the last one waited that long for a list
+ * that, as likely as not, had not changed. Only the very first read waits,
+ * and the bridge starts that one when it starts (warmInstalled).
  */
 export async function installed() {
   if (process.platform !== 'win32') return [];
   if (cache && Date.now() - cachedAt < FRESH_FOR) return cache;
+  if (cache) { refreshInstalled(); return cache; }
+  return refreshInstalled();
+}
+
+/** Read the list now, without waiting for it: at startup, so no task does. */
+export function warmInstalled() {
+  if (process.platform === 'win32' && !cache) refreshInstalled();
+}
+
+function refreshInstalled() {
   if (inflight) return inflight;
 
   inflight = (async () => {
@@ -353,7 +370,11 @@ export function parseOpen(text) {
 export async function resolve(name, requestText = '') {
   const key = norm(name);
   const site = SITES.get(key) ?? null;
-  const app = await findApp(key);
+  let app = await findApp(key);
+  /* Not on an old list while a new one is being read: installed in the last
+     few minutes, perhaps. Opening it is the one question the list has to
+     settle outright, so here — only here — the new list is waited for. */
+  if (!app && inflight) { await inflight; app = await findApp(key); }
   const wants = preference(requestText);
   const title = app?.name ?? (key.charAt(0).toUpperCase() + key.slice(1));
 

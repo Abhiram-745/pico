@@ -1026,5 +1026,175 @@ console.log('eight accessibility actions reuse prefetched controls without eight
   check('vision checked completion and independently verified it', llm.calls.length === 2 && llm.calls[0].tool === 'act' && llm.calls[1].tool === 'report', JSON.stringify(llm.calls.map(c => c.tool)));
 }
 
+/* --- an attachment is pasted exactly, by its number ------------------------
+   The person pasted a long prompt into Halo and asked for it to be put
+   somewhere. The model names the attachment; the text that arrives is the
+   attachment's own, newlines, markdown and all — never the model's copy. */
+console.log('pasting an attachment exactly');
+{
+  const PROMPT = 'Nervous vs hormonal response — split-screen.\n\n| # | Prompt |\n| --- | --- |\n'
+    + '| 1 | **Left:** cool electric blue, a glowing impulse rockets down a neurone |\n\nKeep it 16:9.';
+  const attachments = [{ id: 'a1', name: 'Prompt.txt', kind: 'text', mime: 'text/plain', size: PROMPT.length, text: PROMPT }];
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clipboard = 'something of the person\'s own';
+  const llm = scripted([
+    act({ action: 'paste', paste_attachment: 1 }),
+    finish,
+    { name: 'report', args: { succeeded: true, summary: 'Pasted the prompt.' } },
+    finish,
+  ]);
+  const { done } = run({ computer, llm, task: 'paste the attached prompt into Notepad', context: { attachments } });
+  await done;
+  check('the attachment arrived exactly, newlines and all',
+    computer.state.typed.some((t) => t.text === PROMPT), JSON.stringify(computer.state.typed));
+  check('the model was shown it by number and name, not asked to retype it',
+    /\[1\] "Prompt\.txt" — 7 lines/.test(llm.calls[0]?.text ?? ''), (llm.calls[0]?.text ?? '').slice(0, 400));
+}
+{
+  // A number that is not on the list pastes nothing — not the person's clipboard.
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clipboard = 'the person\'s bank details';
+  const llm = scripted([
+    act({ action: 'paste', paste_attachment: 3 }),
+    act({ action: 'paste', paste_attachment: 1 }),
+    finish,
+    { name: 'report', args: { succeeded: true, summary: 'Pasted it.' } },
+    finish,
+  ]);
+  const attachments = [{ id: 'a1', name: 'Pasted text', kind: 'text', mime: 'text/plain', size: 5, text: 'hello' }];
+  const { done } = run({ computer, llm, task: 'paste the attachment', context: { attachments } });
+  await done;
+  check('a missing attachment number pasted nothing',
+    !computer.state.typed.some((t) => /bank/.test(t.text)), JSON.stringify(computer.state.typed));
+  check('and the model was told which numbers there are',
+    llm.calls.some((c) => /no attachment 3\. The attachments are numbered 1 to 1/.test(c.text)), llm.calls.map((c) => c.text.slice(0, 200)).join(' | '));
+  check('then the right one went in', computer.state.value === 'hello', computer.state.value);
+}
+{
+  // A picture cannot be pasted yet: said, and a plain paste in its place refused.
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clipboard = 'the person\'s own notes';
+  const llm = scripted([
+    act({ action: 'paste' }),
+    finish,
+    { name: 'report', args: { succeeded: false, summary: 'Halo cannot paste pictures yet.' } },
+    finish,
+  ]);
+  const attachments = [{ id: 'p1', name: 'fox.png', kind: 'image', mime: 'image/png', size: 8, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }];
+  const { done } = run({ computer, llm, task: 'paste this picture into Notepad', context: { attachments } });
+  await done;
+  check('the person\'s clipboard was not pasted in place of the picture',
+    !computer.state.typed.some((t) => /own notes/.test(t.text)), JSON.stringify(computer.state.typed));
+  check('the model was told there is a picture it cannot paste',
+    /Also attached: a picture \("fox\.png"\)\. Halo cannot paste pictures/.test(llm.calls[0]?.text ?? ''), (llm.calls[0]?.text ?? '').slice(0, 300));
+}
+
+/* --- one-move jobs from the words of the task, with no model turn ---------- */
+/* A pretend page whose controls Windows can name, for the planners in
+   quickplan.mjs: the page reads, the plan is made from the task's words, and
+   the model is only asked at the end, if at all. */
+function page(computer, controls) {
+  // One set of coordinates throughout, so a click can be told apart by where it lands.
+  const capture = computer.capture;
+  computer.capture = async () => ({ ...(await capture()), fromPhysical: (x, y) => ({ x, y }) });
+  computer.sense.look = async () => ({ elements: controls(), says: [] });
+  computer.sense.hit = async (x, y) => ({
+    found: true,
+    at: controls().find((el) => x >= el.rect[0] && x <= el.rect[0] + el.rect[2] && y >= el.rect[1] && y <= el.rect[1] + el.rect[3]) ?? { type: 'Pane', name: '' },
+  });
+  computer.sense.foreground = async () => ({ hwnd: computer.state.front, title: computer.focusedWindow() });
+}
+const actTurns = (llm) => llm.calls.filter((c) => c.tool === 'act').length;
+
+console.log('"click Add Element three times"');
+{
+  const computer = desktop({ windows: [{ hwnd: '300', title: 'The Internet - Google Chrome', process: 'chrome' }], front: '300' });
+  let added = 0;
+  const controls = () => [
+    { type: 'Button', name: 'Add Element', rect: [100, 100, 120, 30], operable: true, enabled: true },
+    ...Array.from({ length: added }, (_, i) => ({ type: 'Button', name: 'Delete', rect: [100, 150 + i * 40, 80, 30], operable: true, enabled: true })),
+  ];
+  page(computer, controls);
+  computer.click = async (x, y) => { if (controls()[0] && x >= 100 && x <= 220 && y >= 100 && y <= 130) added += 1; computer.state.screen += 1; };
+  const llm = scripted([finish, { name: 'report', args: { succeeded: true, summary: 'Added three.' } }, finish]);
+  const { done } = run({ computer, llm, task: 'On the Add/Remove Elements page, click Add Element three times.' });
+  await done;
+  check('three clicks, each on Add Element', added === 3, `${added} added`);
+  check('and no model turn was spent choosing them', actTurns(llm) <= 1, `${actTurns(llm)} act turns`);
+}
+
+console.log('searching from the words of the task');
+{
+  const computer = desktop({ windows: [{ hwnd: '300', title: 'Wikipedia - Google Chrome', process: 'chrome' }], front: '300' });
+  const controls = () => [
+    { type: 'Edit', name: 'Address and search bar', value: 'wikipedia.org', rect: [300, 10, 600, 30], operable: true, enabled: true },
+    { type: 'SearchBox', name: 'Search Wikipedia', value: computer.state.value, rect: [300, 120, 400, 34], operable: true, enabled: true },
+  ];
+  page(computer, controls);
+  computer.sense.focused = async () => ({ found: true, at: controls()[1], value: computer.state.value });
+  const keys = [];
+  const keypress = computer.keypress;
+  computer.keypress = async (k) => { keys.push(k.join('+')); return keypress(k); };
+  const llm = scripted([finish, { name: 'report', args: { succeeded: true, summary: 'Searched.' } }, finish]);
+  const { done } = run({ computer, llm, task: 'On Wikipedia, search for Alan Turing and open his article.' });
+  await done;
+  check('the words went into the page\'s own box', computer.state.typed.some((t) => t.text === 'Alan Turing'), JSON.stringify(computer.state.typed));
+  check('then Enter', keys.indexOf('enter') > keys.indexOf('ctrl+a') && keys.includes('enter'), keys.join(', '));
+}
+
+console.log('an unlabelled dropdown');
+{
+  const computer = desktop({ windows: [{ hwnd: '300', title: 'The Internet - Google Chrome', process: 'chrome' }], front: '300' });
+  let value = 'Please select an option', typedAhead = '', popupClicks = 0;
+  const controls = () => [
+    { type: 'ComboBox', name: '', id: 'dropdown', value, readOnly: true, rect: [300, 200, 200, 24], operable: true, enabled: true },
+    { type: 'Hyperlink', name: 'Elemental Selenium', rect: [300, 600, 140, 20], operable: true, enabled: true },
+  ];
+  page(computer, controls);
+  computer.click = async () => { popupClicks += 1; typedAhead = ''; computer.state.screen += 1; };
+  computer.keypress = async ([key]) => {
+    if (key === 'enter') { if (typedAhead === 'option 2') value = 'Option 2'; } else typedAhead += key === 'space' ? ' ' : key;
+    computer.state.screen += 1;
+  };
+  const llm = scripted([finish, { name: 'report', args: { succeeded: true, summary: 'Chose Option 2.' } }, finish]);
+  const { done } = run({ computer, llm, task: 'On the Dropdown List page, choose Option 2 in the dropdown.' });
+  await done;
+  check('Option 2 was chosen in the dropdown Windows gave no name', value === 'Option 2', value);
+  check('with one click to open it, then the keyboard', popupClicks === 1, `${popupClicks} clicks`);
+}
+
+/* --- Back: refused on the page the job started on, allowed once it left ---- */
+console.log('Back, before and after the page changed');
+{
+  const run1 = async (leave) => {
+    const computer = desktop({ windows: [{ hwnd: '300', title: 'Web form - Google Chrome', process: 'chrome' }], front: '300' });
+    const controls = () => [
+      { type: 'Button', name: 'Back', rect: [10, 10, 30, 30], operable: true, enabled: true },
+      { type: 'Button', name: 'Submit', rect: [100, 500, 100, 30], operable: true, enabled: true },
+    ];
+    page(computer, controls);
+    let backs = 0;
+    computer.click = async (x) => {
+      if (x < 50) backs += 1;
+      else if (leave) computer.state.windows.get('300').title = 'Web form - target page - Google Chrome';
+      computer.state.screen += 1;
+    };
+    const llm = scripted([
+      act({ action: 'click', mark: 2 }),
+      act({ action: 'click', mark: 1 }),
+      finish,
+      { name: 'report', args: { succeeded: true, summary: 'Done.' } },
+      finish,
+    ]);
+    const { done, events } = run({ computer, llm, task: 'On the Web form page, type hello into Text input and click Submit.' });
+    await done;
+    return { backs, refused: events.audits.some((a) => a.e === 'action_refused' && a.metadata?.control === 'Back') };
+  };
+  const stayed = await run1(false);
+  check('on the start page, Back is refused', stayed.backs === 0 && stayed.refused, JSON.stringify(stayed));
+  const left = await run1(true);
+  check('once the page has changed, Back is allowed', left.backs === 1 && !left.refused, JSON.stringify(left));
+}
+
 console.log(failed ? `\n${failed} failed` : '\nall passed');
 process.exit(failed ? 1 : 0);

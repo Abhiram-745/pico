@@ -24,9 +24,15 @@ export function requestedOption(goal, controlName, currentValue = '') {
   const text = String(goal || '');
   const name = String(controlName || '').trim();
   if (!name || name.length > 120) return null;
+  const own = /\(([^)]*)\)/.exec(name)?.[1]?.trim().toLowerCase() ?? null;
   for (const label of labelVariants(name, currentValue)) {
     const at = text.toLowerCase().indexOf(label.toLowerCase());
     if (at < 0) continue;
+    /* A label found with its brackets taken off must not be a different
+       control's label with ITS brackets: "the Dropdown (select)" is not
+       "Dropdown (datalist)", measured on a page that has both. */
+    const next = /^\s*\(([^)]*)\)/.exec(text.slice(at + label.length));
+    if (next && !label.includes('(') && next[1].trim().toLowerCase() !== own) continue;
     // After it: "set Priority to High", "Priority dropdown shows 'High'".
     const tail = text.slice(at + label.length, at + label.length + 90);
     const after = tail.match(/^\s*(?:dropdown|select|menu|list|field|box|slider)?\s*(?:is\s+set\s+to|set\s+to|to|as|shows|equals|is|=|:)\s+['"“]?([a-z0-9][a-z0-9 .-]{0,40})/i);

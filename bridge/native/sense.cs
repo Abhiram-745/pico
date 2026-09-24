@@ -1106,7 +1106,7 @@ static class Sense
                 string type = TypeName(el);
                 var r = c.BoundingRectangle;
                 if (el != root && !c.IsOffscreen && !r.IsEmpty && r.Width > 4 && r.Height > 4
-                    && !string.IsNullOrEmpty(c.Name) && c.IsEnabled && type != "Window"
+                    && (!string.IsNullOrEmpty(c.Name) || UNNAMED_OK.Contains(type)) && c.IsEnabled && type != "Window"
                     && (Operable(el, type) || Editable(el, type)))
                 {
                     if (n++ > 0) arr.Append(',');

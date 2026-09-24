@@ -5,7 +5,8 @@
    scripts/qa.mjs measures the driver on pages written for it. This measures
    what a person actually gets: real sites nobody wrote for Halo — a
    Bootstrap form, a React to-do app, Wikipedia, GitHub, an HTML5
-   drag-and-drop page — and the task handed to HostAgent.run(), exactly as a
+   drag-and-drop page, a sortable table, a hover menu, the Python and
+   Node.js docs — and the task handed to HostAgent.run(), exactly as a
    message from the app is. So the routing (chat or job), the openers and
    shortcuts, the no-model planners, the batching, the Jev checkpoints and
    the model tiers are all the ones the app uses, at the app's speed.
@@ -92,6 +93,55 @@ const TASKS = [
     url: 'https://github.com/Abhiram-745/pico',
     task: 'On the GitHub page for pico, open the Releases page.',
     check: `(() => ({ pass: /\\/releases/.test(location.pathname), detail: location.pathname }))()`,
+  },
+  /* The field has no label at all: Windows names it nothing, and it is only
+     "the number box" by its role (sense.cs, UNNAMED_OK). */
+  {
+    id: 'number',
+    url: 'https://the-internet.herokuapp.com/inputs',
+    task: 'On the Inputs page, type 42 into the number box.',
+    check: `(() => { const v = document.querySelector('input[type=number]')?.value; return { pass: v === '42', detail: 'number=' + v }; })()`,
+  },
+  {
+    id: 'keys',
+    url: 'https://the-internet.herokuapp.com/key_presses',
+    task: 'On the Key Presses page, press the K key.',
+    check: `(() => { const t = document.getElementById('result')?.textContent.trim() ?? ''; return { pass: t === 'You entered: K', detail: t || 'nothing entered' }; })()`,
+  },
+  // Rows start Smith, Bach, Doe, Conway; one click on the header sorts A to Z.
+  {
+    id: 'sort',
+    url: 'https://the-internet.herokuapp.com/tables',
+    task: 'On the Data Tables page, sort Example 1 by Last Name, A to Z.',
+    check: `(() => { const n = [...document.querySelectorAll('#table1 tbody tr')].map((r) => r.cells[0]?.textContent.trim()); return { pass: n.join() === 'Bach,Conway,Doe,Smith', detail: n.join(', ') }; })()`,
+  },
+  // The link only shows while the pointer is over the picture.
+  {
+    id: 'hover',
+    url: 'https://the-internet.herokuapp.com/hovers',
+    task: 'On the Hovers page, hover over the first picture and open its View profile link.',
+    check: `(() => ({ pass: location.pathname === '/users/1', detail: location.pathname }))()`,
+  },
+  // Three boxes all called "Quick search" (two hidden at desktop width); the search is a GET to search.html.
+  {
+    id: 'pysearch',
+    url: 'https://docs.python.org/3/',
+    task: 'On the Python documentation, search for pathlib.',
+    check: `(() => { const u = new URL(location.href); return { pass: /\\/search\\.html$/.test(u.pathname) && u.searchParams.get('q') === 'pathlib', detail: u.pathname + u.search }; })()`,
+  },
+  // "Virtual File System" sits in the same list: the right one, not the one with more words in common.
+  {
+    id: 'nodefs',
+    url: 'https://nodejs.org/api/',
+    task: 'On the Node.js docs index, open the File system page.',
+    check: `(() => ({ pass: /\\/fs\\.html$/.test(location.pathname), detail: location.pathname }))()`,
+  },
+  // Editing is a double-click on the label, a new name, and Enter.
+  {
+    id: 'todoedit',
+    url: 'https://todomvc.com/examples/react/dist/',
+    task: 'On the TodoMVC page, add a todo called Buy milk, then change it to Buy oat milk.',
+    check: `(() => { const l = [...document.querySelectorAll('.todo-list li label')].map((x) => x.textContent.trim()); return { pass: l.includes('Buy oat milk') && !l.includes('Buy milk'), detail: l.join(' | ') || 'no todos' }; })()`,
   },
 ];
 

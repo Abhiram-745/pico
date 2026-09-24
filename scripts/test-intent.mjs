@@ -87,11 +87,56 @@ for (const [text, want] of CASES) {
   );
 }
 
+/* Settled by the rules alone, with no model asked: things said of nothing but
+   a screen. The real-site tasks first — each of these used to wait on a
+   classification call before anything moved. */
+const CERTAIN_JOBS = [
+  'On the Web form page, type Halo test into Text input, type hello from Halo into Textarea, choose Two in the Dropdown (select), then click Submit.',
+  'On the Web form page, set the Example range slider to 8.',
+  'On the Dropdown List page, choose Option 2 in the dropdown.',
+  'On the Checkboxes page, tick checkbox 1 and leave checkbox 2 as it is.',
+  'On the Add/Remove Elements page, click Add Element three times.',
+  'On the Drag and Drop page, drag box A onto box B.',
+  'On the TodoMVC page, add a todo called Buy milk.',
+  'On the GitHub page for pico, open the Releases page.',
+  'click the Save button',
+  'please double-click the Recycle Bin',
+  'can you tick Remember me',
+  'drag the file into the Done column',
+  'scroll down to the comments',
+  'type my name into the first box, then click Next',
+];
+/* And what must not be: questions about clicking, and verbs that are only
+   screen verbs sometimes. Each is either conversation or left to the model. */
+const NOT_CERTAIN_JOBS = [
+  'what happens if I click the button twice?',
+  'how do I tick a checkbox in Excel?',
+  'On this page, what does the error mean?',
+  'In Python, write a function that sorts a list',
+  'In the story, the hero clicks a button. What happens next?',
+  'drag queens are fabulous',
+  'explain what happens when I type a URL and then click Go',
+  'find me a good book',
+];
+for (const text of CERTAIN_JOBS) {
+  const r = localRoute(text);
+  const ok = r?.mode === 'agent' && r.certain === true;
+  if (!ok) failed += 1;
+  lines.push(`  ${ok ? ' ' : '✗'} ${JSON.stringify(text).slice(0, 50).padEnd(52)} ${ok ? 'certain job' : `${r?.mode ?? 'ask'} (expected a certain job)`}`);
+}
+for (const text of NOT_CERTAIN_JOBS) {
+  const r = localRoute(text);
+  const ok = !(r?.mode === 'agent' && r.certain === true);
+  if (!ok) failed += 1;
+  lines.push(`  ${ok ? ' ' : '✗'} ${JSON.stringify(text).slice(0, 50).padEnd(52)} ${ok ? 'not settled as a job' : 'settled as a job (expected not)'}`);
+}
+
+const total = CASES.length + CERTAIN_JOBS.length + NOT_CERTAIN_JOBS.length;
 if (failed) {
   console.error('\n  intent router:\n');
   for (const l of lines) console.error(l);
-  console.error(`\n  ${failed} of ${CASES.length} routed wrongly.\n`);
+  console.error(`\n  ${failed} of ${total} routed wrongly.\n`);
   process.exit(1);
 }
 
-console.log(`  intent router: ${CASES.length} messages routed correctly`);
+console.log(`  intent router: ${total} messages routed correctly`);

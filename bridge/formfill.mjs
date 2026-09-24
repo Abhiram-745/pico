@@ -100,6 +100,15 @@ export function planForm(task, elements = []) {
       used.add(key);
       if (Math.abs(el.range[2] - n) < 0.5) continue;
       steps.push({ action: 'set_value', el, text: String(n), why: `Setting ${el.name} to ${n}` });
+    } else if (el.type === 'ComboBox' && el.readOnly === false) {
+      /* A box with suggestions (a datalist, an autocomplete) is typed into,
+         not chosen from: the Enter that commits a dropdown's choice submits
+         the form from one of these — measured, half filled. */
+      const value = valueAfterLabel(task, el.name) ?? requestedOption(task, el.name, el.value);
+      if (!value) continue;
+      used.add(key);
+      if (String(el.value ?? '').trim() === value) continue;
+      steps.push({ action: 'type', el, text: value, why: `Typing ${value} into ${el.name}` });
     } else if (el.type === 'ComboBox') {
       const option = requestedOption(task, el.name, el.value);
       if (!option) continue;

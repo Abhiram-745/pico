@@ -63,6 +63,8 @@ export function buildMarks(seen, { within = null, max = MAX_MARKS } = {}) {
     const m = { n: marks.length + 1, kind, role: el.type || kind, name: name.slice(0, 80), rect: r.map(Math.round) };
     if (typeof el.value === 'string' && el.value) m.value = el.value.slice(0, 80);
     if (typeof el.checked === 'boolean') m.checked = el.checked;
+    // A box with suggestions is typed into; a select is chosen from (quickplan.mjs).
+    if (typeof el.readOnly === 'boolean') m.readOnly = el.readOnly;
     if (Array.isArray(el.range) && el.range.length === 3 && el.range.every(Number.isFinite)) m.range = el.range;
     marks.push(m);
   };

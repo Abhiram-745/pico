@@ -26,12 +26,16 @@ class AudioContext {
   close() { return Promise.resolve(); }
 }
 const voiceTurns=[];
+let speechTicks=0;
 const handsFree=createMicrophone({Recorder,AudioContext,silenceMs:140,mediaDevices:{getUserMedia:async()=>stream()},
+  onLevel:l=>{if(speaking&&l>0)speechTicks++;},
   onTranscript:t=>voiceTurns.push(t),fetchImpl:async()=>Response.json({text:'Find the test project'})});
 await handsFree.start();
-await new Promise(r=>setTimeout(r,340));
+// Speech for as long as the detector needs to hear it (four of its ticks is 240ms or more),
+// then silence until it sends: waited for, not timed, so a busy machine cannot fail it.
+for(let w=0;speechTicks<4&&w<3000;w+=20)await new Promise(r=>setTimeout(r,20));
 speaking=false;
-await new Promise(r=>setTimeout(r,420));
+for(let w=0;!voiceTurns.length&&w<3000;w+=20)await new Promise(r=>setTimeout(r,20));
 assert.deepEqual(voiceTurns,['Find the test project'],'Speech ending in silence must send without a click');
 await mic.start();mic.cancel();await new Promise(r=>setTimeout(r,20));
 assert.equal(uploads,1,'Cancelled recordings must never upload');assert.equal(stopped,4);

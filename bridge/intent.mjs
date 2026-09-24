@@ -63,7 +63,10 @@ const ASKS_FOR_AN_ANSWER = [
    -------------------------------------------------------------------------- */
 
 /** Verbs that only make sense as something done to the machine. */
-const VERB = 'open|launch|start|run|close|quit|minimi[sz]e|maximi[sz]e|click|double-?click|right-?click|press|type|write|enter|fill(?:\\s+in|\\s+out)?|search(?:\\s+for)?|google|look\\s+up|find|go\\s+to|navigate|visit|browse|download|upload|install|uninstall|save|rename|delete|move|copy|paste|cut|select|scroll|switch\\s+to|take|screenshot|play|pause|skip|mute|send|email|reply|forward|post|tweet|book|order|buy|log\\s+in|sign\\s+in|sign\\s+out|check|clear|empty|create|make|add|remove|set\\s+up|turn\\s+(?:on|off)|drag|zoom|refresh|reload|print|export|import|sort|filter';
+const VERB = 'open|launch|start|run|close|quit|minimi[sz]e|maximi[sz]e|click|double-?click|right-?click|press|type|write|enter|fill(?:\\s+in|\\s+out)?|search(?:\\s+for)?|google|look\\s+up|find|go\\s+to|navigate|visit|browse|download|upload|install|uninstall|save|rename|delete|move|copy|paste|cut|select|scroll|switch\\s+to|take|screenshot|play|pause|skip|mute|send|email|reply|forward|post|tweet|book|order|buy|log\\s+in|sign\\s+in|sign\\s+out|check|clear|empty|create|make|add|remove|set\\s+up|turn\\s+(?:on|off)|drag|zoom|refresh|reload|print|export|import|sort|filter|tick|untick|uncheck';
+
+/** What may come before the verb without making it any less of an order. */
+const POLITE = '\\s*(?:please|hey|yo|ok|okay|pico|can\\s+you|could\\s+you|would\\s+you|will\\s+you|i\\s+(?:want|need)\\s+you\\s+to|i\\s+(?:want|need)\\s+to|go\\s+ahead\\s+and|now|just)';
 
 /**
  * The verb has to be the thing the sentence is doing, not a word that happens
@@ -72,13 +75,33 @@ const VERB = 'open|launch|start|run|close|quit|minimi[sz]e|maximi[sz]e|click|dou
  * counts in an imperative position: leading the message (after any politeness
  * that precedes it), or following "and" / "then" in a chain of steps.
  */
-const IMPERATIVE_LEAD = new RegExp(
-  `^(?:\\s*(?:please|hey|yo|ok|okay|pico|can\\s+you|could\\s+you|would\\s+you|will\\s+you|i\\s+(?:want|need)\\s+you\\s+to|i\\s+(?:want|need)\\s+to|go\\s+ahead\\s+and|now|just)[,\\s]+)*(?:${VERB})\\b`,
-  'i',
-);
+const IMPERATIVE_LEAD = new RegExp(`^(?:${POLITE}[,\\s]+)*(?:${VERB})\\b`, 'i');
 const CHAINED_VERB = new RegExp(`\\b(?:and|then|,)\\s+(?:${VERB})\\b`, 'i');
 
 const hasImperative = (t) => IMPERATIVE_LEAD.test(t) || CHAINED_VERB.test(t);
+
+/* --------------------------------------------------------------------------
+   Certainly a job on the screen
+
+   Most messages with a verb in front are work, but not all — "find me a good
+   book", "check my grammar" — so a verb alone still goes to the model. Some
+   are said of nothing but a screen, though, and asking a model about those
+   cost a third of a second at best — ten when the first model was unsure and
+   a second was asked — before anything moved, for an answer that could only
+   ever be "agent". Eight of the nine real-site tasks (qa-real.mjs) paid it;
+   now only the Wikipedia search does.
+   -------------------------------------------------------------------------- */
+
+/** A page or a window named first: "On the Web form page, …", "In the
+    Settings window, …". Nobody chats by placing themselves on a page. */
+const SCREEN_PLACE = /^\s*(?:on|in|at)\s+(?:the\s+|this\s+|that\s+|my\s+)?[^,.;:!?]{0,60}?\b(?:page|tab|window|screen|site|website|form|dialog|panel|board|app|sidebar|toolbar)\b[^,.;:!?]{0,40},\s*/i;
+/** …followed by an order, not a question: the verbs above, and the ones only a form uses. */
+const ORDER = new RegExp(`^(?:${POLITE}[,\\s]+)*(?:${VERB}|choose|pick|set|put|toggle|expand|collapse|hover|leave|mark)\\b`, 'i');
+/** Verbs nobody uses in conversation, leading the message. "Drag" and
+    "scroll" only with where to: "drag racing" and "scroll of truth" are not. */
+const SCREEN_VERB_LEAD = new RegExp(`^(?:${POLITE}[,\\s]+)*(?:(?:double-?|right-?)?click|tick|untick|uncheck|drag\\s.+?\\s(?:to|into|onto|over)\\s|scroll\\s+(?:up|down|left|right|to|through|back|until)\\b)`, 'i');
+/** …or as a later step of a chain: "type the name, then click Save". */
+const CHAINED_SCREEN_VERB = /\b(?:and|then|,)\s+(?:then\s+)?(?:(?:double-?|right-?)?click|tick|untick|uncheck)\b/i;
 
 /** Named surfaces. Mentioning one is strong evidence the screen is involved. */
 const APP_OR_SURFACE = /\b(?:chrome|edge|firefox|safari|browser|notepad|word|excel|powerpoint|outlook|gmail|mail|inbox|spotify|youtube|netflix|discord|slack|teams|zoom|whatsapp|telegram|vscode|vs\s?code|terminal|powershell|cmd|explorer|file\s?explorer|settings|control\s?panel|taskbar|start\s?menu|desktop|clipboard|calendar|calculator|photos|steam|figma|notion|github|reddit|twitter|instagram|facebook|linkedin|amazon|tab|window|folder|file|screen)\b/i;
@@ -173,6 +196,17 @@ export function localRoute(text, { attachments = [] } = {}) {
 
   // "can you open Chrome" is phrased as a question but is plainly a job, so a
   // question only wins when nothing is actually being asked for on screen.
+  // "Click", "tick", a page named first: an action on the screen, said so
+  // plainly that asking a model would only cost the time. A question about
+  // clicking ("what happens if I click…") is still a question.
+  const place = SCREEN_PLACE.exec(t);
+  const afterPlace = place ? t.slice(place[0].length) : '';
+  if (SCREEN_VERB_LEAD.test(t)
+    || (place && ORDER.test(afterPlace) && !ASKS_FOR_AN_ANSWER.some((re) => re.test(afterPlace)))
+    || (!question && CHAINED_SCREEN_VERB.test(t))) {
+    return { mode: 'agent', why: 'an action on the screen', certain: true };
+  }
+
   if (question && !verb) {
     return { mode: 'chat', why: 'a question, with nothing to act on', certain: true };
   }

@@ -50,6 +50,7 @@ import { routines } from './routines.mjs';
 import { runbook } from './runbook.mjs';
 import { migrateFromPico, readJson, writeJson } from './home.mjs';
 import { findBrowser } from './notch-window.mjs';
+import { warmInstalled } from './apps.mjs';
 import { buildUI } from '../scripts/build-ui.mjs';
 
 /* The HALO_ names are the ones to use now; the PICO_ ones still work, so
@@ -274,6 +275,9 @@ class Bridge {
   /** Real mouse/keyboard/screen control, when the machine allows it. */
   async attachComputer(computer) {
     this.agent.attachComputer(computer);
+    // Every task reads the installed apps before it moves: read them now, so
+    // the first one does not wait two seconds on PowerShell (apps.mjs).
+    warmInstalled();
     try { this.screenSize = await computer.size(); } catch { this.screenSize = null; }
     this.publishCapability();
   }

@@ -150,7 +150,7 @@ async function caretIn(sense, box) {
  *
  * @returns {{ ok: boolean, why?: string, box?: object, asked?: boolean }}
  */
-export async function send({ computer, sense, hwnd, text, toMouse, gate = async () => true, onLive = () => {}, confirmDraft = null }) {
+export async function send({ computer, sense, hwnd, text, toMouse, gate = async () => true, onLive = () => {}, confirmDraft = null, busyMs = 300_000 }) {
   if (!(await bringForward(computer, sense, hwnd))) {
     return { ok: false, why: 'the window would not come to the front' };
   }
@@ -162,6 +162,22 @@ export async function send({ computer, sense, hwnd, text, toMouse, gate = async 
      click could find — by what holds the caret. */
   const reread = async () => (await readBox(sense, hwnd)) ?? (byClick ? await focusBox(sense) : null);
   if (!(await gate())) return { ok: false, stopped: true };
+
+  /* Still writing its last answer: an app takes no new message then —
+     ChatGPT keeps the words in the box and sends nothing, and the list
+     stopped on a message that "did not send". Waited out here instead. It
+     only happens when the last answer was not waited for: a list sent
+     without waiting, an answer skipped, or a chat the person left going. */
+  if (box.stop) {
+    onLive('Waiting for the last answer to finish');
+    const until = Date.now() + busyMs;
+    while (box.stop && Date.now() < until) {
+      await sleep(650);
+      if (!(await gate())) return { ok: false, stopped: true };
+      box = (await reread()) ?? box;
+    }
+    if (box.stop) return { ok: false, why: 'the app was still writing its last answer' };
+  }
 
   /* A box that already has something in it. On the first item that is the
      person's own draft, and it is theirs to keep or throw away; on a later
@@ -263,7 +279,7 @@ async function sentYet(reread, head) {
  *
  * @returns {{ ok: boolean, ms: number, by?: string, timedOut?: boolean, stopped?: boolean }}
  */
-export async function waitForAnswer({ computer, sense, hwnd, gate = async () => true, onLive = () => {}, timeoutMs = 300_000, settleMs = 1600 }) {
+export async function waitForAnswer({ computer, sense, hwnd, gate = async () => true, onLive = () => {}, timeoutMs = 300_000, settleMs = 1600, skip = () => false }) {
   const t0 = Date.now();
   let sawStop = false;
   let clearSince = null;
@@ -275,6 +291,8 @@ export async function waitForAnswer({ computer, sense, hwnd, gate = async () => 
     const ms = Date.now() - t0;
     if (ms > timeoutMs) return { ok: false, ms, timedOut: true };
     if (!(await gate())) return { ok: false, ms, stopped: true };
+    // The person said to move on: the answer is theirs to judge, not this.
+    if (skip()) return { ok: true, ms, skipped: true };
 
     const box = await readBox(sense, hwnd);
     const writing = Boolean(box?.stop);

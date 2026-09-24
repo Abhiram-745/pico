@@ -83,5 +83,99 @@ assert.equal(phases.at(-1), 'Completed');
 const plan = events.filter((e) => e.type === 'plan' && e.payload).at(-1).payload;
 assert.ok(plan.list && plan.finished, 'the island is shown a finished list');
 
+// Saved as a shortcut, it would replay with nothing attached: not saved, and said why.
+let shortcutsSaved = 0;
+routines.save = () => { shortcutsSaved += 1; return { name: 'Send the list' }; };
+events.length = 0;
+agent.handle({ command: 'routineSave', payload: { name: 'Send the list' } });
+assert.equal(shortcutsSaved, 0, 'a job that used an attachment is not kept as words alone');
+assert.match(events.find((e) => e.type === 'message')?.payload.text ?? '', /Not saved as a shortcut/);
+
+/* --- Skip, and what is said, while a list runs ---------------------------
+   A pretend ChatGPT: a stop button shows for a few reads after each send,
+   the way the real one shows "Stop streaming" while it writes. Skip and
+   corrections arrive the way the interface sends them (agent.handle). */
+function chatgpt({ title = 'ChatGPT - Google Chrome', process: proc = 'chrome', busyAfterSend = 2 } = {}) {
+  const app = { value: '', clip: 'the person\'s own clipboard', sent: [], busy: 0, pastedWhileBusy: false, afterSend: () => {} };
+  const FIELD2 = [300, 800, 600, 40];
+  const sense2 = {
+    async windows() { return [{ hwnd: '11', title, process: proc, rect: [0, 0, 1200, 900] }]; },
+    async foreground() { return { hwnd: '11' }; },
+    async composer() {
+      const busy = app.busy > 0;
+      if (busy) app.busy -= 1;
+      return { found: true, field: { type: 'Edit', name: 'Message ChatGPT', rect: FIELD2, value: app.value }, buttons: busy ? [{ name: 'Stop streaming', rect: [910, 805, 30, 30] }] : [] };
+    },
+    async focused() { return { at: { type: 'Edit', rect: FIELD2, value: app.value } }; },
+  };
+  const computer = {
+    sense: sense2,
+    async available() { return { ok: true }; },
+    async foreground() { return null; },
+    async focus() { return true; },
+    async click() {},
+    async keypress(keys) {
+      const k = keys.join('+');
+      if (k === 'ctrl+v') { if (app.busy > 0) app.pastedWhileBusy = true; app.value += app.clip; } else if (k === 'ctrl+a' || k === 'backspace') app.value = '';
+      else if (k === 'enter') { app.sent.push(app.value); app.value = ''; app.busy = busyAfterSend; app.afterSend(app.sent.length); }
+    },
+    async writeClipboard(t) { app.clip = t; return true; },
+    async readClipboard() { return app.clip; },
+    async capture() { return { scale: 1, grey: null }; },
+  };
+  const seen = [];
+  const a = new HostAgent({ emit: (type, payload) => seen.push({ type, payload }), onCommand() {} }, { memory, routines });
+  a.attachLLM({ tiers: { fast: 'test', text: 'test' }, async chat() { return 'AGENT'; }, async evaluate() { return null; } });
+  a.attachComputer(computer);
+  const last = (type) => seen.filter((e) => e.type === type && e.payload).at(-1)?.payload;
+  return { app, agent: a, seen, last };
+}
+const three = [{ id: 't3', name: 'prompts.md', kind: 'text', mime: 'text/markdown', size: 40, text: '1. one\n2. two\n3. three' }];
+// A messaging app: sent without waiting for anything back, so nothing here waits.
+const messenger = { title: 'WhatsApp', process: 'WhatsApp', busyAfterSend: 0 };
+
+{
+  // Skip on the row in hand before it goes: that one is left out, the rest go.
+  const { app, agent: a, last } = chatgpt(messenger);
+  app.afterSend = (n) => { if (n === 1) a.handle({ command: 'skipStep', payload: { index: 1 } }); };
+  await a.run('send each of these to whatsapp', { attachments: three });
+  assert.deepEqual(app.sent, ['one', 'three'], 'a skipped row is not sent');
+  assert.deepEqual(last('plan').steps.map((s) => s.status), ['done', 'skipped', 'done']);
+  assert.equal(last('phase').phase, 'Completed', 'a list with a row taken out by the person still finished');
+  assert.match(last('summary').text, /skipped 2, as you asked/);
+}
+{
+  // "Stop after this one": the one in hand finishes, nothing after it goes.
+  const { app, agent: a, last } = chatgpt(messenger);
+  app.afterSend = (n) => { if (n === 1) a.handle({ command: 'steer', payload: { text: 'stop after this one' } }); };
+  await a.run('send each of these to whatsapp', { attachments: three });
+  assert.deepEqual(app.sent, ['one']);
+  assert.deepEqual(last('plan').steps.map((s) => s.status), ['done', 'skipped', 'skipped']);
+  assert.match(last('summary').text, /stopped before 2–3, as you asked/);
+}
+{
+  // "Skip 3" by its number; and something a list under way cannot do is answered, not dropped.
+  const { app, agent: a, seen } = chatgpt(messenger);
+  app.afterSend = (n) => {
+    if (n === 1) { a.handle({ command: 'steer', payload: { text: 'skip 3' } }); a.handle({ command: 'steer', payload: { text: 'make them all shorter' } }); }
+  };
+  await a.run('send each of these to whatsapp', { attachments: three });
+  assert.deepEqual(app.sent, ['one', 'two']);
+  const activity = seen.filter((e) => e.type === 'plan' && e.payload?.activity).flatMap((e) => e.payload.activity.map((x) => x.text));
+  assert.ok(activity.some((t) => /Not changed: "make them all shorter"/.test(t)), JSON.stringify(activity));
+}
+{
+  /* Skip while an answer is being written: not waited for — and the next
+     one waits for the app to be free before it is pasted, or ChatGPT would
+     keep it in the box and send nothing. */
+  const { app, agent: a, last } = chatgpt();
+  // Still writing for a few reads after the first; the second is answered quickly.
+  app.afterSend = (n) => { if (n === 1) { app.busy = 4; a.handle({ command: 'skipStep', payload: { index: 0 } }); } };
+  await a.run('paste each of these into chatgpt and wait for each answer', { attachments: [{ ...three[0], text: '1. one\n2. two' }] });
+  assert.deepEqual(app.sent, ['one', 'two']);
+  assert.equal(app.pastedWhileBusy, false, 'nothing was pasted while the app was still writing');
+  assert.equal(last('phase').phase, 'Completed');
+}
+
 console.log('job: all passed');
 process.exit(0);

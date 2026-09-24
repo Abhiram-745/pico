@@ -34,6 +34,12 @@ import * as apps from './apps.mjs';
 /** How long one answer may take. Pictures are slow; four minutes is not. */
 const ANSWER_LIMIT_MS = 5 * 60_000;
 
+/* Said while a list runs: leave one out by its number ("skip 8", "skip
+   prompt 12"), or end it after the one in hand ("stop after this one",
+   "that's enough"). */
+const SKIP_ONE = /\bskip\s+(?:(?:prompt|item|line|message|number|no\.?|#)\s*)?(\d{1,3})\b/i;
+const ENDS_LIST = /\b(?:stop|enough|no more|last one|finish (?:after|with)|leave it there|that(?:'| wi)?ll do)\b/i;
+
 /**
  * Carry out one job on the real desktop.
  *
@@ -139,6 +145,7 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
   const {
     gate = async () => true, onPhase = () => {}, onPlan = () => {}, onAction = () => {}, onAudit = () => {},
     onSummary = () => {}, onError = () => {}, onQuestion = async () => '', remembered = () => null, remember = () => {},
+    steer = () => [],
   } = hooks;
   const sense = computer.sense ?? null;
   const { items, all } = shape;
@@ -188,8 +195,32 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
   const say = (text) => { live = text; publish(); };
   publish();
 
+  /* Skip, and anything said, while the list runs. agent.mjs keeps them
+     until asked, and only the loop ever asked — so during a list both did
+     nothing at all. Skip is the row in hand, or the row it names. What is
+     said cannot rewrite a list half done, except to end it ("stop after
+     this one") or leave one out ("skip 8"); anything else is answered
+     plainly rather than silently dropped. */
+  const skips = new Set();       // rows not to do
+  let lastOne = false;           // end after the row in hand
+  const heard = (at) => {
+    const kept = [];
+    for (const s of [].concat((() => { try { return steer() ?? []; } catch { return []; } })())) {
+      if (s?.type === 'skip') {
+        const row = Number.isInteger(s.index) ? s.index : at;
+        if (row >= at && rows[row]) skips.add(row);
+      } else if (s?.type === 'correct' && String(s.text ?? '').trim()) {
+        const text = String(s.text).trim();
+        const named = SKIP_ONE.exec(text);
+        const row = named ? items.findIndex((it, j) => j >= at && it.n === Number(named[1])) : -1;
+        if (row >= 0) { skips.add(row); activity.push(`Will skip ${noun} ${items[row].n}, as asked`); } else if (ENDS_LIST.test(text)) { lastOne = true; activity.push(`Stopping after ${noun} ${items[at]?.n ?? ''}, as asked`.trim()); } else kept.push(text);
+      }
+    }
+    return kept;
+  };
+
   if (shape.how !== 'chat') {
-    return eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, context, attachments, publish, say, activity, setIndex: (i) => { index = i; }, noun });
+    return eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, context, attachments, publish, say, activity, setIndex: (i) => { index = i; }, noun, heard, skips, isLast: () => lastOne });
   }
 
   /* --- where it goes ----------------------------------------------------- */
@@ -216,10 +247,29 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
   const sent = [];
   let failure = null;
   let stopped = false;
+  let endedEarly = false;
+  /* What was said that a list under way cannot act on: answered in its
+     activity, so it is not a correction that silently went nowhere. */
+  const answer = (said) => {
+    for (const text of said) activity.push(`Not changed: "${text.slice(0, 60)}" — a list already under way can only skip items or stop early. Stop it and ask again to change it.`);
+    if (said.length) publish();
+  };
   try {
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       index = i;
+      answer(heard(i));
+      if (lastOne && i > 0) {
+        for (let j = i; j < rows.length; j++) rows[j].status = 'skipped';
+        endedEarly = true;
+        break;
+      }
+      if (skips.has(i)) {
+        rows[i].status = 'skipped';
+        activity.push(`Skipped ${noun} ${it.n}, as asked`);
+        publish();
+        continue;
+      }
       rows[i].status = 'pending';
       if (!(await gate())) { stopped = true; break; }
       onPhase('Acting');
@@ -249,6 +299,9 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
         const waited = await waitForAnswer({
           computer, sense, hwnd: target.hwnd, gate, timeoutMs: ANSWER_LIMIT_MS,
           onLive: (t) => say(`${cap(noun)} ${it.n} of ${all.length} · ${t.toLowerCase()}`),
+          // Skip while it answers: sent already, so not waited for. The next
+          // one waits for the app to be free before it goes in (chatbox.mjs).
+          skip: () => { answer(heard(i)); return skips.has(i); },
         });
         if (waited.stopped) { stopped = true; rows[i].status = 'done'; break; }
         if (waited.timedOut) {
@@ -256,7 +309,9 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
           failure = { item: it, why: `it was still going after ${Math.round(ANSWER_LIMIT_MS / 60000)} minutes`, sentOk: true };
           break;
         }
-        activity.push(`${cap(noun)} ${it.n} finished (${Math.round(waited.ms / 1000)}s)`);
+        activity.push(waited.skipped
+          ? `Moved on from ${noun} ${it.n} without waiting for the answer, as asked`
+          : `${cap(noun)} ${it.n} finished (${Math.round(waited.ms / 1000)}s)`);
       }
       rows[i].status = 'done';
       publish();
@@ -267,9 +322,11 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
   }
   if (stopped) return undefined;
 
-  index = Math.min(sent.length, rows.length - 1);
-  const succeeded = !failure && sent.length === items.length;
-  const said = summaryFor({ shape, noun, sent, items, failure, target });
+  const left = items.filter((_, j) => rows[j].status === 'skipped');
+  index = Math.min(sent.length + left.length, rows.length - 1);
+  // Everything asked for went, apart from what the person took out.
+  const succeeded = !failure && sent.length + left.length === items.length;
+  const said = summaryFor({ shape, noun, sent, items, failure, target, skipped: left, endedEarly });
   finish({ onPhase, onAudit, onSummary, onPlan: publish }, { succeeded, said, rows });
   return { succeeded, steps: rows.filter((r) => r.status === 'done').map((r) => r.do) };
 }
@@ -278,15 +335,33 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
    loop, handed only that item. Its own summaries are collected rather than
    shown one by one — the person asked for one job, and gets one account of
    it at the end. */
-async function eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, context, publish, say, activity, setIndex, noun }) {
+async function eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, context, publish, say, activity, setIndex, noun, heard, skips, isLast }) {
   const { gate = async () => true, onPhase = () => {}, onAudit = () => {}, onSummary = () => {} } = hooks;
   const outcomes = [];
+  let endedEarly = false;
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     setIndex(i);
+    /* Said between items: a correction is for the one about to start, and
+       reaches its run first thing. */
+    const early = heard(i);
+    if (isLast() && i > 0) {
+      for (let j = i; j < rows.length; j++) rows[j].status = 'skipped';
+      endedEarly = true;
+      break;
+    }
+    if (skips.has(i)) {
+      rows[i].status = 'skipped';
+      activity.push(`Skipped ${noun} ${it.n}, as asked`);
+      publish();
+      continue;
+    }
     if (!(await gate())) return undefined;
     say(`${cap(noun)} ${it.n} of ${shape.all.length}`);
     let said = '';
+    /* Skip, while this item's run is going, ends that run: its own Skip
+       means "not that action, something else", which would keep it going. */
+    const skipped = () => skips.has(i);
     const result = await runTask({
       task: `${shape.instruction}\n\nDo this for ONE ${noun} only — ${noun} ${it.n}, which is attachment 1. Do nothing for any other.`,
       computer,
@@ -300,6 +375,8 @@ async function eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, 
       },
       hooks: {
         ...hooks,
+        gate: async () => !skipped() && await gate(),
+        steer: () => [...early.splice(0), ...heard(i)].map((text) => ({ type: 'correct', text })),
         /* The inner run's own line of what it is doing, under this item's
            name — its checklist is its business, the list is this one's. */
         onPlan: (p) => {
@@ -310,6 +387,12 @@ async function eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, 
         onPhase: (phase) => { if (!['Completed', 'Stopped', 'Failed'].includes(phase)) onPhase(phase); },
       },
     });
+    if (skipped()) {
+      rows[i].status = 'skipped';
+      activity.push(`Skipped ${noun} ${it.n}, as asked`);
+      publish();
+      continue;
+    }
     if (result === undefined) return undefined;          // stopped by the person
     rows[i].status = result.succeeded ? 'done' : 'failed';
     outcomes.push({ it, ok: Boolean(result.succeeded), said });
@@ -319,9 +402,13 @@ async function eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, 
   }
   const good = outcomes.filter((o) => o.ok);
   const bad = outcomes.find((o) => !o.ok);
-  const succeeded = !bad && good.length === items.length;
+  const left = items.filter((_, j) => rows[j].status === 'skipped');
+  const succeeded = !bad && good.length + left.length === items.length;
+  const leftWords = left.length ? `, and ${endedEarly ? 'stopped before' : 'skipped'} ${rangeWords(left)}, as you asked` : '';
   const said = succeeded
-    ? `Done — all ${items.length} ${noun}${items.length === 1 ? '' : 's'} (${rangeWords(items)}).`
+    ? (left.length
+      ? `Done — ${good.length} of ${items.length} ${noun}${items.length === 1 ? '' : 's'}${good.length ? ` (${rangeWords(good.map((o) => o.it))})` : ''}${leftWords}.`
+      : `Done — all ${items.length} ${noun}${items.length === 1 ? '' : 's'} (${rangeWords(items)}).`)
     : `Did ${good.length} of ${items.length} ${noun}s. ${cap(noun)} ${bad?.it.n ?? ''} did not work${bad?.said ? `: ${bad.said}` : ''}, so I stopped there.`;
   finish({ onPhase, onAudit, onSummary, onPlan: publish }, { succeeded, said, rows });
   return { succeeded, steps: rows.filter((r) => r.status === 'done').map((r) => r.do) };
@@ -437,10 +524,15 @@ function rangeWords(items) {
   return consecutive ? `${nums[0]}–${nums[nums.length - 1]}` : nums.join(', ');
 }
 
-function summaryFor({ shape, noun, sent, items, failure, target }) {
+function summaryFor({ shape, noun, sent, items, failure, target, skipped = [], endedEarly = false }) {
   const where = target?.title ? ` in ${String(target.title).replace(/\s+-\s+(?:Google Chrome|Microsoft Edge|Mozilla Firefox)$/i, '')}` : '';
   const waited = shape.wait ? ' and waited for each to finish' : '';
+  if (!failure && !sent.length && skipped.length) return `Nothing sent: you skipped ${skipped.length === 1 ? 'it' : `all ${skipped.length}`}.`;
   if (shape.single && !failure) return `Sent it${where}${shape.wait ? ' and waited for the answer' : ''}.`;
+  if (!failure && skipped.length) {
+    const why = endedEarly ? `stopped before ${rangeWords(skipped)}, as you asked` : `skipped ${rangeWords(skipped)}, as you asked`;
+    return `Done — sent ${noun}${sent.length === 1 ? '' : 's'} ${rangeWords(sent)}${where}${waited}, and ${why}. That's ${sent.length} of ${items.length}.`;
+  }
   if (!failure) {
     return `Done — sent ${noun}s ${rangeWords(sent)}${where}${waited}. That's ${sent.length} of ${sent.length}.`;
   }

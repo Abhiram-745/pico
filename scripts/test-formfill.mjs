@@ -53,4 +53,32 @@ const ret = planForm('put the order number from the receipt into the "Order numb
 ]);
 assert.deepEqual(ret.map((s) => [s.action, s.el.name, Boolean(s.needsValue)]), [['type', 'Order number for the return', true], ['click', 'Confirm return', false]]);
 
-console.log('Form planning: order, no-ops, refusals and tick direction passed.');
+// A real page with two dropdowns told apart only by brackets, one of them a
+// box with suggestions (selenium.dev's web form). The select is chosen from;
+// the datalist is typed into, because Enter in it submitted the form half
+// filled; and neither is mistaken for the other.
+const webForm = [
+  { type: 'Edit', name: 'Address and search bar', value: 'selenium.dev/selenium/web/web-form.html', rect: [200, 50, 900, 40] },
+  { type: 'Edit', name: 'Text input', value: '', readOnly: false, rect: [100, 200, 400, 36] },
+  { type: 'Edit', name: 'Textarea', value: '', readOnly: false, rect: [100, 320, 400, 80] },
+  { type: 'ComboBox', name: 'Dropdown (select)', value: 'Open this select menu', readOnly: true, rect: [600, 200, 400, 36] },
+  { type: 'ComboBox', name: 'Dropdown (datalist)', value: '', readOnly: false, rect: [600, 260, 400, 36] },
+  { type: 'Button', name: 'Submit', rect: [100, 700, 100, 36] },
+];
+const steps = (t) => planForm(t, webForm)?.map((s) => [s.action, s.el.name, s.text ?? null]) ?? null;
+assert.deepEqual(steps('On the Web form page, type Halo test into Text input, type hello from Halo into Textarea, choose Two in the Dropdown (select), then click Submit.'), [
+  ['type', 'Text input', 'Halo test'],
+  ['select_option', 'Dropdown (select)', 'Two'],
+  ['type', 'Textarea', 'hello from Halo'],
+  ['click', 'Submit', null],
+], 'the datalist is left alone when only the select is named');
+assert.deepEqual(steps('On the Web form page, type Seattle into the Dropdown (datalist), then click Submit.'), [
+  ['type', 'Dropdown (datalist)', 'Seattle'],
+  ['click', 'Submit', null],
+]);
+assert.deepEqual(steps('set Dropdown (datalist) to Chicago and Dropdown (select) to Three'), [
+  ['select_option', 'Dropdown (select)', 'Three'],
+  ['type', 'Dropdown (datalist)', 'Chicago'],
+]);
+
+console.log('Form planning: order, no-ops, refusals, tick direction and look-alike dropdowns passed.');

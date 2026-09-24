@@ -263,6 +263,17 @@ export class HostAgent extends MockAgent {
       // --- saved shortcuts -------------------------------------------------
       case 'routineSave': {
         const run = this.lastRun;
+        /* A shortcut keeps the words, not what came with them: saved from a
+           job that pasted an attached table, it would replay "paste each
+           prompt from the attached table" with nothing attached. Said so,
+           rather than saved broken. */
+        if (!String(payload.task ?? '').trim() && run?.attached) {
+          this.emit('message', {
+            id: `sc_${Date.now()}`, from: 'event', done: true,
+            text: 'Not saved as a shortcut: that job used something you attached, and a shortcut only keeps the words. Attach it again and ask instead.',
+          });
+          return;
+        }
         const task = String(payload.task ?? '').trim() || run?.task;
         const saved = this.routines.save({ name: payload.name, task, steps: payload.task ? [] : run?.steps ?? [] });
         if (saved) {
@@ -800,7 +811,8 @@ export class HostAgent extends MockAgent {
         ...(whole !== task ? [whole.slice(0, whole.length - task.length).replace(/\s*(?:,|and then|then|and)\s*$/i, '').trim()] : []),
         ...result.steps,
       ].filter(Boolean);
-      this.lastRun = { task: whole, steps, succeeded: result.succeeded };
+      const attached = Array.isArray(context.attachments) && context.attachments.length > 0;
+      this.lastRun = { task: whole, steps, succeeded: result.succeeded, attached };
       this.emit('runFinished', { task: whole, steps, succeeded: result.succeeded, routine: context.routine?.id ?? null });
     }
     return result;

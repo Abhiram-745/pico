@@ -86,7 +86,7 @@ import { heavyImages, HEAVY_IMAGE_WIDTH } from './llm.mjs';
 import { buildMarks, describeMarks, drawMarks, resolveMarks } from './marks.mjs';
 import { refine, pickShape, shapesIn } from './zoom.mjs';
 import { planForm } from './formfill.mjs';
-import { planClick, planDrag, planShapeClick, matchShape, dragLanded, valueOnScreen } from './quickplan.mjs';
+import { planClick, planDrag, planShapeClick, planSearch, planChoose, matchShape, dragLanded, valueOnScreen } from './quickplan.mjs';
 import { upgradeDropdownClick } from './select.mjs';
 import { checkMilestoneEvidence } from './milestone-evidence.mjs';
 
@@ -918,6 +918,9 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       if (top) workWindow = { hwnd: top.hwnd, title: top.title, process: top.process };
     }
   } catch { /* the plan can do without */ }
+  /* The page the job started on, by its title: the work window's, not
+     whatever was in front — typed into the island, that was Halo. */
+  const startTitle = workWindow?.title ?? null;
   try { facts.apps = (await apps.mentionedApps(task)).map((a) => a.name); } catch { /* likewise */ }
   try {
     facts.precedent = runbook.forPrompt(context.whole || task, { app: appOf(workWindow ?? front) });
@@ -1248,6 +1251,11 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
      wrong word it makes is the one nobody asked for. */
   const material = (Array.isArray(context.attachments) ? context.attachments : [])
     .filter((a) => a && a.kind === 'text' && typeof a.text === 'string' && a.text.trim());
+  /* Pictures cannot be pasted into another app yet — the clipboard here
+     takes text. Said to the model, and a plain paste is refused while one is
+     attached (below): "paste this picture into ChatGPT" otherwise pasted
+     whatever the person happened to have on their clipboard. */
+  const pictures = (Array.isArray(context.attachments) ? context.attachments : []).filter((a) => a && a.kind === 'image');
 
   /** Everything the run knows, as the lines the model is shown each turn. */
   const scratchpad = () => {
@@ -1259,6 +1267,10 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         const rows = text.split(/\r?\n/).length;
         lines.push(`  [${i + 1}] "${a.name || 'Pasted text'}" — ${rows} line${rows === 1 ? '' : 's'}, starts: ${preview(text, 160)}`);
       });
+    }
+    if (pictures.length) {
+      lines.push(`Also attached: ${pictures.length === 1 ? 'a picture' : `${pictures.length} pictures`} (${pictures.map((p) => `"${p.name || 'picture'}"`).join(', ')}). `
+        + 'Halo cannot paste pictures into apps yet. Never paste the clipboard in its place: if the job needs the picture put somewhere, stop and say that cannot be done yet.');
     }
     if (kept.size) {
       lines.push('What you have kept (use these rather than reading them off the screen again):');
@@ -2165,15 +2177,23 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       if (!choice && snapshot) {
         const within = Array.isArray(workWindow.rect) && workWindow.rect.length === 4 ? workWindow.rect : null;
         const now = buildMarks(snapshot, { within });
-        const q = [planDrag, planClick, planShapeClick].map((fn) => fn(task, now)).find((p) => p?.action);
+        const q = [planDrag, planClick, planShapeClick, planSearch, planChoose].map((fn) => fn(task, now)).find((p) => p?.action);
         if (q) {
           turnMarks = now;
           quickCheck = q.check ?? null;
           const args = { action: q.action, mark: q.mark, why: q.why };
+          if (q.text) args.text = q.text;
+          if (q.action === 'type') args.replaceValue = true;
           if (q.to_mark) args.to_mark = q.to_mark;
           if (q.target) args.target = q.target;
           choice = { call: { name: 'act', args }, text: '', queued: true };
-          debug(`[quick] planned from the task, no model: ${q.action} [${q.mark}]${q.to_mark ? ` -> [${q.to_mark}]` : ''} — ${q.why}`);
+          // "Click Add Element three times": the rest queued, each found again before it is pressed.
+          const ref = now.find((mk) => mk.n === q.mark);
+          if (Array.isArray(q.then)) queued = q.then.map((t) => ({ ...t }));
+          if (q.times > 1 && ref) {
+            queued = Array.from({ length: q.times - 1 }, (_, i) => ({ action: 'click', markRef: ref, why: `Clicking ${q.name} (${i + 2} of ${q.times})` }));
+          }
+          debug(`[quick] planned from the task, no model: ${q.action} [${q.mark}]${q.to_mark ? ` -> [${q.to_mark}]` : ''}${q.times > 1 ? ` × ${q.times}` : ''} — ${q.why}`);
           onAudit('quick_planned', { metadata: { action: q.action } });
         }
       }
@@ -2638,11 +2658,27 @@ Do only that step.`,
     /* An attachment named by number becomes its exact text here, once, so
        everything downstream — the executor, the record of what was typed,
        the verdict — sees an ordinary paste of known text. */
-    if (action.type === 'paste' && Number.isFinite(Number(action.paste_attachment))) {
-      const picked = material[Number(action.paste_attachment) - 1];
-      if (picked) action.paste_text = String(picked.text);
-    }
+    const attachmentNo = Number(action.paste_attachment);
     delete action.paste_attachment;
+    if (action.type === 'paste' && Number.isInteger(attachmentNo) && attachmentNo > 0) {
+      const picked = material[attachmentNo - 1];
+      /* A number that is not on the list pastes nothing. Dropped quietly, the
+         paste went ahead with whatever was on the clipboard — the person's
+         own, as likely as not. */
+      if (!picked) {
+        feedback = `Nothing was pasted: there is no attachment ${attachmentNo}. `
+          + (material.length ? `The attachments are numbered 1 to ${material.length}.` : 'Nothing was attached.');
+        misses += 1;
+        continue;
+      }
+      action.paste_text = String(picked.text);
+    }
+    if (action.type === 'paste' && !action.paste_text && pictures.length && !clipboard) {
+      feedback = 'Nothing was pasted: the clipboard holds the person\'s own things, not the picture they attached — '
+        + 'Halo cannot paste pictures into apps yet. If the job needs the picture, stop and say so.';
+      misses += 1;
+      continue;
+    }
     if (choice.fast && fast?.element && ['CLICK', 'SELECT', 'TYPE_TEXT'].includes(fast.operation)) action.observedTarget = fast.element;
     /* A number from the model becomes the rectangle Windows reported for it.
        A control chosen this way is checked again, fresh, just before input —
@@ -2697,7 +2733,14 @@ Do only that step.`,
       const pressedName = String(action.markedAs?.name ?? action.observedTarget?.name ?? '').trim();
       const undo = /\b(reset|clear|discard|start over|reload|refresh|undo)\b/i.exec(pressedName)
         ?? (/^(?:back|go back)$/i.test(pressedName) ? ['back', 'back'] : null);
-      if (undo && POINTER.has(action.type) && !new RegExp(`\\b${undo[1].split(' ')[0]}`, 'i').test(task)) {
+      /* Back is different once the run has left the page it started on: a
+         form that submitted early — an Enter in a box with suggestions did
+         exactly that on a real page — has to be gone back to, and refused,
+         the model tried a guessed address instead and got lost. Only on the
+         page the task started on is Back throwing work away. */
+      const leftStart = undo?.[1] === 'back' && Boolean(startTitle) && Boolean(seenFront?.title)
+        && !isHaloWindow(seenFront.title) && seenFront.title !== startTitle;
+      if (undo && !leftStart && POINTER.has(action.type) && !new RegExp(`\\b${undo[1].split(' ')[0]}`, 'i').test(task)) {
         onAudit('action_refused', { metadata: { reason: 'would undo work', control: pressedName } });
         feedback = `Nothing was clicked: "${pressedName}" would throw away work already done, and the task `
           + 'did not ask for that. If everything the task asked for is done and the screen shows it, call step_done.';

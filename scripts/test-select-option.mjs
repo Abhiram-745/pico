@@ -6,6 +6,11 @@ import { actionSpace, shouldSubmitFilledField } from '../bridge/fastpath.mjs';
 assert.equal(requestedOption('Set priority to High and enable notifications', 'Priority'), 'High');
 assert.equal(requestedOption("Priority dropdown shows 'High'", 'Priority'), 'High');
 assert.equal(requestedOption('Set priority to High', 'Country'), null);
+// A label found with its brackets taken off is not another control's label with ITS brackets.
+const both = 'choose Two in the Dropdown (select), then click Submit';
+assert.equal(requestedOption(both, 'Dropdown (select)'), 'Two');
+assert.equal(requestedOption(both, 'Dropdown (datalist)'), null);
+assert.equal(requestedOption(both, 'Dropdown'), null);
 assert.deepEqual(actionSpace([{ ...{ type: 'ComboBox', name: 'Priority', rect: [20, 20, 100, 30], enabled: true, operable: true, how: 'expand', readOnly: false } }]).table[0].operations, ['CLICK']);
 assert.equal(shouldSubmitFilledField({ role: 'Edit', label: 'Search topic' }), false);
 assert.equal(shouldSubmitFilledField({ role: 'SearchBox', label: 'Search the web' }), true);
