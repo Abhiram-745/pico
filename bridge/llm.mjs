@@ -243,14 +243,21 @@ export async function fetchPatiently(url, init, { tries = 3, maxWaitMs = 6000, g
     let body = null;
     if (res.status === 429) { try { body = await res.clone().json(); } catch { /* not JSON */ } }
     if (outOfQuota(body)) return res;
+    /* A wait longer than this will sit through is not waited for in part:
+       a limit that lifts in ten seconds is still in place after six, and
+       measured on xkiro's daily allowance ("retry-after: 10182"), two waits of
+       six seconds were twelve seconds of nothing before the same answer. */
     const asked = limitWait(res, body);
-    if (asked > giveUpOverMs) return res;
-    const ms = asked || (800 * (2 ** attempt));
+    if (asked > Math.min(giveUpOverMs, LONGEST_WAIT_MS)) return res;
+    const ms = asked ? asked + 150 : Math.min(maxWaitMs, 800 * (2 ** attempt));
     try { await res.body?.cancel(); } catch { /* nothing to drain */ }
-    await new Promise((r) => setTimeout(r, Math.min(maxWaitMs, Math.max(250, ms))));
+    await new Promise((r) => setTimeout(r, Math.max(250, ms)));
   }
   return res;
 }
+
+/** The longest a limit is waited out in place, when it says how long. */
+const LONGEST_WAIT_MS = 12_000;
 
 /** Out of money rather than out of breath: OpenAI answers both with 429.
     It has two names for it — measured 2026-09-24 on the person's key, an
@@ -453,6 +460,16 @@ export class LLM {
        pictures, whichever job it is: gpt-4o-mini plans with a screenshot, and
        its opposite number there takes 32s over one where the reader takes 4. */
     const swap = (model, dflt, pictured) => (pictured ? other.tiers.see : null) ?? other.tiers[jobOf(model, dflt)] ?? other.tiers[dflt];
+    /* Neither can answer: one error that says why for both, and when the
+       sooner of them comes back — "OpenAI has no credits left on this key,
+       and xkiro's allowance for today is used up — it resets at 01:52." */
+    const bothOut = (theirs) => {
+      const mine = String(this._limitedSaid || `${this.provider} is not answering.`).trim();
+      const said = /^Rate limited/.test(theirs?.message ?? '') && theirs?.who
+        ? `${theirs.who} is rate limited too. Try again in a moment.`
+        : String(theirs?.message || `${other.provider} is not answering either.`).trim();
+      return Object.assign(new Error(`${/[.!?]$/.test(mine) ? mine : `${mine}.`} ${said}`), { status: theirs?.status ?? 429, both: true });
+    };
     const wrap = (name, fix) => {
       const own = this[name].bind(this);
       this[name] = async (...args) => {
@@ -463,11 +480,26 @@ export class LLM {
           const heard = name === 'stream' && b?.onDelta ? [a, { ...b, onDelta: (p) => { spoke = true; b.onDelta(p); } }] : args;
           return other[name](...fix(heard));
         };
+        const stopped = () => spoke || args.slice(0, 2).some((x) => x?.signal?.aborted);
+        /* The other side failing on a long limit of its own (xkiro's daily
+           allowance, measured: "retry-after: 10182") is remembered, so the
+           calls after it fail at once with both reasons instead of asking
+           two providers that have each already said no. */
+        const noteOther = (err) => {
+          if (err?.quota || (err?.status === 429 && err.waitMs > 60_000)) {
+            this._otherUntil = Date.now() + (err.quota ? 600_000 : Math.min(3_600_000, err.waitMs));
+            this._otherErr = err;
+          }
+        };
         if (Date.now() < this._limitedUntil) {
+          if (Date.now() < (this._otherUntil ?? 0)) throw bothOut(this._otherErr);
           /* Still limited: straight there. If that fails, this side after
-             all — the limit may have lifted sooner than it said. */
+             all — a rate limit may have lifted sooner than it said. An empty
+             account has not. */
           try { return await there(); } catch (err) {
-            if (spoke || args.slice(0, 2).some((x) => x?.signal?.aborted)) throw err;
+            if (stopped()) throw err;
+            noteOther(err);
+            if (this._limitedWhy === 'quota') throw bothOut(err);
             return own(...args);
           }
         }
@@ -478,8 +510,15 @@ export class LLM {
           if (err?.status !== 429 && !(err?.status >= 500)) throw err;
           const forMs = err.quota ? 600_000 : Math.min(600_000, Math.max(20_000, err.waitMs || 0));
           this._limitedUntil = Date.now() + forMs;
+          this._limitedWhy = err.quota ? 'quota' : err.status === 429 ? 'limit' : 'down';
+          this._limitedSaid = err.message;
           this.onFallback?.(name, other.provider, forMs, err.status, Boolean(err.quota));
-          return there();
+          if (Date.now() < (this._otherUntil ?? 0)) throw bothOut(this._otherErr);
+          try { return await there(); } catch (err2) {
+            if (stopped()) throw err2;
+            noteOther(err2);
+            throw bothOut(err2);
+          }
         }
       };
     };
@@ -564,8 +603,20 @@ export class LLM {
     const msg = body?.error?.message || `HTTP ${status}`;
     if (status === 401) return new Error('The API key was rejected. Check your key in .env.');
     if (status === 402) return new Error('Out of credits with this provider.');
-    if (status === 429 && outOfQuota(body)) return Object.assign(new Error('This key is out of quota. Check billing with the provider.'), { status, quota: true });
-    if (status === 429) return Object.assign(new Error('Rate limited. Try again in a moment.'), { status, waitMs: limitWait(res, body) });
+    /* Said with the provider's name and, for a long limit, when it lifts:
+       "rate limited, try again in a moment" about an allowance that resets
+       tomorrow sends the person to try again, and again. */
+    const who = PROVIDERS[this.provider]?.label?.replace(/\s*\(.*\)$/, '') ?? this.provider;
+    if (status === 429 && outOfQuota(body)) return Object.assign(new Error(`${who} has no credits left on this key — add credits with ${who} to use it again.`), { status, quota: true, who });
+    if (status === 429) {
+      const waitMs = limitWait(res, body);
+      const at = waitMs > 60_000 ? new Date(Date.now() + waitMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+      const daily = /\bday\b/i.test(res?.headers?.get?.('x-ratelimit-window') ?? '') || /today|daily|per day|\(RPD\)|\(TPD\)/i.test(msg);
+      const said = !at ? 'Rate limited. Try again in a moment.'
+        : daily ? `${who}'s allowance for today is used up — it resets at ${at}.`
+          : `${who} is rate limited until ${at}.`;
+      return Object.assign(new Error(said), { status, waitMs, who });
+    }
     if (status === 404) return new Error(`Model not available to this key: ${this.redact(msg)}`);
     return Object.assign(new Error(this.redact(msg)), { status });
   }

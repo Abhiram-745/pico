@@ -22,6 +22,7 @@
    Run:   node scripts/qa-real.mjs                       every task, once
           node scripts/qa-real.mjs form todo -n 2        those, twice each
           node scripts/qa-real.mjs --label real-base     name the results file
+          node scripts/qa-real.mjs --agent               the tasks only the AI agent can do
           node scripts/qa-real.mjs --limited             OpenAI "rate limited" throughout,
                                                          so every call goes to the fallback
    ========================================================================== */
@@ -145,6 +146,62 @@ const TASKS = [
     task: 'On the TodoMVC page, add a todo called Buy milk, then change it to Buy oat milk.',
     check: `(() => { const l = [...document.querySelectorAll('.todo-list li label')].map((x) => x.textContent.trim()); return { pass: l.includes('Buy oat milk') && !l.includes('Buy milk'), detail: l.join(' | ') || 'no todos' }; })()`,
   },
+
+  /* ---- the AI agent ------------------------------------------------------
+     Everything above is planned from the task's words with no model at all.
+     These are worded so that cannot work — a letter worked out, a fact to
+     know, a thing described rather than named — so the model has to read
+     the screen and decide. Run with --agent (or by name); they are slower
+     and cost model calls, so a plain run leaves them out. */
+  {
+    id: 'a-letter', agent: true,
+    url: 'https://the-internet.herokuapp.com/key_presses',
+    task: 'On the Key Presses page, press the letter that comes straight after J in the alphabet.',
+    check: `(() => { const t = document.getElementById('result')?.textContent.trim() ?? ''; return { pass: t === 'You entered: K', detail: t || 'nothing entered' }; })()`,
+  },
+  {
+    id: 'a-capital', agent: true,
+    url: 'https://www.selenium.dev/selenium/web/web-form.html',
+    task: 'On the Web form page, put the capital city of France in the Text input, then submit the form.',
+    check: `(() => { const u = new URL(location.href); const v = u.searchParams.get('my-text'); return { pass: /submitted-form/.test(u.pathname) && /^paris$/i.test((v || '').trim()), detail: u.pathname.split('/').pop() + ' text=' + v }; })()`,
+  },
+  {
+    id: 'a-untick', agent: true,
+    url: 'https://the-internet.herokuapp.com/checkboxes',
+    task: 'On the Checkboxes page, untick whichever box is ticked right now.',
+    check: `(() => { const b = [...document.querySelectorAll('#checkboxes input')]; return { pass: b.length === 2 && b.every((x) => !x.checked), detail: b.map((x) => x.checked).join(',') }; })()`,
+  },
+  {
+    id: 'a-days', agent: true,
+    url: 'https://the-internet.herokuapp.com/inputs',
+    task: 'On the Inputs page, enter how many days there are in a week.',
+    check: `(() => { const v = document.querySelector('input[type=number]')?.value; return { pass: v === '7', detail: 'number=' + v }; })()`,
+  },
+  {
+    id: 'a-mostdue', agent: true,
+    url: 'https://the-internet.herokuapp.com/tables',
+    task: 'On the Data Tables page, sort Example 1 so the person who owes the most is at the top.',
+    check: `(() => { const n = [...document.querySelectorAll('#table1 tbody tr')].map((r) => r.cells[0]?.textContent.trim()); return { pass: n[0] === 'Doe', detail: n.join(', ') }; })()`,
+  },
+  {
+    id: 'a-orwell', agent: true,
+    url: 'https://en.wikipedia.org/wiki/Main_Page',
+    task: 'On Wikipedia, open the article about the author of the novel Nineteen Eighty-Four.',
+    check: `(() => ({ pass: /^George Orwell\\b/.test(document.title), detail: document.title }))()`,
+  },
+  {
+    id: 'a-twotodos', agent: true,
+    url: 'https://todomvc.com/examples/react/dist/',
+    task: 'On the TodoMVC page, add two todos: Walk the dog, and Call mum.',
+    check: `(() => { const l = [...document.querySelectorAll('.todo-list li label')].map((x) => x.textContent.trim()); return { pass: l.includes('Walk the dog') && l.includes('Call mum'), detail: l.join(' | ') || 'no todos' }; })()`,
+  },
+  /* Talking, not doing: routed to chat, answered, and nothing on screen touched. */
+  {
+    id: 'a-chat', agent: true, chat: /\btokyo\b/i,
+    url: 'https://the-internet.herokuapp.com/key_presses',
+    task: 'What is the capital of Japan?',
+    check: `(() => { const t = document.getElementById('result')?.textContent.trim() ?? ''; return { pass: !t, detail: t ? 'the page was typed into: ' + t : 'page untouched' }; })()`,
+  },
 ];
 
 const argv = process.argv.slice(2);
@@ -156,7 +213,9 @@ const repeat = Math.max(1, Number(opt('n', 1)) || 1);
 const label = opt('label', `real-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`);
 const skip = new Set([opt('n'), opt('label'), opt('display')].filter(Boolean));
 const wanted = argv.filter((a) => !a.startsWith('-') && !skip.has(a));
-const tasks = wanted.length ? TASKS.filter((t) => wanted.includes(t.id)) : TASKS;
+const tasks = wanted.length ? TASKS.filter((t) => wanted.includes(t.id))
+  : argv.includes('--agent') ? TASKS.filter((t) => t.agent)
+  : TASKS.filter((t) => !t.agent);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -382,7 +441,7 @@ for (let round = 1; round <= repeat; round++) {
     const t0 = performance.now();
     taskStart = t0;
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; agent.cancelled = true; }, TASK_LIMIT_MS);
+    const timer = setTimeout(() => { timedOut = true; agent.cancelled = true; }, t.agent ? 180_000 : TASK_LIMIT_MS);
     let error = null;
     try { await agent.run(t.task); } catch (err) { error = err.message; }
     clearTimeout(timer);
@@ -395,6 +454,14 @@ for (let round = 1; round <= repeat; round++) {
     const read = () => evaluate(t.check).catch((err) => ({ pass: false, detail: `unreadable: ${err.message}` })).then((v) => v ?? { pass: false, detail: 'unreadable' });
     let seen = await read();
     for (let i = 0; i < 12 && !seen.pass; i++) { await sleep(250); seen = await read(); }
+    /* A question is answered in words: routed to chat, the reply says what
+       was asked, and the page (checked above) was left alone. */
+    const reply = events.filter((e) => e.type === 'message' && e.payload?.done && e.payload?.text).map((e) => e.payload.text).pop() ?? '';
+    if (t.chat) {
+      const talked = events.find((e) => e.type === 'routed')?.payload?.mode === 'chat';
+      const said = t.chat.test(reply);
+      seen = { pass: Boolean(seen.pass && talked && said), detail: `${talked ? 'chat' : 'NOT routed to chat'}; reply ${said ? 'right' : 'WRONG'}: ${JSON.stringify(reply.slice(0, 80))}; ${seen.detail}` };
+    }
 
     const actions = events.filter((e) => e.type === 'action').map((e) => ({ type: e.payload?.type, detail: String(e.payload?.detail || '').slice(0, 120), at: Math.round(e.at - t0) }));
     const routed = events.find((e) => e.type === 'routed')?.payload;
@@ -413,7 +480,7 @@ for (let round = 1; round <= repeat; round++) {
       fallback: served.reduce((m, c) => ({ ...m, [c]: (m[c] || 0) + 1 }), {}),
       modelMs: calls.reduce((s, c) => s + c.ms, 0),
       callLog: calls.map((c) => ({ ...c })),
-      summary, error: error ?? errors[0] ?? null,
+      summary, reply: reply || null, error: error ?? errors[0] ?? null,
       log: actions,
     };
     rows.push(row);

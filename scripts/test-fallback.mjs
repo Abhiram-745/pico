@@ -98,7 +98,7 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   const { openai, xkiro } = make();
   openaiSays = () => limited('You exceeded your current quota', { code: 'insufficient_quota', headers: {} });
   seen.length = 0;
-  await assert.rejects(() => openai.chat([{ role: 'user', content: 'hi' }]), /out of quota/);
+  await assert.rejects(() => openai.chat([{ role: 'user', content: 'hi' }]), /no credits left/);
   assert.equal(fromOpenAI(), 1, 'no retries for an empty account');
 
   let forMs = 0;
@@ -111,7 +111,7 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   const fresh = make();
   openaiSays = () => limited('You have no credits remaining. Add credits to continue using the API.', { code: 'credit_balance_exhausted', headers: {} });
   seen.length = 0;
-  await assert.rejects(() => fresh.openai.chat([{ role: 'user', content: 'hi' }]), /out of quota/);
+  await assert.rejects(() => fresh.openai.chat([{ role: 'user', content: 'hi' }]), /no credits left/);
   assert.equal(fromOpenAI(), 1, 'no retries for an empty balance either');
 }
 
@@ -138,6 +138,39 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   openaiSays = () => new Response(JSON.stringify({ error: { message: 'The server had an error while processing your request.' } }), { status: 500 });
   assert.equal(await openai.chat([{ role: 'user', content: 'hi' }]), 'from xkiro');
   assert.deepEqual(told, { ms: 20_000, status: 500 });
+}
+
+{
+  // Both out — OpenAI's credits and xkiro's day — one error with both reasons, at once, and then without asking.
+  const { openai, xkiro } = make();
+  openai.useFallback(xkiro);
+  openai.onFallback = () => {};
+  openaiSays = () => limited('You have no credits remaining.', { code: 'credit_balance_exhausted', headers: {} });
+  xkiroSays = () => new Response(JSON.stringify({ error: { message: "You've reached today's free-model token quota.", code: 'rate_limit_exceeded' } }), { status: 429, headers: { 'retry-after': '10182', 'x-ratelimit-window': 'day' } });
+  seen.length = 0;
+  const t0 = Date.now();
+  const err = await openai.chat([{ role: 'user', content: 'hi' }]).catch((e) => e);
+  assert.match(err.message, /^OpenAI has no credits left.*xkiro's allowance for today is used up — it resets at \d\d:\d\d\.$/, err.message);
+  assert.ok(Date.now() - t0 < 1000, 'no sitting through a limit that lifts in hours');
+  assert.equal(seen.length, 2, 'each asked once');
+  seen.length = 0;
+  const again = await openai.chat([{ role: 'user', content: 'hi' }]).catch((e) => e);
+  assert.equal(again.message, err.message);
+  assert.equal(seen.length, 0, 'and then neither is asked again until one of them is back');
+  xkiroSays = () => fine('from xkiro');
+}
+
+{
+  // A limit that lifts in a few seconds is waited out whole, once; a longer one is not waited for at all.
+  const { openai } = make();
+  let n = 0;
+  openaiSays = () => (++n === 1 ? limited('Please try again in 300ms.', { headers: {} }) : fine('after the wait'));
+  assert.equal(await openai.chat([{ role: 'user', content: 'hi' }]), 'after the wait');
+  n = 0;
+  openaiSays = () => limited('Please try again in 40s.', { headers: {} });
+  const t0 = Date.now();
+  const err = await openai.chat([{ role: 'user', content: 'hi' }]).catch((e) => e);
+  assert.ok(Date.now() - t0 < 1000 && /Rate limited/.test(err.message), `${Date.now() - t0}ms: ${err.message}`);
 }
 
 {
