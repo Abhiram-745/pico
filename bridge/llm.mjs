@@ -177,11 +177,15 @@ export const PROVIDERS = {
     envKey: 'XKIRO_API_KEY',
     // Documented as Chat Completions; tool calls go that way.
     responses: false,
+    /* Qwen 3.8 Omni Flash, the person's pick, for every job but looking at
+       the screen: measured 2026-09-24 on their key, it reads a picture
+       right but took 32s to, against 4.5s for 3.7 Plus — and the screen is
+       looked at nearly every turn. Text answers took it 13s, tool calls 15s. */
     tiers: {
-      fast: 'qwen/qwen3.5-omni-flash:free',
-      hard: 'qwen/qwen3.7-max:free',
+      fast: 'qwen/qwen3.8-omni-flash:free',
+      hard: 'qwen/qwen3.8-omni-flash:free',
       see: 'qwen/qwen3.7-plus:free',
-      plan: 'qwen/qwen3.8-max:free',
+      plan: 'qwen/qwen3.8-omni-flash:free',
     },
     /* Qwen first everywhere, MiniMax last.
 
@@ -195,9 +199,9 @@ export const PROVIDERS = {
        than being deleted: the key's limits are not permanent, and check()
        only takes a model it can actually use. */
     prefer: {
-      see: ['qwen/qwen3.7-plus:free', 'qwen/qwen3.5-omni-plus:free', 'qwen/qwen3-vl-plus:free', 'qwen/qwen3.5-omni-flash:free', 'qwen/qwen3.7-flash:free'],
-      plan: ['qwen/qwen3.8-max:free', 'qwen/qwen3.5-omni-plus:free', 'qwen/qwen3.7-plus:free'],
-      fast: ['qwen/qwen3.5-omni-flash:free', 'qwen/qwen3.7-flash:free', 'qwen/qwen3.5-omni-plus:free', 'minimax/minimax-m2.7-highspeed:free'],
+      see: ['qwen/qwen3.7-plus:free', 'qwen/qwen3.8-omni-flash:free', 'qwen/qwen3.5-omni-plus:free', 'qwen/qwen3-vl-plus:free', 'qwen/qwen3.5-omni-flash:free', 'qwen/qwen3.7-flash:free'],
+      plan: ['qwen/qwen3.8-omni-flash:free', 'qwen/qwen3.8-max:free', 'qwen/qwen3.5-omni-plus:free', 'qwen/qwen3.7-plus:free'],
+      fast: ['qwen/qwen3.8-omni-flash:free', 'qwen/qwen3.5-omni-flash:free', 'qwen/qwen3.7-flash:free', 'qwen/qwen3.5-omni-plus:free', 'minimax/minimax-m2.7-highspeed:free'],
       hard: ['qwen/qwen3.7-max:free', 'qwen/qwen3.8-max:free', 'qwen/qwen3.5-omni-plus:free'],
     },
   },
@@ -388,7 +392,7 @@ export class LLM {
          does the same job, and the run carries on. */
       if (name !== 'xkiro' && env[PROVIDERS.xkiro.envKey] && !/^(?:0|false|off)$/i.test(env.PICO_FALLBACK ?? '')) {
         const x = PROVIDERS.xkiro;
-        made.useFallback(new LLM({ apiKey: env[x.envKey], baseUrl: x.baseUrl, provider: 'xkiro', tiers: { ...x.tiers, text: x.tiers.text || x.tiers.fast }, gatewayKey }));
+        made.useFallback(new LLM({ apiKey: env[x.envKey], baseUrl: x.baseUrl, provider: 'xkiro', tiers: { ...x.tiers, text: x.tiers.text || x.tiers.fast } }));   // no gateway key: its models are named with a slash too, and would be sent there
       }
       return made;
     }
