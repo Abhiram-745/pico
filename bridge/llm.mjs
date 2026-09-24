@@ -252,8 +252,11 @@ export async function fetchPatiently(url, init, { tries = 3, maxWaitMs = 6000, g
   return res;
 }
 
-/** Out of money rather than out of breath: OpenAI answers both with 429. */
-const outOfQuota = (body) => /insufficient_quota/.test(`${body?.error?.code} ${body?.error?.type}`);
+/** Out of money rather than out of breath: OpenAI answers both with 429.
+    It has two names for it — measured 2026-09-24 on the person's key, an
+    empty prepaid balance comes back as credit_balance_exhausted. */
+const outOfQuota = (body) => /insufficient_quota|credit_balance_exhausted|billing_hard_limit/.test(`${body?.error?.code} ${body?.error?.type}`)
+  || /no credits remaining|exceeded your current quota/i.test(String(body?.error?.message ?? ''));
 
 /**
  * How long a rate limit asks to be left alone, in ms, or null if it does not
@@ -475,7 +478,7 @@ export class LLM {
           if (err?.status !== 429 && !(err?.status >= 500)) throw err;
           const forMs = err.quota ? 600_000 : Math.min(600_000, Math.max(20_000, err.waitMs || 0));
           this._limitedUntil = Date.now() + forMs;
-          this.onFallback?.(name, other.provider, forMs, err.status);
+          this.onFallback?.(name, other.provider, forMs, err.status, Boolean(err.quota));
           return there();
         }
       };

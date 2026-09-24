@@ -106,6 +106,13 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   openai.onFallback = (_n, _t, ms) => { forMs = ms; };
   assert.equal(await openai.chat([{ role: 'user', content: 'hi' }]), 'from xkiro');
   assert.equal(forMs, 600_000);
+
+  // An empty prepaid balance, as OpenAI actually words it: the same.
+  const fresh = make();
+  openaiSays = () => limited('You have no credits remaining. Add credits to continue using the API.', { code: 'credit_balance_exhausted', headers: {} });
+  seen.length = 0;
+  await assert.rejects(() => fresh.openai.chat([{ role: 'user', content: 'hi' }]), /out of quota/);
+  assert.equal(fromOpenAI(), 1, 'no retries for an empty balance either');
 }
 
 {

@@ -261,15 +261,35 @@ class Bridge {
       console.warn(`[bridge] ${from} unavailable, using ${to} for this request`);
     };
     this.agent.attachLLM(llm);
+    const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
+    // The provider behind this one says so too: a slow step on a busy key is xkiro, not a fault.
+    const usual = `${label}${llm.fallback ? `, then ${llm.fallback.provider} if rate limited` : ''}`;
     this.agent.settings = {
       ...this.agent.settings,
       // One task uses several: the strongest model plans it, then the
       // cheapest model that can actually do each step carries it out.
       model: llm.singleModel ? llm.model : `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
       hasApiKey: true,
-      // The provider behind this one says so too: a slow step on a busy key is xkiro, not a fault.
-      provider: `${PROVIDERS[llm.provider]?.label ?? llm.provider}${llm.fallback ? `, then ${llm.fallback.provider} if rate limited` : ''}`,
+      provider: usual,
     };
+    /* And while the other one is answering, Settings says so and why — an
+       account with no credits left is something only the person can fix,
+       and the bridge's log is not where they would look. */
+    if (llm.fallback) {
+      llm._logFallback ??= llm.onFallback;
+      llm.onFallback = (name, to, forMs, status, quota) => {
+        llm._logFallback?.(name, to, forMs, status, quota);
+        const why = quota ? 'is out of credits' : status === 429 ? 'is rate limited' : 'is not answering';
+        this.agent.settings = { ...this.agent.settings, provider: `${to} for now — ${label} ${why}` };
+        this.emitSettings();
+        clearTimeout(this._fallbackTimer);
+        this._fallbackTimer = setTimeout(() => {
+          this.agent.settings = { ...this.agent.settings, provider: usual };
+          this.emitSettings();
+        }, forMs);
+        this._fallbackTimer.unref?.();
+      };
+    }
     this.emitSettings();
     this.publishCapability();
   }
