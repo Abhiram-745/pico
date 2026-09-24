@@ -228,20 +228,48 @@ export const PROVIDERS = {
  * request, a second later, would have gone through. So a 429 (or a 503) waits
  * for what the provider asks — retry-after, or its millisecond form — up to a
  * few seconds, twice, before the error is allowed through.
+ *
+ * Unless waiting cannot help. A key that is out of quota says so in the same
+ * status, and no wait changes that answer. And when there is somewhere else
+ * to send the call (`giveUpOverMs`, set when a fallback provider is there), a
+ * wait longer than that is not sat through: the caller moves on at once.
  */
-export async function fetchPatiently(url, init, { tries = 3, maxWaitMs = 6000 } = {}) {
+export async function fetchPatiently(url, init, { tries = 3, maxWaitMs = 6000, giveUpOverMs = Infinity } = {}) {
   let res;
   for (let attempt = 0; attempt < tries; attempt++) {
     res = await fetch(url, init);
     if (res.status !== 429 && res.status !== 503) return res;
     if (attempt === tries - 1 || init?.signal?.aborted) return res;
-    const ms = Number(res.headers.get('retry-after-ms'))
-      || (Number(res.headers.get('retry-after')) * 1000)
-      || (800 * (2 ** attempt));
+    let body = null;
+    if (res.status === 429) { try { body = await res.clone().json(); } catch { /* not JSON */ } }
+    if (outOfQuota(body)) return res;
+    const asked = limitWait(res, body);
+    if (asked > giveUpOverMs) return res;
+    const ms = asked || (800 * (2 ** attempt));
     try { await res.body?.cancel(); } catch { /* nothing to drain */ }
     await new Promise((r) => setTimeout(r, Math.min(maxWaitMs, Math.max(250, ms))));
   }
   return res;
+}
+
+/** Out of money rather than out of breath: OpenAI answers both with 429. */
+const outOfQuota = (body) => /insufficient_quota/.test(`${body?.error?.code} ${body?.error?.type}`);
+
+/**
+ * How long a rate limit asks to be left alone, in ms, or null if it does not
+ * say. From the headers where there are any, otherwise from the message —
+ * OpenAI's reads "Please try again in 1.2s" for the minute's tokens and
+ * "in 6m0s" for the day's, and the second is not worth waiting for.
+ */
+export function limitWait(res, body) {
+  const header = Number(res?.headers?.get?.('retry-after-ms')) || (Number(res?.headers?.get?.('retry-after')) * 1000);
+  if (header > 0) return header;
+  const said = String(body?.error?.message || '').match(/try again in\s+((?:\d+(?:\.\d+)?(?:ms|h|m|s)\s*)+)/i)?.[1];
+  if (!said) return null;
+  const unit = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  let ms = 0;
+  for (const [, n, u] of said.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/gi)) ms += Number(n) * unit[u.toLowerCase()];
+  return ms || null;
 }
 
 /** Chat Completions' tool shape, flattened for the Responses API. */
@@ -401,29 +429,61 @@ export class LLM {
 
   /**
    * Turn to `other` when a call here ends rate limited — after the patient
-   * retries fetchPatiently already made. The call is made again, whole, on
-   * the other provider's model for the same job (see, plan, fast…), so the
-   * run neither fails nor notices beyond a slower step.
+   * retries fetchPatiently already made, or at once when the wait asked for
+   * is longer than a few seconds. The call is made again, whole, on the
+   * other provider's model for the same job (see, plan, fast…), so the run
+   * neither fails nor notices beyond a slower step.
+   *
+   * And it stays there for the spell. A limit is per minute or per day, not
+   * per call: asked again straight away, this key says no again, and every
+   * call of a task was paying seconds of being told so before moving on.
+   * So for as long as the limit asked for (20s at least, ten minutes at
+   * most), calls go straight to the other provider.
    */
   useFallback(other) {
     this.fallback = other;
-    // Said in the bridge's log, so a slower step has a reason anyone can see.
-    this.onFallback ??= (name, to) => console.log(`[llm] rate limited — ${name} sent to ${to} instead`);
+    this._limitedUntil = 0;
+    // Said in the bridge's log once a spell, so a slower step has a reason anyone can see.
+    this.onFallback ??= (name, to, forMs, status) => console.log(`[llm] ${this.provider} ${status === 429 ? 'is rate limited' : `answered ${status}`} — ${to} takes the calls for ${Math.round(forMs / 1000)}s`);
     const jobOf = (model, dflt) => Object.keys(this.tiers).find((t) => this.tiers[t] === model) ?? dflt;
-    const swap = (model, dflt) => other.tiers[jobOf(model, dflt)] ?? other.tiers[dflt];
+    /* A call with a picture in it goes to the other side's reader of
+       pictures, whichever job it is: gpt-4o-mini plans with a screenshot, and
+       its opposite number there takes 32s over one where the reader takes 4. */
+    const swap = (model, dflt, pictured) => (pictured ? other.tiers.see : null) ?? other.tiers[jobOf(model, dflt)] ?? other.tiers[dflt];
     const wrap = (name, fix) => {
       const own = this[name].bind(this);
       this[name] = async (...args) => {
+        // A stream that has already said something is not started again elsewhere.
+        let spoke = false;
+        const there = () => {
+          const [a, b] = args;
+          const heard = name === 'stream' && b?.onDelta ? [a, { ...b, onDelta: (p) => { spoke = true; b.onDelta(p); } }] : args;
+          return other[name](...fix(heard));
+        };
+        if (Date.now() < this._limitedUntil) {
+          /* Still limited: straight there. If that fails, this side after
+             all — the limit may have lifted sooner than it said. */
+          try { return await there(); } catch (err) {
+            if (spoke || args.slice(0, 2).some((x) => x?.signal?.aborted)) throw err;
+            return own(...args);
+          }
+        }
         try { return await own(...args); } catch (err) {
-          if (err?.status !== 429) throw err;
-          this.onFallback?.(name, other.provider);
-          return other[name](...fix(args));
+          /* A server that is down or overloaded (5xx, after fetchPatiently's
+             own retries on a 503) is the same to the person as one that is
+             busy: the call would fail, and the other provider can answer it. */
+          if (err?.status !== 429 && !(err?.status >= 500)) throw err;
+          const forMs = err.quota ? 600_000 : Math.min(600_000, Math.max(20_000, err.waitMs || 0));
+          this._limitedUntil = Date.now() + forMs;
+          this.onFallback?.(name, other.provider, forMs, err.status);
+          return there();
         }
       };
     };
-    wrap('chat', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast') }]);
-    wrap('stream', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast') }]);
-    wrap('respond', ([req = {}]) => [{ ...req, model: swap(req.model ?? this.tiers.see, 'see') }]);
+    const pictured = (list) => (list || []).some((m) => (Array.isArray(m?.content) ? m.content : [m]).some((c) => c?.type === 'image' || c?.type === 'image_url'));
+    wrap('chat', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast', pictured(m)) }]);
+    wrap('stream', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast', pictured(m)) }]);
+    wrap('respond', ([req = {}]) => [{ ...req, model: swap(req.model ?? this.tiers.see, 'see', pictured(req.content) || pictured(req.history)) }]);
   }
 
   /** Strip the key from anything on its way to a log or a client. */
@@ -482,7 +542,12 @@ export class LLM {
       },
       body: JSON.stringify(this._body(model, messages, opts)),
       signal: opts.signal ?? AbortSignal.timeout(90_000),
-    });
+    }, this._patience());
+  }
+
+  /** With another provider to go to, a long "wait" is not sat through here. */
+  _patience() {
+    return this.fallback ? { giveUpOverMs: 3000 } : undefined;
   }
 
   /** Models disagree on which reasoning_effort values they accept. */
@@ -492,13 +557,14 @@ export class LLM {
       && /reasoning_effort/i.test(body?.error?.message || '');
   }
 
-  _error(status, body) {
+  _error(status, body, res = null) {
     const msg = body?.error?.message || `HTTP ${status}`;
     if (status === 401) return new Error('The API key was rejected. Check your key in .env.');
     if (status === 402) return new Error('Out of credits with this provider.');
-    if (status === 429) return Object.assign(new Error('Rate limited. Try again in a moment.'), { status });
+    if (status === 429 && outOfQuota(body)) return Object.assign(new Error('This key is out of quota. Check billing with the provider.'), { status, quota: true });
+    if (status === 429) return Object.assign(new Error('Rate limited. Try again in a moment.'), { status, waitMs: limitWait(res, body) });
     if (status === 404) return new Error(`Model not available to this key: ${this.redact(msg)}`);
-    return new Error(this.redact(msg));
+    return Object.assign(new Error(this.redact(msg)), { status });
   }
 
   /**
@@ -527,7 +593,7 @@ export class LLM {
         this._noReasoningEffort = true;
         return this.stream(messages, { model: useModel, maxTokens, onDelta, signal });
       }
-      throw this._error(res.status, body);
+      throw this._error(res.status, body, res);
     }
 
     // Server-sent events: lines of `data: {json}`, terminated by `data: [DONE]`.
@@ -581,7 +647,7 @@ export class LLM {
         this._noReasoningEffort = true;
         return this.chat(messages, { model: useModel, maxTokens, signal });
       }
-      throw this._error(res.status, body);
+      throw this._error(res.status, body, res);
     }
     return (body?.choices?.[0]?.message?.content || '').trim();
   }
@@ -618,7 +684,7 @@ export class LLM {
         this._noReasoningEffort = true;
         return this.toolCall(messages, { model: useModel, tools, maxTokens, signal, effort });
       }
-      throw this._error(res.status, body);
+      throw this._error(res.status, body, res);
     }
 
     const message = body?.choices?.[0]?.message ?? {};
@@ -768,7 +834,7 @@ export class LLM {
         headers: { Authorization: `Bearer ${at.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: signal ?? AbortSignal.timeout(90_000),
-      });
+      }, this._patience());
     } catch (err) {
       throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
     }
@@ -795,7 +861,7 @@ export class LLM {
         this._noOriginal.add(useModel);
         return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens, signal });
       }
-      throw this._error(res.status, json);
+      throw this._error(res.status, json, res);
     }
 
     // Reasoning can use the whole budget and leave nothing for the answer.

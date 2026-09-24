@@ -266,7 +266,8 @@ class Bridge {
       // cheapest model that can actually do each step carries it out.
       model: llm.singleModel ? llm.model : `${llm.tiers.plan} + ${llm.tiers.see} / ${llm.tiers.fast}`,
       hasApiKey: true,
-      provider: PROVIDERS[llm.provider]?.label ?? llm.provider,
+      // The provider behind this one says so too: a slow step on a busy key is xkiro, not a fault.
+      provider: `${PROVIDERS[llm.provider]?.label ?? llm.provider}${llm.fallback ? `, then ${llm.fallback.provider} if rate limited` : ''}`,
     };
     this.emitSettings();
     this.publishCapability();

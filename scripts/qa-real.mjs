@@ -22,6 +22,8 @@
    Run:   node scripts/qa-real.mjs                       every task, once
           node scripts/qa-real.mjs form todo -n 2        those, twice each
           node scripts/qa-real.mjs --label real-base     name the results file
+          node scripts/qa-real.mjs --limited             OpenAI "rate limited" throughout,
+                                                         so every call goes to the fallback
    ========================================================================== */
 
 import { mkdir, appendFile } from 'node:fs/promises';
@@ -160,6 +162,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The second display unless told otherwise, set before Halo's screen code reads it.
 process.env.HALO_DISPLAY = opt('display', process.env.HALO_DISPLAY || 'secondary');
+
+/* --limited: every request to OpenAI is answered the way a key that has used
+   up its day is, so the run shows what Halo does on the fallback provider. */
+const LIMITED = argv.includes('--limited');
+if (LIMITED) {
+  const real = globalThis.fetch;
+  globalThis.fetch = (url, init) => (/api\.openai\.com/.test(String(url)) && init?.method === 'POST'
+    ? Promise.resolve(new Response(JSON.stringify({ error: { message: 'Rate limit reached on requests per day (RPD). Please try again in 6m0s.', code: 'rate_limit_exceeded' } }), { status: 429 }))
+    : real(url, init));
+}
 
 const { LLM } = await import('../bridge/llm.mjs');
 const { Sense } = await import('../bridge/sense.mjs');
@@ -303,6 +315,17 @@ for (const name of ['respond', 'chat', 'stream', 'evaluate']) {
     }
   };
 }
+/* The calls the fallback provider answered, on the model it answered with. */
+const served = [];
+for (const name of ['respond', 'chat', 'stream']) {
+  const original = llm.fallback?.[name]?.bind(llm.fallback);
+  if (!original) continue;
+  llm.fallback[name] = async (...args) => {
+    try { return await original(...args); } finally {
+      served.push(`${llm.fallback.provider}:${args[0]?.model || args[1]?.model || '?'}`);
+    }
+  };
+}
 
 async function raise(title) {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -332,7 +355,8 @@ async function raise(title) {
 await mkdir(join(ROOT, 'artifacts', 'qa'), { recursive: true });
 const outFile = join(ROOT, 'artifacts', 'qa', `${label}.jsonl`);
 const rows = [];
-console.log(`Halo QA on real sites — ${tasks.map((t) => t.id).join(', ')} × ${repeat} — see ${llm.tiers.see}, plan ${llm.tiers.plan}, jev ${llm.gatewayKey ? 'on' : 'off'}`);
+console.log(`Halo QA on real sites — ${tasks.map((t) => t.id).join(', ')} × ${repeat} — see ${llm.tiers.see}, plan ${llm.tiers.plan}, jev ${llm.gatewayKey ? 'on' : 'off'}, `
+  + `fallback ${llm.fallback ? `${llm.fallback.provider} (see ${llm.fallback.tiers.see}, plan ${llm.fallback.tiers.plan})` : 'none'}${LIMITED ? ' — OpenAI forced to "rate limited"' : ''}`);
 console.log('Hands off the mouse and keyboard.\n');
 
 for (let round = 1; round <= repeat; round++) {
@@ -352,6 +376,7 @@ for (let round = 1; round <= repeat; round++) {
     if (!(await raise(title))) { console.log(`SKIP  ${t.id.padEnd(9)} the QA window would not come to the front`); continue; }
 
     calls.length = 0;
+    served.length = 0;
     events.length = 0;
     handedOver = false;
     const t0 = performance.now();
@@ -385,6 +410,7 @@ for (let round = 1; round <= repeat; round++) {
       firstActionMs: actions[0]?.at ?? null, totalMs: total, timedOut,
       actions: actions.length, calls: calls.length,
       byModel: calls.reduce((m, c) => ({ ...m, [c.model]: (m[c.model] || 0) + 1 }), {}),
+      fallback: served.reduce((m, c) => ({ ...m, [c]: (m[c] || 0) + 1 }), {}),
       modelMs: calls.reduce((s, c) => s + c.ms, 0),
       callLog: calls.map((c) => ({ ...c })),
       summary, error: error ?? errors[0] ?? null,
@@ -393,7 +419,7 @@ for (let round = 1; round <= repeat; round++) {
     rows.push(row);
     await appendFile(outFile, `${JSON.stringify(row)}\n`);
     console.log(`${row.pass ? 'PASS' : 'FAIL'}  ${t.id.padEnd(9)} ${String(total).padStart(6)}ms  first ${String(row.firstActionMs ?? '-').padStart(5)}ms  `
-      + `actions ${row.actions}  calls ${row.calls} ${JSON.stringify(row.byModel)}  ${row.pass ? '' : `— ${row.detail}${row.error ? ` · ${row.error}` : ''}`}`);
+      + `actions ${row.actions}  calls ${row.calls} ${JSON.stringify(row.byModel)}${served.length ? ` via ${JSON.stringify(row.fallback)}` : ''}  ${row.pass ? '' : `— ${row.detail}${row.error ? ` · ${row.error}` : ''}`}`);
     agent.cancelled = false;
   }
 }

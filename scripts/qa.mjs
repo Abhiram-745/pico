@@ -54,8 +54,12 @@ const ALL = ['form', 'icons', 'slider', 'copy', 'sort', 'kanban', 'canvas'];
 
    `notes` is here too, though it is quick: it is new, has no baseline in
    the results files yet, and adding it to ALL would make every earlier run
-   of the default set incomparable with the next. */
-const EXTRA = { each: 'chat.html?case=each', one: 'chat.html?case=one', notes: 'notes.html' };
+   of the default set incomparable with the next.
+
+   `picture` pastes an attached picture into the stand-in for ChatGPT and
+   asks about it: it puts a picture on the real clipboard, so it only runs
+   when named. */
+const EXTRA = { each: 'chat.html?case=each', one: 'chat.html?case=one', picture: 'chat.html?case=picture', notes: 'notes.html' };
 const FILE_OF = { ...Object.fromEntries(ALL.map((p) => [p, `${p}.html`])), ...EXTRA };
 const PORT = 4190;
 const DEBUG_PORT = 9333;
