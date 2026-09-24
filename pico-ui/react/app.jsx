@@ -618,6 +618,15 @@ async function restartForUpdate() {
   try { await fetch('/update/restart', { method: 'POST' }); } catch { /* the server goes away mid-request by design */ }
   setTimeout(() => location.reload(), 4000);
 }
+/* Which build this is, by the name the release page and the website use for
+   it ("build 3fa4a6f"), and when it was made. */
+const buildLine = (b) => {
+  if (!b?.sha) return 'Build —';
+  const when = b.date ? new Date(b.date) : null;
+  const day = when && !Number.isNaN(when.getTime())
+    ? ` · ${when.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}` : '';
+  return `Build ${b.sha}${day}${b.dirty ? ' · with local changes' : ''}`;
+};
 /* A release is a file of a size; a git checkout is a number of commits. */
 const whatIsNew = (info) => (info?.checkout
   ? `${info.latest?.sha} · ${info.notes || 'new changes on main'}`
@@ -673,8 +682,12 @@ function UpdatesView({ demo }) {
               <div className="h-card__title">
                 {state.done ? 'Update installed' : info?.available ? 'A new build is ready' : state.error ? 'Could not check for updates' : 'Halo is up to date'}
               </div>
+              {/* Always which build is running — up to date is only worth
+                  believing next to the number it is up to date at. */}
               <div className="h-card__sub">
-                {state.error || state.msg || (info?.available ? whatIsNew(info) : `Build ${info?.current?.sha ?? '—'}${info?.current?.dirty ? ' · with local changes' : ''}`)}
+                {state.error || ((state.busy || state.done) && state.msg) || (info?.available
+                  ? `${whatIsNew(info)} · you have ${info.current?.sha ?? '—'}`
+                  : info?.current ? `${buildLine(info.current)} · the latest` : state.msg)}
               </div>
               {state.busy && state.pct > 0 && <div className="h-meter"><i style={{ width: `${state.pct}%` }} /></div>}
             </div>

@@ -220,6 +220,7 @@ class Bridge {
       shell: { mode: 'island', hidden: false, guide: false },
       voiceSession: { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null },
       voiceShortcut: { available: false },
+      notch: null,       // { open } — see broadcast()
     };
 
     // The conversation so far, so a phone joining mid-thread sees it rather
@@ -344,6 +345,11 @@ class Bridge {
   }
 
   broadcast(msg, except = null) {
+    /* Whether the island is up is told once, when it opens — before the app
+       window has even been started — so it is kept to be told again: a
+       window that connected afterwards said "Show the island" with the
+       island on screen. */
+    if (msg?.type === 'notch') this.snapshot.notch = msg.payload;
     const text = JSON.stringify(msg);
     for (const c of this.clients) {
       if (c === except) continue;
@@ -379,6 +385,7 @@ class Bridge {
     send('shell', s.shell);
     send('voiceSession', s.voiceSession);
     send('voiceShortcut', s.voiceShortcut);
+    send('notch', s.notch);
     send('runbook', runbookSummary());
     // Not part of the snapshot, because it is not the agent's state — but it
     // has to be replayed for the same reason everything else here is: a page
