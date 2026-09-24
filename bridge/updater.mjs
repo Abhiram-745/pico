@@ -255,10 +255,15 @@ export async function install(onProgress = () => {}) {
 /** `npm install --omit=dev` in the install folder. Rejects with npm's own words. */
 function installDependencies() {
   return new Promise((resolve, reject) => {
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const p = spawn(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
-      cwd: ROOT, windowsHide: true, shell: process.platform === 'win32', stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    /* npm is a .cmd on Windows, which only starts through a shell — and Node
+       warns (DEP0190) about a shell handed an argument list, since it joins
+       them unescaped. So on Windows it is one fixed command line, with
+       nothing in it from outside. */
+    const args = ['install', '--omit=dev', '--no-audit', '--no-fund'];
+    const options = { cwd: ROOT, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] };
+    const p = process.platform === 'win32'
+      ? spawn(`npm ${args.join(' ')}`, { ...options, shell: true })
+      : spawn('npm', args, options);
     let err = '';
     p.stderr.on('data', (d) => { err += d; });
     p.once('error', reject);
