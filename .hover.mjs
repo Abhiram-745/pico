@@ -1,0 +1,15 @@
+import { createRequire } from 'node:module';
+const nut = await import('@nut-tree-fork/nut-js');
+const m = createRequire(import.meta.url)('@nut-tree-fork/libnut-win32');
+const find = () => { for (const h of m.getWindows()) { try { if (m.getWindowTitle(h) === 'Pico Notch') return h; } catch {} } return null; };
+const h = find();
+const r0 = m.getWindowRect(h);
+console.log('resting  ', `${r0.width}x${r0.height}`);
+await nut.mouse.setPosition(new nut.Point(Math.round(r0.x + r0.width / 2), 14));
+await new Promise((res) => setTimeout(res, 900));
+const r1 = m.getWindowRect(h);
+console.log('hovered  ', `${r1.width}x${r1.height}`);
+await nut.mouse.setPosition(new nut.Point(1500, 800));
+await new Promise((res) => setTimeout(res, 1200));
+const r2 = m.getWindowRect(h);
+console.log('left     ', `${r2.width}x${r2.height}`);

@@ -1,0 +1,11 @@
+import { Screen } from './bridge/screen.mjs';
+import { createRequire } from 'node:module';
+const Jimp = createRequire(import.meta.url)('jimp');
+const [name, x, y, w, h, scale = '1'] = process.argv.slice(2);
+const s = new Screen(); await s.detect();
+const raw = await s.rawDesktop();
+const img = await new Promise((res, rej) => new Jimp({ data: raw.data, width: raw.width, height: raw.height }, (e, i) => e ? rej(e) : res(i)));
+img.crop(+x, +y, +w, +h);
+if (+scale !== 1) img.scale(+scale);
+await img.writeAsync(process.env.SP + '/' + name + '.png');
+console.log('saved');
