@@ -131,7 +131,24 @@ for (const text of NOT_CERTAIN_JOBS) {
   lines.push(`  ${ok ? ' ' : '✗'} ${JSON.stringify(text).slice(0, 50).padEnd(52)} ${ok ? 'not settled as a job' : 'settled as a job (expected not)'}`);
 }
 
-const total = CASES.length + CERTAIN_JOBS.length + NOT_CERTAIN_JOBS.length;
+/* With something attached: put somewhere, it is a job, whatever it goes on to
+   ask ("…and ask what's in it" is for ChatGPT); asked about, it is chat. */
+const PICTURE = [{ id: 'p1', name: 'dog.png', kind: 'image' }];
+const WITH_ATTACHMENT = [
+  ['paste this picture into ChatGPT and ask what\'s in it', 'agent'],
+  ['send the attached image to ChatGPT', 'agent'],
+  ['put this into the chat and ask for a caption', 'agent'],
+  ['what\'s in this image?', 'chat'],
+  ['describe this picture', 'chat'],
+];
+for (const [text, want] of WITH_ATTACHMENT) {
+  const r = localRoute(text, { attachments: PICTURE });
+  const ok = r?.mode === want && (want === 'chat' || r.certain === true);
+  if (!ok) failed += 1;
+  lines.push(`  ${ok ? ' ' : '✗'} ${JSON.stringify(text).slice(0, 50).padEnd(52)} ${r?.mode ?? 'ask'}${ok ? '' : ` (expected ${want})`}`);
+}
+
+const total = CASES.length + CERTAIN_JOBS.length + NOT_CERTAIN_JOBS.length + WITH_ATTACHMENT.length;
 if (failed) {
   console.error('\n  intent router:\n');
   for (const l of lines) console.error(l);

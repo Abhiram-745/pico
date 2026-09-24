@@ -186,7 +186,7 @@ export class Sense {
    */
   async elements(hwnd, max = 200, { ontop = false } = {}) {
     const cmd = `elements ${hwnd} ${max}${ontop ? ' ontop' : ''}`;
-    return (await this.request(cmd, 2000))?.elements ?? null;
+    return (await this.request(cmd, 3000))?.elements ?? null;   // past the helper's 2.6s deadline, as look()
   }
 
   /**
@@ -201,7 +201,8 @@ export class Sense {
 
   /** The controls AND what the window says — one call, see Cached(). */
   async look(hwnd, max = 200) {
-    const r = await this.request(`elements ${hwnd} ${max}`, 2000);
+    // Past the helper's own deadline for a page read (2.6s, sense.cs), so its answer — even "timeout" — arrives.
+    const r = await this.request(`elements ${hwnd} ${max}`, 3000);
     return r ? { elements: r.elements ?? [], says: r.says ?? [], texts: r.texts ?? [], places: r.places ?? [] } : null;
   }
 

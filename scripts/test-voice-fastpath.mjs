@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { handleVoice, voiceRequestAllowed } from '../bridge/voice.mjs';
-import { actionSpace, decide, targetStillMatches, targetNamedInGoal } from '../bridge/fastpath.mjs';
+import { actionSpace, decide, targetStillMatches, focusLanded, targetNamedInGoal } from '../bridge/fastpath.mjs';
 import { execute } from '../bridge/driver.mjs';
 import { HostAgent } from '../bridge/agent.mjs';
 
@@ -50,6 +50,15 @@ assert.equal(targetStillMatches(field, { found: true, at: { ...field, name: 'Del
 assert.equal(targetStillMatches(field, { found: true, at: { ...field, rect: [10, 90, 100, 25] } }), false);
 assert.equal(targetStillMatches(field, { found: true, at: { ...field, enabled: false } }), false);
 assert.equal(targetStillMatches(field, null), false);
+
+// Focus after a click: the same field, even when it widened or grew as it took focus.
+const box = { name: 'Search Wikipedia', type: 'SearchBox', rect: [400, 120, 300, 34] };
+assert.equal(focusLanded(box, { found: true, at: { ...box, rect: [380, 118, 520, 38] } }), true, 'a search box that widened on focus');
+assert.equal(focusLanded(box, { found: true, at: { ...box, type: 'ComboBox' } }), true, 'reported as a combo box once suggestions show');
+assert.equal(focusLanded(box, { found: true, at: { name: 'Address and search bar', type: 'Edit', rect: [300, 10, 900, 30] } }), false, 'the address bar is not the search box');
+assert.equal(focusLanded(box, { found: true, at: { ...box, rect: [400, 600, 300, 34] } }), false, 'a same-named field somewhere else');
+assert.equal(focusLanded(box, { found: true, at: { ...box, type: 'Button' } }), false);
+assert.equal(focusLanded(box, { found: false }), false);
 
 const input = [];
 let currentField = field;

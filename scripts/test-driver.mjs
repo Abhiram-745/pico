@@ -1071,13 +1071,13 @@ console.log('pasting an attachment exactly');
   check('then the right one went in', computer.state.value === 'hello', computer.state.value);
 }
 {
-  // A picture cannot be pasted yet: said, and a plain paste in its place refused.
+  // A picture is pasted by its number; a plain paste in its place is refused — the clipboard is the person's.
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
   computer.state.clipboard = 'the person\'s own notes';
   const llm = scripted([
     act({ action: 'paste' }),
     finish,
-    { name: 'report', args: { succeeded: false, summary: 'Halo cannot paste pictures yet.' } },
+    { name: 'report', args: { succeeded: false, summary: 'Nothing was pasted: the picture was not asked for by its number.' } },
     finish,
   ]);
   const attachments = [{ id: 'p1', name: 'fox.png', kind: 'image', mime: 'image/png', size: 8, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }];
@@ -1085,8 +1085,8 @@ console.log('pasting an attachment exactly');
   await done;
   check('the person\'s clipboard was not pasted in place of the picture',
     !computer.state.typed.some((t) => /own notes/.test(t.text)), JSON.stringify(computer.state.typed));
-  check('the model was told there is a picture it cannot paste',
-    /Also attached: a picture \("fox\.png"\)\. Halo cannot paste pictures/.test(llm.calls[0]?.text ?? ''), (llm.calls[0]?.text ?? '').slice(0, 300));
+  check('the model was shown the picture by its number, to paste that way',
+    /\[1\] picture "fox\.png"/.test(llm.calls[0]?.text ?? ''), (llm.calls[0]?.text ?? '').slice(0, 300));
 }
 
 /* --- one-move jobs from the words of the task, with no model turn ---------- */
@@ -1161,6 +1161,44 @@ console.log('an unlabelled dropdown');
   await done;
   check('Option 2 was chosen in the dropdown Windows gave no name', value === 'Option 2', value);
   check('with one click to open it, then the keyboard', popupClicks === 1, `${popupClicks} clicks`);
+}
+
+console.log('an unlabelled checkbox, named by the words beside it');
+{
+  const computer = desktop({ windows: [{ hwnd: '300', title: 'The Internet - Google Chrome', process: 'chrome' }], front: '300' });
+  const ticked = [false, true];
+  let clicks = 0;
+  // Windows names neither box; "checkbox 1" and "checkbox 2" are only words beside them.
+  const controls = () => ticked.map((on, i) => ({ type: 'CheckBox', name: '', rect: [400, 264 + (i * 44), 20, 21], checked: on, operable: true, enabled: true }));
+  page(computer, controls);
+  computer.sense.look = async () => ({ elements: controls(), says: [], texts: [{ name: 'checkbox 1', rect: [420, 262, 129, 28] }, { name: 'checkbox 2', rect: [420, 306, 129, 28] }] });
+  computer.click = async (x, y) => { clicks += 1; const i = y < 290 ? 0 : 1; if (x < 425) ticked[i] = !ticked[i]; computer.state.screen += 1; };
+  const llm = scripted([{ name: 'report', args: { succeeded: true, summary: 'Ticked it.' } }, finish]);
+  const { done } = run({ computer, llm, task: 'On the Checkboxes page, tick checkbox 1 and leave checkbox 2 as it is.' });
+  await done;
+  check('checkbox 1 ticked, checkbox 2 left ticked', ticked[0] === true && ticked[1] === true, JSON.stringify(ticked));
+  check('with one click and no model turn', clicks === 1 && actTurns(llm) === 0, `${clicks} clicks, ${actTurns(llm)} act turns`);
+}
+
+console.log('a link opened from the words of the task, checked by the title');
+{
+  const computer = desktop({ windows: [{ hwnd: '300', title: 'GitHub - pico - Google Chrome', process: 'chrome' }], front: '300' });
+  const controls = () => [
+    { type: 'Hyperlink', name: '+ 1 release', rect: [300, 300, 90, 24], operable: true, enabled: true },
+    { type: 'Hyperlink', name: 'Releases', rect: [300, 200, 90, 30], operable: true, enabled: true },
+  ];
+  page(computer, controls);
+  let opened = null;
+  computer.click = async (x, y) => {
+    opened = controls().find((el) => x >= el.rect[0] && x <= el.rect[0] + el.rect[2] && y >= el.rect[1] && y <= el.rect[1] + el.rect[3])?.name ?? null;
+    if (opened === 'Releases') computer.state.windows.get('300').title = 'Releases · pico · GitHub - Google Chrome';
+    computer.state.screen += 1;
+  };
+  const llm = scripted([{ name: 'report', args: { succeeded: true, summary: 'Opened Releases.' } }, finish]);
+  const { done } = run({ computer, llm, task: 'On the GitHub page for pico, open the Releases page.' });
+  await done;
+  check('the Releases link, not "+ 1 release"', opened === 'Releases', String(opened));
+  check('and no model turn: the window\'s title said it was open', actTurns(llm) === 0, `${actTurns(llm)} act turns`);
 }
 
 /* --- Back: refused on the page the job started on, allowed once it left ---- */

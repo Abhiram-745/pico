@@ -176,7 +176,7 @@ const running = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`).then(
 if (!running) {
   spawn(browser, [
     `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`,
-    '--no-first-run', '--no-default-browser-check', '--disable-features=Translate', '--start-maximized', 'about:blank',
+    '--no-first-run', '--no-default-browser-check', '--disable-features=Translate', '--hide-crash-restore-bubble', '--start-maximized', 'about:blank',
   ], { detached: true, stdio: 'ignore' }).unref();
 }
 
@@ -312,6 +312,18 @@ async function raise(title) {
     await sleep(300);
     const front = await computer.foreground().catch(() => null);
     if (String(front?.title || '').startsWith(title)) return true;
+    /* Windows will not hand the front to a program while somebody is
+       typing in another one — measured: every task after the person
+       started working in their own browser was skipped. A click on the
+       test window's own tab strip, where it is empty, is how a person
+       brings a window forward, and that is always allowed. */
+    if (w && attempt >= 1) {
+      const shot = await computer.capture().catch(() => null);
+      const [x, y, ww] = w.rect;
+      const spot = shot?.physToScreen ? shot.physToScreen(x + ww - 320, y + 18) : null;
+      if (spot) await computer.click(spot.x, spot.y).catch(() => {});
+      await sleep(250);
+    }
   }
   return false;
 }
@@ -351,7 +363,13 @@ for (let round = 1; round <= repeat; round++) {
     clearTimeout(timer);
     const total = Math.round(performance.now() - t0);
     await sleep(400);
-    const seen = await evaluate(t.check).catch((err) => ({ pass: false, detail: `unreadable: ${err.message}` })) ?? { pass: false, detail: 'unreadable' };
+    /* Read again for a few seconds before calling it a fail: a run that ends
+       on the click that submits a form is done before the browser has
+       arrived at the page it goes to, and read at once, the check saw the
+       form still there. What never happened still fails. */
+    const read = () => evaluate(t.check).catch((err) => ({ pass: false, detail: `unreadable: ${err.message}` })).then((v) => v ?? { pass: false, detail: 'unreadable' });
+    let seen = await read();
+    for (let i = 0; i < 12 && !seen.pass; i++) { await sleep(250); seen = await read(); }
 
     const actions = events.filter((e) => e.type === 'action').map((e) => ({ type: e.payload?.type, detail: String(e.payload?.detail || '').slice(0, 120), at: Math.round(e.at - t0) }));
     const routed = events.find((e) => e.type === 'routed')?.payload;

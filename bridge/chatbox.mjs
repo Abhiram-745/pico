@@ -10,7 +10,11 @@
      2. the words    put on the clipboard and pasted — exact, instant, and the
                      same for three words or three thousand — then checked to
                      be in the box, and sent with Enter (or the Send button,
-                     for an app where Enter is a new line)
+                     for an app where Enter is a new line). A picture, when
+                     there is one, goes in first, pasted as a picture
+                     (clipboard-image.mjs); the app uploads it and keeps Send
+                     disabled until it has, so Send is watched, and Enter
+                     waits for it
      3. the answer   waited for, where the app says it is still writing: the
                      send button turns into a stop button while a reply or a
                      picture is being made, and back again when it is done.
@@ -40,6 +44,15 @@ export const SEND = /\bsend\b|\bsubmit\b/i;
 
 /** Lower case, one space: how two pieces of text are compared. */
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/* A pasted picture, waited for. The app uploads it before it can be sent,
+   and says so the only way it can be read: Send stays disabled — ChatGPT
+   shows it greyed, Claude the same — until the upload is done. Enter
+   pressed before then is ignored by some apps and, by others, sends the
+   words without the picture they were about. */
+export const UPLOAD_MS = 30_000;      // a big picture on a slow line, and no longer
+const QUIET_APP_MS = 2500;            // an app that names no buttons at all: a moment, then on
+const SETTLE_MS = 1200;               // Send already enabled before the paste: watched this long for the upload to disable it
 
 /**
  * Where a desktop point goes for the mouse. UI Automation answers in desktop
@@ -146,11 +159,60 @@ async function caretIn(sense, box) {
 }
 
 /**
- * Put `text` in the chat box and send it.
+ * Wait until the app will take the message: its Send button reports
+ * enabled. The box is read every few hundred milliseconds for at most
+ * `limitMs`, and the gate is asked every time, so pause and stop reach a
+ * wait for a slow upload the way they reach anything else.
+ *
+ * `wasEnabled`: Send was already enabled before the picture went in — an
+ * app that never disables it for an empty box. Then "enabled" proves
+ * nothing straight away, so it is watched a moment for the upload to
+ * disable it, and waited for again if it does.
+ *
+ * An app that names none of its buttons cannot say when it is ready: it is
+ * given a moment, and the send is judged from the box afterwards. Send
+ * still disabled at the end — or never there at all, in an app whose
+ * buttons can be read — means the picture is still uploading or never
+ * arrived. Nothing is sent then, and what is in the box is left for the
+ * person, rather than a message going without the picture it was about.
+ *
+ * @returns {Promise<{ ok: boolean, box?: object, why?: string, stopped?: boolean, by?: string }>}
+ */
+async function readyToSend({ reread, gate, onLive = () => {}, wasEnabled = false, limitMs = UPLOAD_MS }) {
+  const t0 = Date.now();
+  let named = false;          // has the app named any of the box's buttons yet?
+  let box = null;
+  for (;;) {
+    if (!(await gate())) return { ok: false, stopped: true };
+    box = (await reread()) ?? box;
+    if (box?.buttons?.length) named = true;
+    const enabled = Boolean(box?.send) && box.send.enabled !== false;
+    const waited = Date.now() - t0;
+    if (enabled && (!wasEnabled || waited >= SETTLE_MS)) return { ok: true, box, by: 'send-enabled' };
+    if (!named && waited >= QUIET_APP_MS) return { ok: true, box, by: 'unsaid' };
+    if (waited >= limitMs) {
+      return {
+        ok: false,
+        box,
+        why: box?.send
+          ? `the picture was still uploading after ${Math.round(limitMs / 1000)} seconds, so it was not sent`
+          : 'the picture did not show up in the message box, so nothing was sent',
+      };
+    }
+    onLive(`Waiting for the picture to upload · ${Math.round(waited / 1000)}s`);
+    await sleep(350);
+  }
+}
+
+/**
+ * Put `text` in the chat box and send it — after `picture`, when there is
+ * one: a data URL, pasted into the box as a picture first. Either may be
+ * left out; a picture with no words is sent on its own.
  *
  * @returns {{ ok: boolean, why?: string, box?: object, asked?: boolean }}
  */
-export async function send({ computer, sense, hwnd, text, toMouse, gate = async () => true, onLive = () => {}, confirmDraft = null, busyMs = 300_000 }) {
+export async function send({ computer, sense, hwnd, text = '', picture = null, toMouse, gate = async () => true, onLive = () => {}, confirmDraft = null, busyMs = 300_000, uploadMs = UPLOAD_MS }) {
+  const words = String(text ?? '');
   if (!(await bringForward(computer, sense, hwnd))) {
     return { ok: false, why: 'the window would not come to the front' };
   }
@@ -212,40 +274,75 @@ export async function send({ computer, sense, hwnd, text, toMouse, gate = async 
     await sleep(60);
   }
 
-  onLive('Pasting');
-  const put = await computer.writeClipboard(text);
-  if (!put) return { ok: false, why: 'the clipboard could not be set' };
-  await sleep(40);
-  await computer.keypress(['ctrl', 'v']);
-  await sleep(220);
-
-  /* In the box? Checked against the start of the text, which is what a
-     box reports first — a long paste is cut short in the report, not in the
-     box. An app that says nothing about its value is taken on trust here
-     and checked properly once it is sent. */
-  const head = flat(text).slice(0, 36);
-  box = (await reread()) ?? box;
-  if (box.value !== null && head && !flat(box.value).includes(head.slice(0, 24))) {
+  /* The picture first, the way a person adds one: pasted where the caret
+     is, as a picture. If it cannot be put on the clipboard, nothing is
+     pasted at all — ctrl+v would paste the person's own last copy instead —
+     and nothing is sent. Then the upload is waited out, before any words
+     go in: an empty box whose Send comes on is the app saying it has the
+     picture, which a box with words in it could not say. */
+  if (picture) {
+    const pre = (await reread()) ?? box;
+    const wasEnabled = Boolean(pre.send) && pre.send.enabled !== false;
+    onLive('Pasting the picture');
+    const put = await Promise.resolve().then(() => computer.writeClipboardImage?.(picture)).catch(() => false);
+    if (!put) return { ok: false, why: 'the picture could not be put on the clipboard, so nothing was pasted' };
+    if (!(await gate())) return { ok: false, stopped: true };
+    await sleep(60);
+    await computer.keypress(['ctrl', 'v']);
     await sleep(250);
+    const ready = await readyToSend({ reread, gate, onLive, wasEnabled, limitMs: uploadMs });
+    if (ready.stopped) return { ok: false, stopped: true };
+    if (!ready.ok) return { ok: false, why: ready.why };
+    box = ready.box ?? box;
+  }
+
+  const head = flat(words).slice(0, 36);
+  if (words) {
+    onLive(picture ? 'Pasting the words to go with it' : 'Pasting');
+    const put = await computer.writeClipboard(words);
+    if (!put) return { ok: false, why: 'the clipboard could not be set' };
+    await sleep(40);
+    await computer.keypress(['ctrl', 'v']);
+    await sleep(220);
+
+    /* In the box? Checked against the start of the text, which is what a
+       box reports first — a long paste is cut short in the report, not in
+       the box. An app that says nothing about its value is taken on trust
+       here and checked properly once it is sent. */
     box = (await reread()) ?? box;
-    if (box.value !== null && !flat(box.value).includes(head.slice(0, 24))) {
-      // Once more, from the click: focus may have gone somewhere on the way.
-      await computer.click(at.x, at.y);
-      await sleep(90);
-      await computer.keypress(['ctrl', 'a']);
-      await computer.keypress(['ctrl', 'v']);
-      await sleep(260);
+    if (box.value !== null && head && !flat(box.value).includes(head.slice(0, 24))) {
+      await sleep(250);
       box = (await reread()) ?? box;
       if (box.value !== null && !flat(box.value).includes(head.slice(0, 24))) {
-        return { ok: false, why: 'the text did not arrive in the message box' };
+        // Once more, from the click: focus may have gone somewhere on the way.
+        await computer.click(at.x, at.y);
+        await sleep(90);
+        await computer.keypress(['ctrl', 'a']);
+        await computer.keypress(['ctrl', 'v']);
+        await sleep(260);
+        box = (await reread()) ?? box;
+        if (box.value !== null && !flat(box.value).includes(head.slice(0, 24))) {
+          return { ok: false, why: 'the text did not arrive in the message box' };
+        }
       }
     }
   }
   if (!(await gate())) return { ok: false, stopped: true };
 
+  /* Words pasted after a picture can find the app still busy with it, or
+     busy again: Send is looked at once more, and waited for if it is off. */
+  if (picture) {
+    const now = (await reread()) ?? box;
+    if (now.send && now.send.enabled === false) {
+      const ready = await readyToSend({ reread, gate, onLive, limitMs: uploadMs });
+      if (ready.stopped) return { ok: false, stopped: true };
+      if (!ready.ok) return { ok: false, why: ready.why };
+    }
+  }
+
   onLive('Sending');
   await computer.keypress(['enter']);
-  const sentBy = await sentYet(reread, head);
+  const sentBy = await sentYet(reread, head, { picture: Boolean(picture) });
   if (sentBy) return { ok: true, box, by: sentBy };
 
   // Enter makes a new line in some apps. Their send button does not.
@@ -254,21 +351,26 @@ export async function send({ computer, sense, hwnd, text, toMouse, gate = async 
     const [sx, sy, sw, sh] = now.send.rect;
     const s = toMouse(sx + (sw / 2), sy + (sh / 2));
     await computer.click(s.x, s.y);
-    const again = await sentYet(reread, head);
+    const again = await sentYet(reread, head, { picture: Boolean(picture) });
     if (again) return { ok: true, box: now, by: again };
   }
   return { ok: false, why: 'the message did not send' };
 }
 
-/** Did it go? The box emptied, or a stop button appeared. */
-async function sentYet(reread, head) {
+/** Did it go? The box emptied, or a stop button appeared. A picture sent on
+    its own leaves no words to watch leave the box; what goes instead is
+    Send, which was only there, enabled, because the picture was. An app
+    that names no buttons and keeps no words says nothing either way, and
+    is taken on trust, as one that keeps its value to itself always was. */
+async function sentYet(reread, head, { picture = false } = {}) {
   for (let i = 0; i < 6; i++) {
     await sleep(i === 0 ? 260 : 220);
     const box = await reread();
     if (!box) continue;                       // the page redrawing under a new chat
     if (box.stop) return 'stop';
-    if (box.value !== null && !flat(box.value).includes(head.slice(0, 24))) return 'emptied';
-    if (box.value === null && i >= 2) return 'assumed';
+    if (head && box.value !== null && !flat(box.value).includes(head.slice(0, 24))) return 'emptied';
+    if (!head && picture && box.buttons.length && !(box.send && box.send.enabled !== false)) return 'cleared';
+    if ((box.value === null || (!head && !box.buttons.length)) && i >= 2) return 'assumed';
   }
   return null;
 }

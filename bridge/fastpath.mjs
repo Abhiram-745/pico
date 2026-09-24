@@ -94,6 +94,31 @@ export function targetStillMatches(expected, hit) {
   });
 }
 
+/* The kinds of field keyboard focus can land in for typing. Chrome reports
+   the same box as one or another of these depending on what is attached to
+   it (a list of suggestions, a search role). */
+const TEXT_FIELDS = new Set(['Edit', 'SearchBox', 'ComboBox']);
+
+/**
+ * Did a click put the keyboard in the field it was aimed at? Its own name,
+ * a field that takes text, and a box still over where it was — not the same
+ * box to the pixel, as targetStillMatches asks before a click: a search box
+ * widens when it takes focus (Wikipedia's does) and a text area grows as it
+ * fills, and read that strictly a click that worked looked like one that
+ * missed. Measured: the search was dropped, and the model typed it into the
+ * address bar instead.
+ */
+export function focusLanded(expected, focused) {
+  const at = focused?.at;
+  if (!expected || !focused?.found || !at || at.enabled === false) return false;
+  if (String(at.name ?? '') !== String(expected.name ?? '')) return false;
+  if (at.type !== expected.type && !(TEXT_FIELDS.has(at.type) && TEXT_FIELDS.has(expected.type))) return false;
+  const [x, y, w, h] = Array.isArray(expected.rect) ? expected.rect : [];
+  const r = at.rect;
+  if (!Array.isArray(r) || r.length !== 4 || !Number.isFinite(w)) return true;
+  return r[0] < x + w && r[0] + r[2] > x && r[1] < y + h && r[1] + r[3] > y;
+}
+
 /** Compare only observed UI state, not unrelated animation pixels. */
 export function observationKey(snapshot) {
   if (!snapshot?.elements) return null;

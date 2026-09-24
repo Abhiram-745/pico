@@ -100,7 +100,7 @@ export function planForm(task, elements = []) {
       used.add(key);
       if (Math.abs(el.range[2] - n) < 0.5) continue;
       steps.push({ action: 'set_value', el, text: String(n), why: `Setting ${el.name} to ${n}` });
-    } else if (el.type === 'ComboBox' && el.readOnly === false) {
+    } else if (el.type === 'ComboBox' && el.takesText === true) {
       /* A box with suggestions (a datalist, an autocomplete) is typed into,
          not chosen from: the Enter that commits a dropdown's choice submits
          the form from one of these — measured, half filled. */
@@ -148,5 +148,10 @@ export function planForm(task, elements = []) {
   // Top to bottom, the way a person fills a form in.
   steps.sort((a, b) => (a.el.rect[1] - b.el.rect[1]) || (a.el.rect[0] - b.el.rect[0]));
   if (finishing) steps.push({ action: 'click', el: finish[0], why: `Clicking ${finish[0].name}` });
+  /* Said on the plan: every part of the task is one of these steps. Done
+     as planned, that is the job done (driver.mjs, quickWhole) — the check
+     after it cannot see a form's values once Submit has left the page, and
+     its "not yet" sent the model Back to an empty form. */
+  steps.covered = covered;
   return steps;
 }

@@ -30,7 +30,8 @@ const norm = (s) => wordsOf(s).join(' ');
 /** "On the Team board, " and "In Settings, " are where, not what. */
 export function withoutPlace(task) {
   return String(task ?? '').trim()
-    .replace(/^(?:on|in|at|from)\s+(?:the\s+)?[^,.]{1,60},\s*/i, '')
+    // A dot inside a name ("On the Node.js docs index, …") is not the end of the place.
+    .replace(/^(?:on|in|at|from)\s+(?:the\s+)?(?:[^,.]|\.(?=\S)){1,60},\s*/i, '')
     .replace(/^please\s+/i, '')
     .replace(/[.!\s]+$/, '');
 }
@@ -105,7 +106,9 @@ export function planSearch(task, marks = []) {
   if (!boxes.length || names.size !== 1) return null;
   const box = boxes[0];
   const quoted = /^["“'‘]([^"”'’]{1,80})["”'’]/.exec(m[1].trim());
-  let query = (quoted ? quoted[1] : m[1].split(/\s+(?:and|then)\b|[,;.!?]/i)[0]).trim();
+  const head = quoted ? quoted[0] : m[1].trim().split(/\s+(?:and|then)\b|[,;.!?]/i)[0];
+  const tail = m[1].trim().slice(head.length).trim();
+  let query = (quoted ? quoted[1] : head).trim();
   /* "search for Alan Turing on Wikipedia" in a box called "Search
      Wikipedia": the last words name the site the box already searches, and
      typed in they would make a worse search. Only then — "restaurants in
@@ -115,12 +118,26 @@ export function planSearch(task, marks = []) {
     if (site && wordsOf(site[1]).every((w) => wordsOf(box.name).includes(w))) query = query.slice(0, site.index).trim();
   }
   if (!query || query.length > 80 || /^(?:it|this|that|them|the results?)$/i.test(query)) return null;
+  /* What it should look like once it has worked, when that can be read off
+     the window's name (the driver's title check): a plain search is its
+     results; "and open his article" is a page called by what was searched
+     for that is not a list of results. Measured on Wikipedia: asked of Jev
+     in the task's own words, "search for Alan Turing and open his article"
+     came back "not yet" with the article open, and cost a vision turn. Any
+     other tail ("and click the second result") is the loop's to do. */
+  const check = !tail ? { title: query }
+    : OPEN_IT.test(tail) ? { title: query, titleNot: RESULTS_PAGE } : null;
   return {
     action: 'type', mark: box.n, text: query, name: box.name,
     then: [{ action: 'key', keys: ['enter'], why: 'Pressing Enter to search' }],
     why: `Searching for ${query}`,
+    ...(check ? { check } : { partial: true }),
   };
 }
+
+const OPEN_IT = /^(?:[,;]\s*)?(?:and\s+|then\s+)*(?:open|go\s+to|view|read|show\s+me)\s+(?:his|her|their|its|the)\s+(?:article|page|profile|entry|result|wiki(?:pedia)?\s+(?:article|page))\s*[.!]?$/i;
+/* How a results page names itself, where the thing searched for is also in the name. */
+const RESULTS_PAGE = 'search results|results for|no results|search\\s*[-–—:|]';
 
 /* --- a dropdown ------------------------------------------------------------ */
 
@@ -175,13 +192,272 @@ export function planChoose(task, marks = []) {
   /* A box with suggestions (a datalist, an autocomplete) takes the words
      typed: the Enter that commits a select's choice submits the form from
      one of these — measured on a real page, half filled (formfill.mjs). */
-  if (combo.readOnly === false) return { action: 'type', mark: combo.n, text: option, name: what, why: `Typing ${option} into ${what}` };
+  if (combo.takesText === true) return { action: 'type', mark: combo.n, text: option, name: what, why: `Typing ${option} into ${what}` };
   return { action: 'select_option', mark: combo.n, text: option, name: what, why: `Choosing ${option} in ${what}` };
+}
+
+/* --- a key ------------------------------------------------------------------- */
+
+const KEY_NAMES = {
+  enter: 'enter', return: 'enter', escape: 'escape', esc: 'escape', tab: 'tab', space: 'space', spacebar: 'space',
+  backspace: 'backspace', delete: 'delete', del: 'delete', insert: 'insert', home: 'home', end: 'end',
+  'page up': 'pageup', pageup: 'pageup', 'page down': 'pagedown', pagedown: 'pagedown',
+  up: 'up', down: 'down', left: 'left', right: 'right',
+  'up arrow': 'up', 'down arrow': 'down', 'left arrow': 'left', 'right arrow': 'right',
+  'arrow up': 'up', 'arrow down': 'down', 'arrow left': 'left', 'arrow right': 'right',
+};
+const MODIFIERS = { ctrl: 'ctrl', control: 'ctrl', alt: 'alt', shift: 'shift', win: 'win', windows: 'win' };
+
+/** "the K key", "Enter", "ctrl+s", "Ctrl + Shift + T" → the names keypress takes, or null. */
+export function keysIn(phrase) {
+  const p = String(phrase ?? '').trim().toLowerCase()
+    .replace(/^the\s+/, '').replace(/\s+(?:keys?|button)$/, '').replace(/^["“'‘](.+)["”'’]$/, '$1').trim();
+  const one = (w) => KEY_NAMES[w] ?? (/^[a-z0-9]$/.test(w) || /^f(?:[1-9]|1[0-2])$/.test(w) ? w : null);
+  if (one(p)) return [one(p)];
+  const bits = p.includes('+') ? p.split(/\s*\+\s*/) : p.split(/\s+/);
+  if (bits.length < 2 || bits.length > 4) return null;
+  const mods = bits.slice(0, -1).map((b) => MODIFIERS[b]);
+  const last = one(bits[bits.length - 1]);
+  return mods.every(Boolean) && last ? [...new Set(mods), last] : null;
+}
+
+/**
+ * "press the K key", "hit Escape", "press ctrl+s": the key, and nothing
+ * else. Not when the page has a button by that very name — "press Delete"
+ * beside a Delete button means the button (planClick's).
+ * @returns {{action:'key', keys:string[], why:string}|null}
+ */
+export function planKey(task, marks = []) {
+  const m = /^(?:press|hit|tap|push)\s+(?:the\s+)?(.+?)$/i.exec(withoutPlace(task));
+  if (!m) return null;
+  const keys = keysIn(m[1]);
+  if (!keys) return null;
+  const said = m[1].replace(/\s+(?:keys?|button)$/i, '').replace(/^the\s+/i, '').trim();
+  if (marks.some((k) => k.kind === 'control' && CLICKABLE.has(k.role) && norm(k.name) === norm(said))) return null;
+  const shown = keys.map((k) => (k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1))).join('+');
+  return { action: 'key', keys, why: `Pressing ${shown}` };
+}
+
+/* --- ticking boxes ------------------------------------------------------------ */
+
+const TICK_ON = /^(?:tick|check|select|enable|turn\s+on|switch\s+on|mark)\s+/i;
+const TICK_OFF = /^(?:untick|un-tick|uncheck|un-check|deselect|clear|disable|turn\s+off|switch\s+off|unmark)\s+/i;
+const LEAVE = /^(?:leave|keep)\s+(.+?)\s+(?:as\s+it\s+is|as\s+is|alone|unchanged|the\s+way\s+it\s+is|how\s+it\s+is)$/i;
+
+/**
+ * "tick checkbox 1 and leave checkbox 2 as it is", "untick Remember me".
+ * Every clause has to be about a box — ticking, unticking or leaving it —
+ * and name exactly one. A box already as asked is not clicked; nothing to
+ * click at all is done. Boxes a page never labelled are named by the words
+ * beside them (withLabels, marks.mjs): measured on the-internet, this was
+ * nineteen seconds of vision turns for one tick.
+ * @returns {{action:'click', mark:number, then?:object[], why:string}|{done:true}|null}
+ */
+export function planTick(task, marks = []) {
+  const boxes = marks.filter((k) => k.kind === 'control' && ['CheckBox', 'RadioButton'].includes(k.role) && k.name && typeof k.checked === 'boolean');
+  if (!boxes.length) return null;
+  const clauses = withoutPlace(task).split(/\s*(?:,|;|\band\s+then\b|\bthen\b|\band\b)\s*/i).map((c) => c.trim()).filter(Boolean);
+  const clicks = [];
+  for (const clause of clauses) {
+    const leave = LEAVE.exec(clause);
+    const on = !leave && TICK_ON.test(clause);
+    const off = !leave && TICK_OFF.test(clause);
+    if (!leave && !on && !off) return null;              // a clause about something else
+    const phrase = leave ? leave[1] : clause.replace(on ? TICK_ON : TICK_OFF, '');
+    const have = new Set(wordsOf(phrase).map(stem));
+    const scored = boxes.map((k) => ({ k, need: wordsOf(k.name) }))
+      .filter(({ need }) => need.length && need.every((w) => have.has(stem(w))))
+      .sort((a, b) => b.need.length - a.need.length);
+    if (!scored.length || (scored[1] && scored[1].need.length === scored[0].need.length)) return null;
+    const box = scored[0].k;
+    if (leftover(phrase, [box.name, 'checkbox check box tickbox radio option']).length) return null;
+    if (!leave && box.checked !== on) clicks.push({ box, on });
+  }
+  if (!clicks.length) return { done: true };
+  const say = ({ box, on }) => `${on ? 'Ticking' : 'Unticking'} ${box.name}`;
+  const [first, ...rest] = clicks;
+  return {
+    action: 'click', mark: first.box.n, name: first.box.name, why: say(first),
+    then: rest.map((c) => ({ action: 'click', markRef: c.box, why: say(c) })),
+  };
+}
+
+/* --- one field ---------------------------------------------------------------- */
+
+const TEXT_ROLES = new Set(['Edit', 'SearchBox', 'Spinner', 'ComboBox']);
+/* What a person calls a field by what goes in it, and the role Windows gives it. */
+const FIELD_KINDS = { number: ['Spinner'], search: ['SearchBox'] };
+
+/**
+ * "type 42 into the number box", "enter Halo into the Project name field".
+ * One field, named in the task by its label or by what it holds, and the
+ * words for it. formfill.mjs plans two fields or more; one on its own, or
+ * one Windows named nothing, was a vision turn.
+ * @returns {{action:'type', mark:number, text:string, why:string}|null}
+ */
+export function planField(task, marks = []) {
+  const m = /^(?:type|enter|put|write|fill\s+in)\s+["“'‘]?(.+?)["”'’]?\s+(?:into|in|in\s+to)\s+(?:the\s+)?(.+?)\s+(?:box|field|input|text\s*box)$/i.exec(withoutPlace(task));
+  if (!m) return null;
+  const [, text, label] = m;
+  if (!text.trim() || text.length > 200) return null;
+  const fields = marks.filter((k) => k.kind === 'control' && TEXT_ROLES.has(k.role)
+    && (k.takesText === true || k.role === 'Spinner') && !/address/i.test(k.name));
+  const have = new Set(wordsOf(label).map(stem));
+  const named = fields.filter((k) => k.name && wordsOf(k.name).length && wordsOf(k.name).every((w) => have.has(stem(w)))
+    && !leftover(label, [k.name]).length);
+  const kind = FIELD_KINDS[norm(label)];
+  const byKind = kind ? fields.filter((k) => kind.includes(k.role)) : [];
+  const pick = named.length === 1 ? named[0] : (!named.length && byKind.length === 1 ? byKind[0] : null);
+  if (!pick) return null;
+  return { action: 'type', mark: pick.n, text: text.trim(), name: pick.name || label, why: `Typing ${text.trim()} into ${pick.name || `the ${label} box`}` };
+}
+
+/* --- a link ------------------------------------------------------------------- */
+
+/**
+ * "open the Releases page", "go to the File system section", "follow the
+ * Pricing link": the one link called exactly that. Exactly — "File system"
+ * is never "Virtual File System", and "Releases" never "+ 1 release".
+ * An app or a site by name ("open Notepad") went to the opener before the
+ * loop ever started; here it has to be a link on the page.
+ * @returns {{action:'click', mark:number, name:string, check:object, why:string}|null}
+ */
+/** The name of the link a task asks to open, or null: "open the File system page" → "File system". */
+export function linkWanted(task) {
+  const m = /^(?:open|go\s+to|follow|visit|navigate\s+to)\s+(?:the\s+)?["“'‘]?(.+?)["”'’]?(?:\s+(?:page|link|section|tab|article|entry))?$/i.exec(withoutPlace(task));
+  if (!m) return null;
+  const name = m[1].replace(/\s+(?:page|link|section|tab|article|entry)$/i, '').trim();
+  return norm(name) ? name : null;
+}
+
+export function planLink(task, marks = []) {
+  const said = linkWanted(task);
+  if (!said) return null;
+  const want = norm(said);
+  const isLink = (k) => k.kind === 'control' && ['Hyperlink', 'TabItem'].includes(k.role);
+  let links = marks.filter((k) => isLink(k) && norm(k.name) === want);
+  /* A count after the name is not part of it: GitHub's "Releases" became
+     "Releases (2)" the day a second release was made, and the plan found
+     nothing. Only when nothing is called exactly that, and only a count. */
+  if (!links.length && !/\d$/.test(want)) {
+    links = marks.filter((k) => isLink(k) && /\s\(?\d[\d,.]*\)?\s*$/.test(String(k.name).trim())
+      && norm(String(k.name).trim().replace(/\s*\(?\d[\d,.]*\)?\s*$/, '')) === want);
+  }
+  if (!links.length) return null;
+  // The same link twice (a nav bar and a footer) is one place to go; two different ones is not sure.
+  if (new Set(links.map((k) => k.value ?? k.name)).size > 1) return null;
+  const link = [...links].sort((a, b) => a.rect[1] - b.rect[1])[0];
+  // The page it opens is called by the name asked for, not by the count beside it.
+  return { action: 'click', mark: link.n, name: link.name, why: `Opening ${link.name}`, check: { title: said } };
+}
+
+/* --- sorting a table -------------------------------------------------------- */
+
+/**
+ * "sort Example 1 by Last Name, A to Z": a click on that column's header, in
+ * that table — the page has two with the same headers, so the one under
+ * the heading the task names. One click sorts ascending on a table that is
+ * not sorted yet; whether it did is read off the column afterwards (check),
+ * not taken on trust, because a second click would sort it the other way.
+ * @returns {{action:'click', mark:number, check:object, why:string}|null}
+ */
+export function planSort(task, marks = []) {
+  const m = /^sort\s+(?:the\s+)?(?:(.+?)\s+)?by\s+(?:the\s+)?(.+?)(?:\s*,?\s*(a\s*(?:to|-)\s*z|ascending|smallest\s+first|lowest\s+first))?(?:\s+column)?$/i.exec(withoutPlace(task));
+  if (!m) return null;
+  const [, tableName, column] = m;
+  const headers = marks.filter((k) => k.kind === 'control' && ['DataItem', 'HeaderItem', 'Button', 'Text', 'Hyperlink'].includes(k.role)
+    && norm(k.name) === norm(column.replace(/\s+column$/i, '')));
+  if (!headers.length) return null;
+  let header = headers.length === 1 ? headers[0] : null;
+  if (!header && tableName) {
+    // Under the heading that names the table, and above the next heading like it.
+    const heading = marks.find((k) => k.kind === 'text' && norm(k.name) === norm(tableName.replace(/^table\s+/i, '')));
+    if (!heading) return null;
+    const below = headers.filter((k) => k.rect[1] > heading.rect[1]).sort((a, b) => a.rect[1] - b.rect[1]);
+    header = below[0] ?? null;
+  }
+  if (!header) return null;
+  return { action: 'click', mark: header.n, name: header.name, why: `Sorting by ${header.name}`,
+    check: { column: { x: header.rect[0], w: header.rect[2], below: header.rect[1] + header.rect[3], name: header.name }, order: 'asc' } };
+}
+
+/* --- adding an item ---------------------------------------------------------- */
+
+/**
+ * "add a todo called Buy milk", "add an item named Eggs": the one field for
+ * new things, the words, Enter. A field for new things is one whose name
+ * says so — "New Todo Input", "Add item", "What needs to be done?".
+ * @returns {{action:'type', mark:number, text:string, then:object[], check:object, why:string}|null}
+ */
+export function planAdd(task, marks = []) {
+  const m = /^add\s+(?:a|an|one|another|the)?\s*(?:new\s+)?([\w-]+(?:\s+[\w-]+)?)\s+(?:called|named|that\s+says|saying)\s+(.+)$/i.exec(withoutPlace(task));
+  if (!m) return null;
+  const [, thing] = m;
+  /* The name runs to a "then": "add a todo called Buy milk, then change it
+     to Buy oat milk" is two things to do, and "Buy milk and eggs" one name. */
+  const [said, after] = m[2].split(/\s*(?:[,;]\s*and\s+then|[,;]\s*then|\s+and\s+then|\s+then)\s+/i);
+  const text = said.replace(/^["“'‘]|["”'’]$/g, '').trim();
+  if (!text || text.length > 200) return null;
+  // "…then change it to X": the item, renamed where it is.
+  const rename = after ? /^(?:change|rename|edit)\s+(?:it|that|the\s+\w+)\s+to\s+["“'‘]?(.+?)["”'’]?$/i.exec(after.trim()) : null;
+  if (after && !rename) return null;
+  const fields = marks.filter((k) => k.kind === 'control' && TEXT_ROLES.has(k.role) && k.takesText === true && !/address/i.test(k.name)
+    && (/\b(?:new|add)\b|what needs to be done/i.test(k.name) || wordsOf(k.name).some((w) => stem(w) === stem(norm(thing).split(' ').pop() ?? ''))));
+  if (fields.length !== 1) return null;
+  const field = fields[0];
+  const then = [{ action: 'key', keys: ['enter'], why: `Adding ${text}` }];
+  if (rename) {
+    /* Editing a list item is a double-click on its words, all of them
+       chosen, the new ones, Enter — TodoMVC's own way, and most lists'.
+       The item is found again by its words once it exists, nearest the
+       field it went in from. */
+    const [x, y, w, h] = field.rect;
+    const newName = rename[1].trim();
+    then.push(
+      { action: 'double_click', markRef: { kind: 'text', role: 'Text', name: text, rect: [x, y + h, w, h] }, why: `Opening ${text} to edit it` },
+      { action: 'key', keys: ['ctrl', 'a'], why: 'Choosing all of its words' },
+      { action: 'type', text: newName, why: `Typing ${newName}` },
+      { action: 'key', keys: ['enter'], why: `Saving it as ${newName}` },
+    );
+    return { action: 'type', mark: field.n, text, name: field.name, then, why: `Typing ${text} into ${field.name}`, check: { shows: newName } };
+  }
+  return {
+    action: 'type', mark: field.n, text, name: field.name, then,
+    why: `Typing ${text} into ${field.name}`,
+    check: { shows: text },
+  };
+}
+
+/* --- hovering ------------------------------------------------------------------ */
+
+const ORDINALS = { first: 0, '1st': 0, second: 1, '2nd': 1, third: 2, '3rd': 2, fourth: 3, '4th': 3, fifth: 4, '5th': 4, last: -1 };
+
+/**
+ * "hover over the first picture and open its View profile link". What a
+ * hover shows is not on the page until the pointer is there, so the plan is
+ * the hover, then the link by its name — found in the read taken after the
+ * hover, the one nearest the picture. Pictures are counted in reading order.
+ * @returns {{action:'move', mark:number, then:object[], why:string}|null}
+ */
+export function planHover(task, marks = []) {
+  const m = /^hover\s+(?:over|on)?\s*(?:the\s+)?(first|second|third|fourth|fifth|last|1st|2nd|3rd|4th|5th)\s+(?:picture|image|photo|avatar|card|tile)\s+(?:and|then|,)\s*(?:then\s+)?(?:open|click|follow)\s+(?:its|the)\s+["“'‘]?(.+?)["”'’]?\s+(?:link|button)$/i.exec(withoutPlace(task));
+  if (!m) return null;
+  const pictures = marks.filter((k) => k.kind === 'control' && k.role === 'Image' && k.rect[2] >= 40 && k.rect[3] >= 40)
+    .sort((a, b) => (Math.abs(a.rect[1] - b.rect[1]) > 20 ? a.rect[1] - b.rect[1] : a.rect[0] - b.rect[0]));
+  if (pictures.length < 2) return null;
+  const at = ORDINALS[m[1].toLowerCase()];
+  const picture = at < 0 ? pictures[pictures.length - 1] : pictures[at];
+  if (!picture) return null;
+  const name = m[2].trim();
+  return {
+    action: 'move', mark: picture.n, name: picture.name, why: `Hovering over the ${m[1].toLowerCase()} picture`,
+    then: [{ action: 'click', markRef: { kind: 'control', role: 'Hyperlink', name, rect: picture.rect }, why: `Opening ${name}` }],
+  };
 }
 
 /* --- drag ------------------------------------------------------------------ */
 
-const DRAG = /^(?:drag|move|put)\s+(.+?)\s+(?:to|into|onto|in to|over to|under)\s+(.+)$/i;
+const DRAG = /^(?:drag|move|put)\s+(.+?)\s+(?:to|into|onto|on to|in to|over to|over|under)\s+(.+)$/i;
 const TOP = /^(?:the\s+)?(?:very\s+)?(top|start|beginning|front|first place|bottom|end|last place)\b(?:\s+of\s+(.+))?$/i;
 
 const within = (outer, r) => r[0] >= outer[0] - 2 && r[1] >= outer[1] - 2
@@ -190,9 +466,16 @@ const within = (outer, r) => r[0] >= outer[0] - 2 && r[1] >= outer[1] - 2
 /** The thing named: its quoted name if it has one, else the words left. */
 function findThing(phrase, marks, kinds) {
   const quoted = /["“'‘]([^"”'’]{1,80})["”'’]/.exec(phrase)?.[1];
-  const want = norm(quoted ?? phrase.replace(/^(?:the\s+)?(?:card|item|row|file|task|entry|shape)\s+/i, ''));
-  if (!want) return null;
-  const exact = marks.filter((k) => kinds.includes(k.kind) && k.name && norm(k.name) === want);
+  /* "box A", "the A box", "card Write report": the kind of thing is not its
+     name. the-internet's boxes are called "A" and "B" and nothing else. */
+  const raw = String(quoted ?? phrase.replace(/^(?:the\s+)?(?:card|item|row|file|task|entry|shape|box|tile|square|block)\s+/i, '')
+    .replace(/\s+(?:card|item|box|tile|square|block)$/i, '')).trim().toLowerCase();
+  const want = norm(raw);
+  // A name of one letter ("A") is all a name can be; norm() drops such words as filler.
+  const single = !want && /^[a-z0-9]$/.test(raw) ? raw : null;
+  if (!want && !single) return null;
+  const exact = marks.filter((k) => kinds.includes(k.kind) && k.name
+    && (single ? String(k.name).trim().toLowerCase() === single : norm(k.name) === want));
   if (exact.length) {
     // Text and control both reporting the same card is one thing: prefer the control.
     return exact.sort((a, b) => (a.kind === 'control' ? -1 : 1) - (b.kind === 'control' ? -1 : 1))[0];
@@ -234,7 +517,15 @@ export function planDrag(task, marks = []) {
   const want = norm(bare.replace(/["“”'‘’]/g, ''));
   if (!want) return null;
   const places = marks.filter((k) => k.kind === 'place' && norm(k.name) === want);
-  if (places.length !== 1) return null;
+  if (places.length !== 1) {
+    /* Onto another thing, not into a place: "drag box A onto box B". What
+       happens there is the page's to decide — swap, reorder, nest — so the
+       check is only that the thing is now where the other one was. */
+    const target = places.length ? null : findThing(placePhrase, marks.filter((k) => k !== item), ['control', 'text']);
+    if (!target) return null;
+    return { action: 'drag', mark: item.n, to_mark: target.n, why: `Dragging ${item.name} onto ${target.name}`,
+      check: { item: { kind: item.kind, role: item.role, name: item.name }, onto: { name: target.name, rect: target.rect } } };
+  }
   const place = places[0];
   if (within(place.rect, item.rect)) return { done: true };
   return { action: 'drag', mark: item.n, to_mark: place.n, why: `Dragging ${item.name} into ${place.name}`,
@@ -320,9 +611,35 @@ export function planShapeClick(task, marks = []) {
  * @returns {boolean|null}  null when it cannot tell
  */
 export function dragLanded(want, marks = []) {
+  /* Something added: it is on the page now, as a line of text or a control. */
+  if (want?.shows) return marks.some((k) => k.name && norm(k.name) === norm(want.shows)) ? true : null;
+  /* A column sorted A to Z: its cells, top to bottom, under the header,
+     until the table ends (a gap bigger than a row). */
+  if (want?.column) {
+    const { x, w, below } = want.column;
+    const cells = marks.filter((k) => k.kind === 'control' && k.name && k.rect[1] >= below - 2
+      && k.rect[0] < x + w - 4 && k.rect[0] + k.rect[2] > x + 4 && norm(k.name) !== norm(want.column.name))
+      .sort((a, b) => a.rect[1] - b.rect[1]);
+    const run = [];
+    for (const c of cells) {
+      if (run.length && c.rect[1] - (run[run.length - 1].rect[1] + run[run.length - 1].rect[3]) > Math.max(24, run[0].rect[3])) break;
+      run.push(c);
+    }
+    if (run.length < 2) return null;
+    const names = run.map((c) => c.name);
+    const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    return names.every((n, i) => n === sorted[i]);
+  }
   if (!want?.item) return null;
   const item = marks.find((k) => k.kind === want.item.kind && k.role === want.item.role && k.name === want.item.name);
   if (!item) return null;
+  if (want.onto) {
+    // Where the other thing was: a swap puts it exactly there, a reorder near.
+    const [ox, oy, ow, oh] = want.onto.rect;
+    const cx = item.rect[0] + (item.rect[2] / 2);
+    const cy = item.rect[1] + (item.rect[3] / 2);
+    return cx >= ox - 6 && cx <= ox + ow + 6 && cy >= oy - 6 && cy <= oy + oh + 6;
+  }
   if (want.place) {
     const place = marks.find((k) => k.kind === 'place' && k.name === want.place.name);
     if (!place) return null;

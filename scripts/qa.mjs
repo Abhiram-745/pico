@@ -107,7 +107,7 @@ if (!running) {
   spawn(browser, [
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${DEBUG_PORT}`,
-    '--no-first-run', '--no-default-browser-check', '--disable-features=Translate',
+    '--no-first-run', '--no-default-browser-check', '--disable-features=Translate', '--hide-crash-restore-bubble',
     '--start-maximized', `http://127.0.0.1:${PORT}/form.html`,
   ], { detached: true, stdio: 'ignore' }).unref();
 }

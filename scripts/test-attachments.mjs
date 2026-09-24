@@ -9,8 +9,9 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import {
-  validateAttachments, attachmentEcho, prepareSubmitTask, MAX_ATTACHMENTS, MAX_SUBMIT_TEXT_LENGTH,
+  validateAttachments, attachmentEcho, prepareSubmitTask, MAX_ATTACHMENTS, MAX_SUBMIT_TEXT_LENGTH, MAX_IMAGE_ATTACHMENT_BYTES,
 } from '../bridge/attachments.mjs';
+import { decodeImageDataUrl, MAX_CLIPBOARD_IMAGE_BYTES } from '../bridge/clipboard-image.mjs';
 import { WebSocketConnection } from '../bridge/ws.mjs';
 
 // Every refusal below is logged once, on purpose; not while testing.
@@ -44,6 +45,22 @@ assert.equal(prepareSubmitTask({ text: '   ' }), null, 'nothing said, nothing at
 assert.equal(prepareSubmitTask({ text: '', attachments: [image] }).attachments.length, 1, 'a picture alone is a message');
 assert.equal(prepareSubmitTask({ text: 'x'.repeat(MAX_SUBMIT_TEXT_LENGTH + 50) }).text.length, MAX_SUBMIT_TEXT_LENGTH, 'long, but capped');
 assert.equal(prepareSubmitTask({ text: 'hi', mode: 'nonsense' }).mode, 'auto');
+
+/* --- a picture let in is a picture that can be pasted ----------------------
+   A picture is checked on the way in (above), by the shape of its data URL,
+   and again on the way out to the clipboard (bridge/clipboard-image.mjs),
+   by its bytes, since that is where a wrong one would do harm. The two have
+   to agree about every real picture, and the way in must never let one
+   through that is too big to paste. */
+{
+  const real = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AARgAGAQJ/3ZBTTwAAAABJRU5ErkJggg==';
+  const [letIn] = validateAttachments([{ ...image, dataUrl: real }]);
+  assert.equal(letIn?.dataUrl, real, 'a real PNG is let in whole');
+  assert.equal(decodeImageDataUrl(letIn.dataUrl)?.type, 'png', 'and can be put on the clipboard as one');
+  assert.ok(MAX_IMAGE_ATTACHMENT_BYTES <= MAX_CLIPBOARD_IMAGE_BYTES, 'nothing let in is too big to paste');
+  assert.equal(validateAttachments([image]).length, 1, 'three hundred bytes of 7s pass the shape check on the way in…');
+  assert.equal(decodeImageDataUrl(image.dataUrl), null, '…and are never put on the clipboard as a PNG');
+}
 
 /* --- the socket: a big message, arriving in pieces ------------------------ */
 function frame(body, { fin = true, op = 1 } = {}) {

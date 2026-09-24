@@ -55,7 +55,7 @@ const DESTRUCTIVE = {
 const PURCHASE = {
   categories: 'Payment',
   level: 'High',
-  test: /\b(?:buy|buying|purchase|pay|paying|checkout|check\s+out|place\s+(?:the\s+)?order|confirm\s+(?:the\s+)?(?:order|booking|payment)|subscribe|renew)\b/i,
+  test: /\b(?:buy|buying|purchase|pay|paying|checkout|check\s+out|place\s+(?:the\s+|your\s+|my\s+|this\s+)?order|confirm\s+(?:the\s+|your\s+|my\s+)?(?:order|booking|payment)|subscribe|renew)\b/i,
   reason: 'This spends money.',
 };
 
@@ -75,6 +75,17 @@ const HUMAN_ONLY = {
 };
 
 const RULES = [EXTERNAL, DESTRUCTIVE, PURCHASE, SYSTEM];
+
+/**
+ * A control that only says yes to whatever is on screen. It means what its
+ * window means: "Yes" in a dialog called "Delete file" deletes, "Continue"
+ * on a checkout page pays. A control that names its own act — "Add
+ * Element", "Search", "Place your order" — means that, whatever the page is
+ * called. Weighing the page's title against every click held each one on
+ * the-internet's "Add/Remove Elements" page for a card, and every keystroke
+ * on a recipe titled "How to remove stains".
+ */
+const SAYS_YES = /^(?:yes|y|ok|okay|sure|confirm|continue|proceed|submit|done|next|accept|agree|i agree|apply|save|finish|go|allow|got it|complete)\b/i;
 
 export const ALLOW = {
   level: 'None',
@@ -97,7 +108,14 @@ export function assess(action = {}, windowTitle = '') {
   // but not towards handing over: a "Sign in" button can be pressed by
   // anyone, it is the password field that is the person's alone.
   const said = `${action.why ?? ''} ${action.text ?? ''} ${action.paste_text ?? ''} ${(action.keys ?? []).join(' ')}`;
-  const context = `${said} ${action.target ?? ''} ${windowTitle}`;
+  /* Where it happens and what it does are two questions. Where is always
+     the window too: "Send" is a message only in somewhere a message can be
+     sent from. What takes the window's title only for a control with no
+     name of its own, or one that just says yes (SAYS_YES). */
+  const named = String(action.markedAs?.name ?? action.observedTarget?.name ?? '').trim();
+  const titleSaysWhat = !named || SAYS_YES.test(named);
+  const where = `${said} ${action.target ?? ''} ${windowTitle}`;
+  const context = `${said} ${action.target ?? ''}${titleSaysWhat ? ` ${windowTitle}` : ''}`;
 
   // Credentials are never approvable — they are handed back, every time.
   // Checked against what the agent means to do, not the window title alone:
@@ -122,7 +140,7 @@ export function assess(action = {}, windowTitle = '') {
 
   for (const rule of RULES) {
     // A rule with `needs` applies only where that context is present too.
-    if (rule.needs && !rule.needs.test(context)) continue;
+    if (rule.needs && !rule.needs.test(where)) continue;
     if (rule.test.test(context)) {
       return {
         decision: 'RequireConfirmation',
@@ -155,7 +173,8 @@ export function describe(action = {}) {
     case 'select_option': return 'Choose a dropdown option';
     case 'set_value': return 'Set a slider';
     case 'copy': return 'Copy the selection';
-    case 'paste': return 'Paste what was copied';   // never the text itself
+    // Never the text itself; a picture by its name, which says nothing it should not.
+    case 'paste': return action.paste_image ? `Paste the picture${action.paste_image_name ? ` ${action.paste_image_name}` : ''}` : 'Paste what was copied';
     case 'scroll': return 'Scroll the view';
     case 'move': return 'Move the pointer';
     case 'wait': return 'Wait for the app to respond';

@@ -59,10 +59,11 @@ assert.deepEqual(ret.map((s) => [s.action, s.el.name, Boolean(s.needsValue)]), [
 // filled; and neither is mistaken for the other.
 const webForm = [
   { type: 'Edit', name: 'Address and search bar', value: 'selenium.dev/selenium/web/web-form.html', rect: [200, 50, 900, 40] },
-  { type: 'Edit', name: 'Text input', value: '', readOnly: false, rect: [100, 200, 400, 36] },
-  { type: 'Edit', name: 'Textarea', value: '', readOnly: false, rect: [100, 320, 400, 80] },
-  { type: 'ComboBox', name: 'Dropdown (select)', value: 'Open this select menu', readOnly: true, rect: [600, 200, 400, 36] },
-  { type: 'ComboBox', name: 'Dropdown (datalist)', value: '', readOnly: false, rect: [600, 260, 400, 36] },
+  { type: 'Edit', name: 'Text input', value: '', readOnly: false, takesText: true, rect: [100, 200, 400, 36] },
+  { type: 'Edit', name: 'Textarea', value: '', readOnly: false, takesText: true, rect: [100, 320, 400, 80] },
+  // Both boxes read as not read-only in Chrome (measured); only the datalist takes typed text.
+  { type: 'ComboBox', name: 'Dropdown (select)', value: 'Open this select menu', readOnly: false, rect: [600, 200, 400, 36] },
+  { type: 'ComboBox', name: 'Dropdown (datalist)', value: '', readOnly: false, takesText: true, rect: [600, 260, 400, 36] },
   { type: 'Button', name: 'Submit', rect: [100, 700, 100, 36] },
 ];
 const steps = (t) => planForm(t, webForm)?.map((s) => [s.action, s.el.name, s.text ?? null]) ?? null;

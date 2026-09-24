@@ -17,6 +17,11 @@
 
      one message   "send the attached prompt to Claude" — a list of one.
 
+     one picture   "paste this picture into ChatGPT and ask what's in it" —
+                   a list of one whose message starts with the picture,
+                   pasted as a picture (clipboard-image.mjs), then the words
+                   to go with it, sent once the app has taken the picture in.
+
    Anything else about a list — "search each of these names on Wikipedia" —
    is still a list here, but each item is done by the general loop, handed
    that one item and nothing else.
@@ -58,6 +63,19 @@ export async function runJob({ task, attachments = [], computer, llm, maxTurns =
      there is no accessibility to find the box by. A list is not: sent the
      loop's way it is lost within two items, so that says so instead. */
   if (shape.single && shape.how === 'chat' && !computer.sense) return ordinary();
+  if (shape.picture) {
+    /* A desktop that cannot put a picture on the clipboard cannot send one
+       this way either; the loop says so in its own words. */
+    if (typeof computer.writeClipboardImage !== 'function') return ordinary();
+    /* The person said something to go with the picture, not in quotes: a
+       fast model lifts it out. If it cannot, the loop is handed the whole
+       instruction — rather than the picture going without its question. */
+    if (shape.words === 'ask') {
+      const words = await messageIn(task, llm, { picture: true });
+      if (words === null) return ordinary();
+      shape.items[0].text = words;
+    }
+  }
   return runList({ shape, task, attachments: list, computer, llm, maxTurns, hooks, context });
 }
 
@@ -84,27 +102,7 @@ export async function planPrompt(task, llm) {
   const target = namedTarget(t);
   if (!target || !answering(target) || !sendsMessage(t) || REPORT_BACK.test(t)) return null;
 
-  const quoted = t.match(/["“]([^"”]{2,})["”]/);
-  let message = quoted?.[1]?.trim() || '';
-  if (!message && llm?.chat) {
-    try {
-      const reply = await llm.chat([
-        {
-          role: 'system',
-          content: [
-            'Someone asked a desktop assistant to send a message to an AI app such as ChatGPT, Claude or Lovable.',
-            'Reply with JSON only: {"message": "..."} — the exact words to type into that app\'s message box and send,',
-            'as the person would send them to the app, in their own voice. Keep every specific they gave; fix obvious',
-            'typos; add nothing. Leave out anything addressed to the assistant rather than the app: which app, opening',
-            'it, going to a project, waiting. If they are not asking for a message to be sent, reply {"message": ""}.',
-          ].join('\n'),
-        },
-        { role: 'user', content: t },
-      ], { model: llm.tiers?.text || llm.tiers?.fast, maxTokens: 500, signal: AbortSignal.timeout(7000) });
-      const json = String(reply).match(/\{[\s\S]*\}/)?.[0];
-      message = String(JSON.parse(json ?? '{}').message ?? '').trim();
-    } catch { message = ''; }
-  }
+  const message = quotedIn(t) || (await messageIn(t, llm)) || '';
   if (!message || message.length < 2) return null;
   const only = { n: 1, title: 'your message', text: message };
   return {
@@ -115,6 +113,63 @@ export async function planPrompt(task, llm) {
   };
 }
 
+/** Words the person put in quotes: the message itself, exactly. */
+const quotedIn = (t) => String(t ?? '').match(/["“]([^"”]{2,})["”]/)?.[1]?.trim() || '';
+
+/* What the fast model is told when it lifts a message out of an instruction —
+   and, when a picture goes in first, what the words are for then. */
+const MESSAGE_SYSTEM = [
+  'Someone asked a desktop assistant to send a message to an AI app such as ChatGPT, Claude or Lovable.',
+  'Reply with JSON only: {"message": "..."} — the exact words to type into that app\'s message box and send,',
+  'as the person would send them to the app, in their own voice. Keep every specific they gave; fix obvious',
+  'typos; add nothing. Leave out anything addressed to the assistant rather than the app: which app, opening',
+  'it, going to a project, waiting. If they are not asking for a message to be sent, reply {"message": ""}.',
+];
+const WITH_PICTURE = [
+  'They attached a picture, and it is pasted into the message box first: the words are only what goes with it.',
+  '"Paste this picture into ChatGPT and ask what\'s in it" is {"message": "What\'s in this picture?"}. Never',
+  'describe the picture or mention attaching it. If they said nothing to go with it, reply {"message": ""}.',
+];
+
+/**
+ * The message in an instruction, lifted out by a fast model in the person's
+ * own voice: '' when they asked for nothing to be said, null when it could
+ * not be asked or its answer made no sense — which is not the same as
+ * nothing to say, and the caller does not treat it as that.
+ */
+async function messageIn(task, llm, { picture = false } = {}) {
+  if (!llm?.chat) return null;
+  try {
+    const reply = await llm.chat([
+      { role: 'system', content: [...MESSAGE_SYSTEM, ...(picture ? WITH_PICTURE : [])].join('\n') },
+      { role: 'user', content: String(task ?? '') },
+    ], { model: llm.tiers?.text || llm.tiers?.fast, maxTokens: 500, signal: AbortSignal.timeout(7000) });
+    const json = String(reply ?? '').match(/\{[\s\S]*\}/)?.[0];
+    if (!json) return null;
+    const said = JSON.parse(json)?.message;
+    return typeof said === 'string' ? said.trim() : null;
+  } catch { return null; }
+}
+
+/* The words of an instruction that only say a picture is to be sent, and
+   where: "send the attached image to ChatGPT", "paste this picture into the
+   chat". Anything left once these, the app's name and the picture's own
+   name are taken out is something the person wants said with the picture,
+   and only then is a model asked for the words. Erring the other way would
+   send the picture without the question it was sent for; erring this way
+   costs one quick question to a model, which answers "" when there is
+   nothing to say. */
+const JUST_SENDING = new Set(('please kindly just now then here also and for me can could would will you go '
+  + 'paste send put drop post share upload attach attached submit give enter this that the my a an it its '
+  + 'picture image photo screenshot screen shot pic file one in into to on onto inside over chat window app '
+  + 'box message composer tab browser website site').split(' '));
+
+function saysMoreThanSend(task, { target = '', name = '' } = {}) {
+  const own = new Set(String(name).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  return String(task ?? '').toLowerCase().split(/[^a-z0-9']+/).filter(Boolean)
+    .some((w) => !JUST_SENDING.has(w) && !own.has(w) && !(target && w.length >= 2 && target.includes(w.replace(/'/g, ''))));
+}
+
 /**
  * The shape of a job, or null for an ordinary one.
  *   { instruction, all, items, range, how: 'chat'|'task', wait, target }
@@ -123,16 +178,52 @@ export function planJob(task, attachments = []) {
   const job = parseRepeat(task, attachments);
   if (job) return { ...job, ...perItem(job.instruction), target: namedTarget(job.instruction) };
 
+  const t = String(task ?? '');
+  const texts = attachments.filter((a) => a?.kind === 'text' && String(a.text ?? '').trim());
+  const pictures = attachments.filter((a) => a?.kind === 'image' && typeof a.dataUrl === 'string' && a.dataUrl.startsWith('data:image/'));
+
   /* A single attached text, to be sent in a chat app: a list of one. The
      general loop could do it, but it would have to find the box, paste, send
      and judge it all from pictures — and this is the same three moves the
-     list path already does exactly. */
-  const texts = attachments.filter((a) => a?.kind === 'text' && String(a.text ?? '').trim());
-  if (texts.length === 1 && sendsMessage(task) && !REPORT_BACK.test(String(task ?? ''))) {
-    const how = perItem(task);
+     list path already does exactly. Not with a picture attached as well:
+     sent this way the picture was simply left behind. That is the next
+     shape's, below. */
+  if (texts.length === 1 && !pictures.length && sendsMessage(t) && !REPORT_BACK.test(t)) {
+    const how = perItem(t);
     if (how.how === 'chat') {
       const only = { n: 1, title: String(texts[0].name || 'the attachment'), text: String(texts[0].text).trim() };
-      return { instruction: String(task ?? ''), all: [only], items: [only], range: {}, shape: 'attachment', from: 'attachment', ...how, target: namedTarget(task), single: true };
+      return { instruction: t, all: [only], items: [only], range: {}, shape: 'attachment', from: 'attachment', ...how, target: namedTarget(t), single: true };
+    }
+  }
+
+  /* One picture, for an assistant: "paste this picture into ChatGPT and ask
+     what's in it", "send the attached image to Claude". The same exact
+     route as a text — the box found by Windows, the picture pasted as a
+     picture, the words to go with it pasted after it, sent only once the
+     app has finished taking the picture in (chatbox.mjs) — rather than the
+     loop finding all of that from screenshots.
+
+     The words: an attached text if there is one (the prompt the picture
+     goes with), else what the person quoted, else — only if the
+     instruction says more than where the picture goes — what a fast model
+     lifts out of it; runJob asks, since this has to answer at once. None at
+     all is a picture sent on its own.
+
+     Only an assistant, or "the chat" in front. Sending a picture to a
+     person means opening the right conversation first, which is the loop's
+     job, as it is for a message (planPrompt). */
+  if (pictures.length === 1 && texts.length <= 1 && sendsMessage(t) && !REPORT_BACK.test(t)) {
+    const how = perItem(t);
+    const target = namedTarget(t);
+    if (how.how === 'chat' && (!target || answering(target))) {
+      const name = String(pictures[0].name || 'the picture');
+      const given = texts.length ? String(texts[0].text).trim() : quotedIn(t);
+      const only = { n: 1, title: name, text: given, picture: pictures[0].dataUrl };
+      return {
+        instruction: t, all: [only], items: [only], range: {}, shape: 'picture', from: 'attachment',
+        ...how, target, single: true, picture: true,
+        words: given ? 'given' : (saysMoreThanSend(t, { target, name }) ? 'ask' : 'none'),
+      };
     }
   }
   return null;
@@ -277,7 +368,7 @@ async function runList({ shape, task, attachments, computer, llm, maxTurns, hook
       onAction({ type: 'Keypress', detail: `Pasting ${noun} ${it.n}` });
 
       const result = await send({
-        computer, sense, hwnd: target.hwnd, text: it.text, toMouse, gate,
+        computer, sense, hwnd: target.hwnd, text: it.text, picture: it.picture ?? null, toMouse, gate,
         onLive: (t) => say(`${cap(noun)} ${it.n} · ${t.toLowerCase()}`),
         confirmDraft: i === 0 ? (draft) => confirmDraft({ onQuestion, onPhase, draft, target }) : null,
       });
@@ -528,6 +619,17 @@ function summaryFor({ shape, noun, sent, items, failure, target, skipped = [], e
   const where = target?.title ? ` in ${String(target.title).replace(/\s+-\s+(?:Google Chrome|Microsoft Edge|Mozilla Firefox)$/i, '')}` : '';
   const waited = shape.wait ? ' and waited for each to finish' : '';
   if (!failure && !sent.length && skipped.length) return `Nothing sent: you skipped ${skipped.length === 1 ? 'it' : `all ${skipped.length}`}.`;
+  /* A picture is said to have gone as a picture, with the words that went
+     with it: those may have been lifted out of the instruction by a model,
+     so the person is shown exactly what was sent in their name. */
+  if (shape.picture && !failure && sent.length) {
+    const words = String(sent[0].text ?? '').replace(/\s+/g, ' ').trim();
+    const withWords = words ? ` with "${words.length > 80 ? `${words.slice(0, 79)}…` : words}"` : '';
+    return `Sent the picture${withWords}${where}${shape.wait ? ' and waited for the answer' : ''}.`;
+  }
+  if (shape.picture && failure && !failure.declined) {
+    return failure.sentOk ? `The picture was sent, but ${failure.why}.` : `The picture did not go: ${failure.why}.`;
+  }
   if (shape.single && !failure) return `Sent it${where}${shape.wait ? ' and waited for the answer' : ''}.`;
   if (!failure && skipped.length) {
     const why = endedEarly ? `stopped before ${rangeWords(skipped)}, as you asked` : `skipped ${rangeWords(skipped)}, as you asked`;

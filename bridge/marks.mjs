@@ -63,8 +63,8 @@ export function buildMarks(seen, { within = null, max = MAX_MARKS } = {}) {
     const m = { n: marks.length + 1, kind, role: el.type || kind, name: name.slice(0, 80), rect: r.map(Math.round) };
     if (typeof el.value === 'string' && el.value) m.value = el.value.slice(0, 80);
     if (typeof el.checked === 'boolean') m.checked = el.checked;
-    // A box with suggestions is typed into; a select is chosen from (quickplan.mjs).
-    if (typeof el.readOnly === 'boolean') m.readOnly = el.readOnly;
+    // A box with suggestions takes typed text; a select does not (quickplan.mjs).
+    if (el.takesText === true) m.takesText = true;
     if (Array.isArray(el.range) && el.range.length === 3 && el.range.every(Number.isFinite)) m.range = el.range;
     marks.push(m);
   };
@@ -101,7 +101,49 @@ export function buildMarks(seen, { within = null, max = MAX_MARKS } = {}) {
     for (const el of usable.filter((e) => !PLACE_TYPES.has(e.type) && !inDoc(e))) add('control', el);
     for (const el of texts.filter((e) => !inDoc(e))) add('text', el);
   }
-  return marks;
+  return withLabels(marks);
+}
+
+/* Form controls a page never labelled, and so Windows names nothing. */
+const LABELLED_BESIDE = new Set(['CheckBox', 'RadioButton']);
+const LABELLED_ABOVE = new Set(['Edit', 'Spinner', 'ComboBox', 'Slider', 'SearchBox']);
+
+/**
+ * The words a page put next to a control instead of in a label for it,
+ * taken as the control's name. the-internet's checkboxes are "checkbox 1"
+ * and "checkbox 2" only in the text just right of each box, and its number
+ * box is "Number" only in the line just above it — Windows names all three
+ * nothing, and a task that says "tick checkbox 1" had nothing to match. A
+ * box takes the text beside it on its row; a field the short line just
+ * above it, or beside it on the left. Short, because a sentence above a
+ * field is prose about it, not its name. Marked `inferred`, and the same
+ * on every read, so a control planned by this name is found by it again.
+ */
+export function withLabels(marks = []) {
+  const texts = marks.filter((k) => k.kind === 'text' && k.name && k.name.length <= 40 && k.name.split(/\s+/).length <= 5);
+  const middle = (r) => r[1] + (r[3] / 2);
+  return marks.map((k) => {
+    if (k.kind !== 'control' || k.name || !Array.isArray(k.rect)) return k;
+    const [x, y, w, h] = k.rect;
+    let best = null;
+    if (LABELLED_BESIDE.has(k.role)) {
+      for (const t of texts) {
+        if (Math.abs(middle(t.rect) - middle(k.rect)) > Math.max(h, t.rect[3]) * 0.6) continue;
+        const gap = t.rect[0] >= x + w - 4 ? t.rect[0] - (x + w) : x - (t.rect[0] + t.rect[2]);
+        if (gap >= -4 && gap <= 40 && (!best || gap < best.gap)) best = { t, gap };
+      }
+    } else if (LABELLED_ABOVE.has(k.role)) {
+      for (const t of texts) {
+        const above = y - (t.rect[1] + t.rect[3]);
+        const overlaps = t.rect[0] < x + w && t.rect[0] + t.rect[2] > x && Math.abs(t.rect[0] - x) <= 24;
+        const left = x - (t.rect[0] + t.rect[2]);
+        const gap = above >= -2 && above <= 48 && overlaps ? above
+          : (left >= 0 && left <= 40 && Math.abs(middle(t.rect) - middle(k.rect)) <= h * 0.6 ? left : null);
+        if (gap !== null && (!best || gap < best.gap)) best = { t, gap };
+      }
+    }
+    return best ? { ...k, name: best.t.name, inferred: true } : k;
+  });
 }
 
 /** The list the model reads beside the picture, one mark per line. */

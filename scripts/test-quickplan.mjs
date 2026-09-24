@@ -1,6 +1,7 @@
 /* One-move jobs planned with no model: quickplan.mjs. */
 import assert from 'node:assert/strict';
-import { planClick, planDrag, planShapeClick, planSearch, planChoose, matchShape, colourName, kindOf, dragLanded, valueOnScreen } from '../bridge/quickplan.mjs';
+import { planClick, planDrag, planShapeClick, planSearch, planChoose, planKey, planTick, planField, planAdd, planSort, planLink, planHover, matchShape, colourName, kindOf, dragLanded, valueOnScreen } from '../bridge/quickplan.mjs';
+import { buildMarks } from '../bridge/marks.mjs';
 
 let n = 1;
 const mk = (kind, role, name, rect) => ({ n: n++, kind, role, name, rect });
@@ -67,7 +68,7 @@ assert.equal(planChoose('choose a file from the list', lonely), null);
 assert.equal(planChoose('choose Option 2 from the list', lonely), null);
 assert.equal(planChoose('choose Option 2 in the dropdown', [...lonely, mk('control', 'ComboBox', 'Sort by', [0, 0, 100, 20])]), null);
 n = 1;
-const pair = [mk('control', 'ComboBox', 'Dropdown (select)', [0, 0, 200, 24]), { ...mk('control', 'ComboBox', 'Dropdown (datalist)', [0, 40, 200, 24]), readOnly: false }];
+const pair = [mk('control', 'ComboBox', 'Dropdown (select)', [0, 0, 200, 24]), { ...mk('control', 'ComboBox', 'Dropdown (datalist)', [0, 40, 200, 24]), takesText: true }];
 assert.deepEqual([planChoose('choose Two in the Dropdown (select)', pair)?.action, planChoose('choose Two in the Dropdown (select)', pair)?.mark], ['select_option', 1]);
 // A box with suggestions is typed into: Enter there submits the form.
 const typed = planChoose('pick Seattle from the Dropdown datalist', pair);
@@ -137,5 +138,132 @@ assert.equal(valueOnScreen(returnTask, receipt), 'NH-48213-KQ7');
 assert.equal(valueOnScreen(returnTask, ['Order number: NH-1', 'Order number: NH-2']), null);   // two: ask instead
 assert.equal(valueOnScreen(returnTask, ['Order number', 'Northgate Hardware']), null);          // not a code
 assert.equal(valueOnScreen('fill in project name Halo QA', receipt), null);
+
+/* --- the real pages ----------------------------------------------------------
+   What Windows reported for each real-site QA page (scripts/qa-real.mjs),
+   read from Chrome on 2026-09-24 and cut down to what these plans use. */
+const REAL = {"checkbox":{"window":[0,0,2256,1432],"elements":[{"type":"Document","name":"The Internet","rect":[0,131,2256,1302],"value":"https://the-internet.herokuapp.com/check","id":"RootWebArea"},{"type":"CheckBox","name":"","rect":[400,264,20,21],"checked":false},{"type":"CheckBox","name":"","rect":[400,308,20,21],"checked":true}],"texts":[{"name":"Checkboxes","rect":[400,187,1456,57]},{"name":"checkbox 1","rect":[420,262,129,28]},{"name":"checkbox 2","rect":[420,306,129,28]}]},"number":{"window":[0,0,2256,1432],"elements":[{"type":"Edit","name":"Address and search bar","rect":[237,77,1826,37],"value":"the-internet.herokuapp.com/inputs","takesText":true,"id":"view_1012"},{"type":"Document","name":"The Internet","rect":[0,131,2256,1302],"value":"https://the-internet.herokuapp.com/input","id":"RootWebArea"},{"type":"Spinner","name":"","rect":[775,332,706,49],"takesText":true}],"texts":[{"name":"Inputs","rect":[775,187,706,57]},{"name":"Number","rect":[775,269,86,28]}]},"keys":{"window":[0,0,2256,1432],"elements":[{"type":"Edit","name":"Address and search bar","rect":[237,77,1826,37],"value":"the-internet.herokuapp.com/key_presses","takesText":true,"id":"view_1012"},{"type":"Document","name":"The Internet","rect":[0,131,2256,1302],"value":"https://the-internet.herokuapp.com/key_p","id":"RootWebArea"},{"type":"Edit","name":"","rect":[400,332,1456,49],"takesText":true,"id":"target"}],"texts":[{"name":"Key Presses","rect":[400,187,1456,57]}]},"github":{"window":[0,0,2256,1432],"elements":[{"type":"Edit","name":"Address and search bar","rect":[237,77,1778,37],"value":"github.com/Abhiram-745/pico","takesText":true,"id":"view_1012"},{"type":"Document","name":"GitHub - Abhiram-745/pico: Personal Pico desktop agent downloads · GitHub","rect":[0,131,2256,1302],"value":"https://github.com/Abhiram-745/pico","id":"RootWebArea"},{"type":"Hyperlink","name":"Releases","rect":[1620,931,93,37],"value":"https://github.com/Abhiram-745/pico/rele"},{"type":"Hyperlink","name":"+ 1 release","rect":[1620,1067,89,24],"value":"https://github.com/Abhiram-745/pico/rele"}],"texts":[]},"sort":{"window":[0,0,2256,1432],"elements":[{"type":"Document","name":"The Internet","rect":[0,131,2256,1302],"value":"https://the-internet.herokuapp.com/table","id":"RootWebArea"},{"type":"DataItem","name":"Last Name","rect":[401,505,163,48]},{"type":"DataItem","name":"First Name","rect":[563,505,166,48]},{"type":"DataItem","name":"Smith","rect":[401,553,163,48]},{"type":"DataItem","name":"John","rect":[563,553,166,48]},{"type":"DataItem","name":"Bach","rect":[401,600,163,48]},{"type":"DataItem","name":"Frank","rect":[563,600,166,48]},{"type":"DataItem","name":"Doe","rect":[401,647,163,48]},{"type":"DataItem","name":"Jason","rect":[563,647,166,48]},{"type":"DataItem","name":"Conway","rect":[401,694,163,49]},{"type":"DataItem","name":"Tim","rect":[563,694,166,49]},{"type":"DataItem","name":"Last Name","rect":[401,907,163,49]},{"type":"DataItem","name":"First Name","rect":[563,907,166,49]},{"type":"DataItem","name":"Smith","rect":[401,955,163,48]},{"type":"DataItem","name":"John","rect":[563,955,166,48]},{"type":"DataItem","name":"Bach","rect":[401,1002,163,48]},{"type":"DataItem","name":"Frank","rect":[563,1002,166,48]},{"type":"DataItem","name":"Doe","rect":[401,1049,163,48]},{"type":"DataItem","name":"Jason","rect":[563,1049,166,48]},{"type":"DataItem","name":"Conway","rect":[401,1096,163,49]},{"type":"DataItem","name":"Tim","rect":[563,1096,166,49]}],"texts":[{"name":"Example 1","rect":[400,370,1456,50]},{"name":"Example 2","rect":[400,773,1456,49]}]},"todo":{"window":[0,0,2256,1432],"elements":[{"type":"Edit","name":"Address and search bar","rect":[237,77,1826,37],"value":"todomvc.com/examples/react/dist/","takesText":true,"id":"view_1012"},{"type":"Document","name":"TodoMVC: React","rect":[0,131,2256,1302],"value":"https://todomvc.com/examples/react/dist/","id":"RootWebArea"},{"type":"Edit","name":"New Todo Input","rect":[940,326,826,98],"takesText":true}],"texts":[]},"dnd":{"window":[0,0,2256,1432],"elements":[{"type":"Document","name":"The Internet","rect":[0,131,2256,1302],"value":"https://the-internet.herokuapp.com/drag_","id":"RootWebArea"}],"texts":[{"name":"Drag and Drop","rect":[400,187,556,57]},{"name":"A","rect":[504,265,17,28]},{"name":"B","rect":[827,265,17,28]}]}};
+const marksOf = (id) => buildMarks(REAL[id], { within: REAL[id].window });
+
+// Checkboxes the page never labelled: named by the words beside them.
+{
+  const marks = marksOf('checkbox');
+  const t = planTick('On the Checkboxes page, tick checkbox 1 and leave checkbox 2 as it is.', marks);
+  assert.equal(t?.action, 'click');
+  assert.equal(marks.find((k) => k.n === t.mark)?.name, 'checkbox 1');
+  assert.deepEqual(t.then, [], 'checkbox 2 is left as it is');
+  assert.equal(planTick('untick checkbox 2', marks)?.name, 'checkbox 2');
+  assert.equal(planTick('tick checkbox 2', marks)?.done, true, 'already ticked: nothing to do');
+  assert.equal(planTick('tick checkbox 1 and untick checkbox 2', marks)?.then?.length, 1);
+  assert.equal(planTick('tick checkbox 1 and then submit the form', marks), null, 'something else to do: the loop');
+  assert.equal(planTick('tick checkbox', marks), null, 'two fit equally: not sure');
+}
+
+// One field, by what it holds when it has no name of its own.
+{
+  const marks = marksOf('number');
+  const f = planField('On the Inputs page, type 42 into the number box.', marks);
+  assert.deepEqual([f?.action, f?.text, marks.find((k) => k.n === f?.mark)?.role], ['type', '42', 'Spinner']);
+  assert.equal(planField('type 42 into the Number field', marks)?.mark, f.mark, 'or by the label above it');
+  assert.equal(planField('type 42 into the address box', marks), null, 'never the browser\'s own bar');
+  assert.equal(planField('type 42 into the price box', marks), null);
+}
+
+// A key, and not a button of the same name.
+{
+  assert.deepEqual(planKey('On the Key Presses page, press the K key.', marksOf('keys'))?.keys, ['k']);
+  assert.deepEqual(planKey('hit Escape', [])?.keys, ['escape']);
+  assert.deepEqual(planKey('press Ctrl+Shift+T', [])?.keys, ['ctrl', 'shift', 't']);
+  assert.deepEqual(planKey('press the page down key', [])?.keys, ['pagedown']);
+  assert.equal(planKey('press Delete', [{ n: 1, kind: 'control', role: 'Button', name: 'Delete', rect: [0, 0, 60, 20] }]), null, 'the button, not the key');
+  assert.equal(planKey('press Add Element', []), null);
+  assert.equal(planKey('press the K key and then type hello', []), null);
+}
+
+// A link called exactly that.
+{
+  const marks = marksOf('github');
+  const l = planLink('On the GitHub page for pico, open the Releases page.', marks);
+  assert.equal(marks.find((k) => k.n === l?.mark)?.name, 'Releases', 'not "+ 1 release"');
+  assert.deepEqual(l.check, { title: 'Releases' });
+  n = 1;
+  const nav = [mk('control', 'Hyperlink', 'Virtual File System', [0, 0, 120, 20]), mk('control', 'Hyperlink', 'File system', [0, 30, 90, 20])];
+  assert.equal(planLink('On the Node.js docs index, open the File system page.', nav)?.mark, 2);
+  assert.equal(planLink('open Notepad', nav), null, 'an app, not a link: the opener\'s');
+  assert.equal(planLink('open the Releases page and download the installer', marks), null);
+}
+
+// Sorting the table the task names, checked by reading the column.
+{
+  const marks = marksOf('sort');
+  const s = planSort('On the Data Tables page, sort Example 1 by Last Name, A to Z.', marks);
+  const header = marks.find((k) => k.n === s?.mark);
+  assert.equal(header?.name, 'Last Name');
+  assert.ok(header.rect[1] < 700, 'the header of Example 1, not Example 2');
+  assert.equal(dragLanded(s.check, marks), false, 'as loaded: Smith, Bach, Doe, Conway');
+  const names = ['Bach', 'Conway', 'Doe', 'Smith'];
+  const cells = marks.filter((k) => k.role === 'DataItem' && k.rect[1] > header.rect[1] && k.rect[1] < 700 && k.rect[0] < 500).sort((a, b) => a.rect[1] - b.rect[1]);
+  const sorted = marks.map((k) => (cells.includes(k) ? { ...k, name: names[cells.indexOf(k)] } : k));
+  assert.equal(dragLanded(s.check, sorted), true);
+  assert.equal(planSort('sort Example 1 by Last Name, Z to A', marks), null, 'the other way round: not one click');
+}
+
+// Adding a to-do, checked by seeing it on the list.
+{
+  const marks = marksOf('todo');
+  const a = planAdd('On the TodoMVC page, add a todo called Buy milk.', marks);
+  assert.deepEqual([a?.action, a?.text, a?.then?.[0]?.keys], ['type', 'Buy milk', ['enter']]);
+  assert.equal(marks.find((k) => k.n === a.mark)?.name, 'New Todo Input');
+  assert.equal(dragLanded(a.check, marks), null);
+  assert.equal(dragLanded(a.check, [...marks, { n: 99, kind: 'text', role: 'Text', name: 'Buy milk', rect: [900, 450, 200, 40] }]), true);
+  assert.equal(planAdd('add a todo called Buy milk and mark it done', marks)?.text, 'Buy milk and mark it done', 'the name is taken as said');
+}
+
+// Adding, then renaming where it is: a double-click on its words, all of them, the new ones, Enter.
+{
+  const marks = marksOf('todo');
+  const r = planAdd('On the TodoMVC page, add a todo called Buy milk, then change it to Buy oat milk.', marks);
+  assert.equal(r?.text, 'Buy milk');
+  assert.deepEqual(r.then.map((t) => t.action), ['key', 'double_click', 'key', 'type', 'key']);
+  assert.equal(r.then[1].markRef.name, 'Buy milk');
+  assert.equal(r.then[3].text, 'Buy oat milk');
+  assert.deepEqual(r.check, { shows: 'Buy oat milk' });
+  assert.equal(planAdd('add a todo called Buy milk, then share the list', marks), null, 'a then it cannot do: the loop');
+}
+
+// A hover, then what it shows, found by name nearest the picture (the-internet's Hovers page).
+{
+  n = 1;
+  const hovers = [
+    ...[400, 670, 940].map((x) => mk('control', 'Image', 'User Avatar', [x, 332, 241, 241])),
+    mk('control', 'Hyperlink', 'Elemental Selenium', [1087, 629, 215, 28]),
+  ];
+  const h = planHover('On the Hovers page, hover over the first picture and open its View profile link.', hovers);
+  assert.deepEqual([h?.action, h?.mark], ['move', 1]);
+  assert.deepEqual([h.then[0].action, h.then[0].markRef.name, h.then[0].markRef.rect[0]], ['click', 'View profile', 400]);
+  assert.equal(planHover('hover over the third picture and open its View profile link', hovers)?.mark, 3);
+  assert.equal(planHover('hover over the first picture', hovers), null, 'nothing to open: not planned');
+}
+
+// A box dragged onto another box, checked by where it is afterwards.
+{
+  const marks = marksOf('dnd');
+  const d = planDrag('On the Drag and Drop page, drag box A onto box B.', marks);
+  assert.equal(d?.action, 'drag');
+  assert.deepEqual([marks.find((k) => k.n === d.mark)?.name, marks.find((k) => k.n === d.to_mark)?.name], ['A', 'B']);
+  assert.equal(dragLanded(d.check, marks), false, 'not moved yet');
+  const swapped = marks.map((k) => (k.name === 'A' ? { ...k, rect: [827, 265, 17, 28] } : k.name === 'B' ? { ...k, rect: [504, 265, 17, 28] } : k));
+  assert.equal(dragLanded(d.check, swapped), true, 'A is where B was');
+}
+
+// A search that opens what it found is checked by the window's name.
+{
+  n = 1;
+  const wikiBox = [mk('control', 'SearchBox', 'Search Wikipedia', [400, 120, 400, 34])];
+  assert.deepEqual(planSearch('On Wikipedia, search for Alan Turing and open his article.', wikiBox)?.check?.title, 'Alan Turing');
+  assert.ok(new RegExp(planSearch('search for Alan Turing and open his article', wikiBox).check.titleNot, 'i').test('Alan Turing - Search results - Wikipedia'));
+  assert.deepEqual(planSearch('search for pathlib', wikiBox)?.check, { title: 'pathlib' });
+  assert.equal(planSearch('search for Alan Turing and click the second result', wikiBox)?.partial, true);
+}
 
 console.log('quickplan ok');

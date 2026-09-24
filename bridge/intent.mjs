@@ -89,12 +89,12 @@ const hasImperative = (t) => IMPERATIVE_LEAD.test(t) || CHAINED_VERB.test(t);
    cost a third of a second at best — ten when the first model was unsure and
    a second was asked — before anything moved, for an answer that could only
    ever be "agent". Eight of the nine real-site tasks (qa-real.mjs) paid it;
-   now only the Wikipedia search does.
+   now none of them does.
    -------------------------------------------------------------------------- */
 
 /** A page or a window named first: "On the Web form page, …", "In the
     Settings window, …". Nobody chats by placing themselves on a page. */
-const SCREEN_PLACE = /^\s*(?:on|in|at)\s+(?:the\s+|this\s+|that\s+|my\s+)?[^,.;:!?]{0,60}?\b(?:page|tab|window|screen|site|website|form|dialog|panel|board|app|sidebar|toolbar)\b[^,.;:!?]{0,40},\s*/i;
+const SCREEN_PLACE = /^\s*(?:on|in|at)\s+(?:the\s+|this\s+|that\s+|my\s+)?(?:[^,.;:!?]|\.(?=\S)){0,60}?\b(?:page|tab|window|screen|site|website|form|dialog|panel|board|app|sidebar|toolbar|docs|documentation|index|repo|repository|article|dashboard|wikipedia|github|youtube|google|amazon|reddit|gmail|outlook|chatgpt|claude|lovable|notion|figma|spotify|discord|slack|whatsapp|linkedin|instagram|facebook)\b(?:[^,.;:!?]|\.(?=\S)){0,40},\s*/i;
 /** …followed by an order, not a question: the verbs above, and the ones only a form uses. */
 const ORDER = new RegExp(`^(?:${POLITE}[,\\s]+)*(?:${VERB}|choose|pick|set|put|toggle|expand|collapse|hover|leave|mark)\\b`, 'i');
 /** Verbs nobody uses in conversation, leading the message. "Drag" and
@@ -128,6 +128,9 @@ const ATTACHMENT_ACTION = /\b(?:paste|put|type|fill(?:\s+in|\s+out)?|send|enter|
 /** Asking about what was attached rather than asking for it to be used
     somewhere — "what's in this image", "summarise this", "explain". */
 const ATTACHMENT_QUESTION = /\bwhat.?s?\s+(?:in|on)\b|\bsummaris|\bsummariz|\bexplain\b|\bdescribe\b|\banaly[sz]e\b|\btell\s+me\s+about\b/i;
+
+/** Putting what was attached into a named place: a paste or send, and where. */
+const ATTACHMENT_TO_PLACE = /\b(?:paste|put|send|drop|upload|attach|insert)\b[^.?!]{0,60}?\b(?:into|in|to|onto)\s+(?:the\s+|my\s+|a\s+new\s+)?(?:chat|message\s+box|chat\s+box|prompt\s+box|chatgpt|claude|gemini|copilot|lovable|perplexity|grok|whatsapp|discord|slack|teams|telegram|messenger|notepad|word|gmail|outlook|email|paint|figma|notion)\b/i;
 
 const clean = (text) => String(text ?? '').trim();
 
@@ -163,6 +166,13 @@ export function localRoute(text, { attachments = [] } = {}) {
   }
 
   if (hasAttachments) {
+    /* Sent somewhere first, whatever it goes on to ask: "paste this picture
+       into ChatGPT and ask what's in it" is a job — the question is for
+       ChatGPT — but the question check below answered it about the
+       picture instead, as conversation. */
+    if (ATTACHMENT_TO_PLACE.test(t)) {
+      return { mode: 'agent', why: 'an instruction to put what was attached somewhere', certain: true };
+    }
     if (ATTACHMENT_QUESTION.test(t)) {
       return { mode: 'chat', why: 'asks about what was attached', certain: true };
     }

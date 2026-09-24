@@ -539,6 +539,21 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       } catch { return false; }
     },
 
+    /** Put a picture on the clipboard, as a picture: something the person
+        attached, pasted into an app with ctrl+v like anything else. nut-js
+        carries text only, so this has its own small helper
+        (clipboard-image.mjs), loaded the first time a picture is pasted
+        rather than by every run that never pastes one. Windows only.
+        Returns whether it went, and never throws: on false, nothing should
+        be pasted, because what the clipboard holds then is not the picture. */
+    async writeClipboardImage(dataUrl) {
+      if (process.platform !== 'win32') return false;
+      try {
+        const { writeImageToClipboard } = await import('./clipboard-image.mjs');
+        return await writeImageToClipboard(dataUrl);
+      } catch { return false; }
+    },
+
     /** A chord: pressed together, released in reverse. */
     async keypress(keys = []) {
       const mapped = keys.map(mapKey).filter((k) => k !== null);

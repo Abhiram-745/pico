@@ -8,6 +8,8 @@
    ========================================================================== */
 import assert from 'node:assert/strict';
 import { HostAgent } from '../bridge/agent.mjs';
+import { runJob, planJob } from '../bridge/job.mjs';
+import { send } from '../bridge/chatbox.mjs';
 
 const events = [];
 const transport = { emit: (type, payload) => events.push({ type, payload }), onCommand() {} };
@@ -175,6 +177,201 @@ const messenger = { title: 'WhatsApp', process: 'WhatsApp', busyAfterSend: 0 };
   assert.deepEqual(app.sent, ['one', 'two']);
   assert.equal(app.pastedWhileBusy, false, 'nothing was pasted while the app was still writing');
   assert.equal(last('phase').phase, 'Completed');
+}
+
+/* --- a picture, sent to an assistant ----------------------------------------
+   A pretend ChatGPT that takes a pasted picture the way the real one does:
+   a picture on the clipboard pastes as an attachment, not as words; it
+   uploads for a few reads of the box, with Send shown but disabled; Enter
+   pressed in the meantime does nothing. The clipboard holds text or a
+   picture, never both, and reads as no text while it holds a picture. */
+const FOX = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AARgAGAQJ/3ZBTTwAAAABJRU5ErkJggg==';
+const fox = { id: 'p1', name: 'fox.png', kind: 'image', mime: 'image/png', size: 70, dataUrl: FOX, thumb: FOX };
+function picturegpt({ title = 'ChatGPT - Google Chrome', uploadReads = 2, imageFails = false, locked = false } = {}) {
+  const app = {
+    value: '', clip: 'the person\'s own clipboard', image: null, attached: [], uploading: 0, busy: 0,
+    sent: [], enterWhileUploading: 0, pastes: 0, imageWrites: [],
+  };
+  const FIELD3 = [300, 800, 600, 40];
+  const sense3 = {
+    async windows() { return [{ hwnd: '31', title, process: 'chrome', rect: [0, 0, 1200, 900] }]; },
+    async foreground() { return { hwnd: '31' }; },
+    async composer() {
+      if (app.uploading > 0) app.uploading -= 1;
+      const busy = app.busy > 0;
+      if (busy) app.busy -= 1;
+      const buttons = [{ name: 'Add photos and files', rect: [305, 805, 30, 30], enabled: true }];
+      if (busy) buttons.push({ name: 'Stop streaming', rect: [910, 805, 30, 30], enabled: true });
+      else if (app.value || app.attached.length) buttons.push({ name: 'Send prompt', rect: [910, 805, 30, 30], enabled: app.uploading === 0 });
+      else buttons.push({ name: 'Start voice mode', rect: [910, 805, 30, 30], enabled: true });
+      return { found: true, field: { type: 'Edit', name: 'Message ChatGPT', rect: FIELD3, value: app.value }, buttons };
+    },
+    async focused() { return { at: { type: 'Edit', rect: FIELD3, value: app.value } }; },
+  };
+  const computer = {
+    sense: sense3,
+    async available() { return locked ? { ok: false, why: 'the screen is locked' } : { ok: true }; },
+    async foreground() { return null; },
+    async focus() { return true; },
+    async click() {},
+    async keypress(keys) {
+      const k = keys.join('+');
+      if (k === 'ctrl+v') {
+        app.pastes += 1;
+        if (app.image) { app.attached.push(app.image); app.uploading = uploadReads; } else app.value += app.clip;
+      } else if (k === 'ctrl+a' || k === 'backspace') app.value = '';
+      else if (k === 'enter') {
+        if (app.uploading > 0) { app.enterWhileUploading += 1; return; }
+        app.sent.push({ text: app.value, pictures: app.attached.length });
+        app.value = '';
+        app.attached = [];
+        app.busy = 2;
+      }
+    },
+    async writeClipboard(t) { app.clip = t; app.image = null; return true; },
+    async writeClipboardImage(url) {
+      app.imageWrites.push(url);
+      if (imageFails) return false;
+      app.image = url;
+      app.clip = '';
+      return true;
+    },
+    async readClipboard() { return app.image ? '' : app.clip; },
+    async capture() { return { scale: 1, grey: null }; },
+  };
+  return { app, computer };
+}
+/** A fast model that lifts the words out; anything else it is asked, it answers as the router's tiebreak. */
+function wordsModel(message, { broken = false } = {}) {
+  const asked = [];
+  return {
+    asked,
+    tiers: { fast: 'test', text: 'test', plan: 'test' },
+    async chat(messages) {
+      const system = String(messages?.[0]?.content ?? '');
+      if (/send a message to an AI app/.test(system)) {
+        asked.push({ system, user: messages[1]?.content });
+        if (broken) throw new Error('the model is not answering');
+        return JSON.stringify({ message });
+      }
+      return 'AGENT';
+    },
+    async evaluate() { return null; },
+  };
+}
+const job = async (task, attachments, { computer, llm }) => {
+  const seen = { summaries: [], phases: [], errors: [] };
+  const result = await runJob({
+    task, attachments, computer, llm,
+    hooks: { onSummary: (t) => seen.summaries.push(t), onPhase: (p) => seen.phases.push(p), onError: (e) => seen.errors.push(e) },
+  });
+  return { result, seen };
+};
+
+{
+  // Which messages are this shape at all.
+  const note = { id: 't9', name: 'prompt.txt', kind: 'text', mime: 'text/plain', size: 20, text: 'Make it look like a watercolour' };
+  const picture = (task, list = [fox]) => planJob(task, list);
+  assert.equal(picture('send the attached image to ChatGPT')?.words, 'none', 'nothing to say: the picture goes alone');
+  assert.equal(picture('Paste the attached picture into the chat')?.words, 'none');
+  assert.equal(picture('paste this picture into chat gpt')?.words, 'none', 'the app\'s name, however it is spelt, is not something to say');
+  assert.equal(picture('Paste the attached picture into the chat and ask what\'s in it.')?.words, 'ask', 'a question to lift out');
+  assert.equal(picture('send fox.png to Claude and get feedback on the colours')?.words, 'ask');
+  const quoted = picture('send this picture to ChatGPT and ask "What breed is this?"');
+  assert.equal(quoted?.words, 'given');
+  assert.equal(quoted.items[0].text, 'What breed is this?', 'quoted words are sent exactly');
+  assert.equal(quoted.items[0].picture, FOX, 'with the picture itself');
+  assert.equal(quoted.single, true);
+  const withText = picture('send the attached picture and prompt to ChatGPT', [fox, note]);
+  assert.equal(withText?.words, 'given', 'a picture and a text: the text is the words');
+  assert.equal(withText.items[0].text, note.text);
+  assert.equal(planJob('send the attached prompt to ChatGPT', [note])?.shape, 'attachment', 'a text alone goes as it always did');
+  assert.equal(picture('send this picture to Mom on WhatsApp'), null, 'a person: the right conversation first, which is the loop\'s job');
+  assert.equal(picture('paste this picture into ChatGPT and tell me what it says'), null, 'reading the answer back is the loop\'s job');
+  assert.equal(picture('send these to ChatGPT', [fox, { ...fox, id: 'p2', name: 'owl.png' }]), null, 'two pictures: the loop, which pastes each by number');
+  assert.equal(picture('open ChatGPT'), null, 'nothing asked to be sent');
+}
+{
+  // Through the agent: a quoted question, sent with the picture, after the upload.
+  const { app, computer } = picturegpt();
+  const seen = [];
+  const a = new HostAgent({ emit: (type, payload) => seen.push({ type, payload }), onCommand() {} }, { memory, routines });
+  const llm = wordsModel('never asked');
+  a.attachLLM(llm);
+  a.attachComputer(computer);
+  await a.run('send the attached picture to the chat with the question "What breed is this?"', { attachments: [fox] });
+  assert.deepEqual(app.sent, [{ text: 'What breed is this?', pictures: 1 }], 'one message: the picture and the words');
+  assert.deepEqual(app.imageWrites, [FOX], 'the picture put on the clipboard as a picture, once');
+  assert.equal(app.enterWhileUploading, 0, 'Enter waited for the upload');
+  assert.equal(llm.asked.length, 0, 'quoted words need no model');
+  assert.equal(app.clip, 'the person\'s own clipboard', 'the person\'s clipboard text is given back');
+  assert.equal(app.image, null);
+  const summary = seen.filter((e) => e.type === 'summary' && e.payload).at(-1)?.payload?.text ?? '';
+  assert.match(summary, /Sent the picture with "What breed is this\?" in ChatGPT/, summary);
+  assert.equal(seen.filter((e) => e.type === 'phase').at(-1)?.payload?.phase, 'Completed');
+}
+{
+  // The words lifted out of the instruction by a model, told a picture goes first.
+  const { app, computer } = picturegpt({ uploadReads: 3 });
+  const llm = wordsModel('What\'s in this picture?');
+  const { seen } = await job('Paste the attached picture into the chat and ask what\'s in it.', [fox], { computer, llm });
+  assert.deepEqual(app.sent, [{ text: 'What\'s in this picture?', pictures: 1 }]);
+  assert.equal(app.enterWhileUploading, 0, 'a slower upload is waited for too');
+  assert.equal(llm.asked.length, 1);
+  assert.match(llm.asked[0].system, /They attached a picture/, 'the model is told the picture goes in first');
+  assert.equal(seen.phases.at(-1), 'Completed');
+  assert.equal(app.clip, 'the person\'s own clipboard');
+}
+{
+  // Nothing to say: the picture on its own, and no model asked.
+  const { app, computer } = picturegpt();
+  const llm = wordsModel('should not be used');
+  const { seen } = await job('Paste the attached picture into the chat', [fox], { computer, llm });
+  assert.deepEqual(app.sent, [{ text: '', pictures: 1 }], 'sent on its own');
+  assert.equal(llm.asked.length, 0);
+  assert.equal(app.enterWhileUploading, 0);
+  assert.match(seen.summaries.at(-1) ?? '', /^Sent the picture in /);
+}
+{
+  // The picture cannot be put on the clipboard: nothing pasted, nothing sent.
+  const { app, computer } = picturegpt({ imageFails: true });
+  const { seen } = await job('Paste the attached picture into the chat', [fox], { computer, llm: wordsModel('') });
+  assert.equal(app.imageWrites.length, 1, 'it was tried');
+  assert.equal(app.pastes, 0, 'ctrl+v was never pressed — it would have pasted the person\'s own clipboard');
+  assert.deepEqual(app.sent, []);
+  assert.match(seen.summaries.at(-1) ?? '', /The picture did not go: the picture could not be put on the clipboard/);
+  assert.equal(seen.phases.at(-1), 'Stopped');
+  assert.equal(app.clip, 'the person\'s own clipboard', 'and their clipboard is as it was');
+}
+{
+  // An upload that never finishes: Enter is never pressed into it, and it says why.
+  const { app, computer } = picturegpt({ uploadReads: 1e9 });
+  const result = await send({
+    computer, sense: computer.sense, hwnd: '31', text: 'What is this?', picture: FOX,
+    toMouse: (x, y) => ({ x, y }), uploadMs: 600,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.why, /still uploading after 1 seconds/);
+  assert.equal(app.enterWhileUploading, 0, 'Enter was never pressed while it uploaded');
+  assert.deepEqual(app.sent, []);
+}
+{
+  // No accessibility to find the box by: the loop, which can paste a picture by number.
+  const { app, computer } = picturegpt({ locked: true });
+  delete computer.sense;
+  const { result, seen } = await job('Paste the attached picture into the chat', [fox], { computer, llm: wordsModel('') });
+  assert.equal(result, undefined);
+  assert.match(seen.errors[0]?.message ?? '', /can't use the mouse or keyboard/, 'it went to the loop');
+  assert.deepEqual(app.imageWrites, [], 'not the exact route');
+}
+{
+  // Words to lift out, and no model to lift them: the loop, not the picture without its question.
+  const { app, computer } = picturegpt({ locked: true });
+  const llm = wordsModel('', { broken: true });
+  const { seen } = await job('Paste the attached picture into the chat and ask what\'s in it.', [fox], { computer, llm });
+  assert.equal(llm.asked.length, 1, 'the model was asked');
+  assert.match(seen.errors[0]?.message ?? '', /can't use the mouse or keyboard/, 'then the loop was handed the job');
+  assert.deepEqual(app.sent, []);
 }
 
 console.log('job: all passed');

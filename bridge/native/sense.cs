@@ -52,6 +52,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Automation;
 
 static class Win
@@ -394,6 +395,8 @@ static class Sense
                     if (!c.IsPassword) j.S("value", Trim(value.Current.Value, 200));
                 }
             } catch { }
+            // Takes typed text (see Cached): a box with suggestions, not a select.
+            try { if (type != "Document" && Pattern(el, AutomationElement.IsTextPatternAvailableProperty)) j.B("takesText", true); } catch { }
         }
         catch (Exception e)
         {
@@ -1051,6 +1054,8 @@ static class Sense
             AutomationElement.IsSelectionItemPatternAvailableProperty,
             AutomationElement.IsExpandCollapsePatternAvailableProperty,
             AutomationElement.IsValuePatternAvailableProperty,
+            // Takes typed text: a box with suggestions does, a select does not.
+            AutomationElement.IsTextPatternAvailableProperty,
         }) cr.Add(prop);
         /* What is in the box, cached with everything else.
            Without it the table says a search field exists and not that it
@@ -1143,7 +1148,7 @@ static class Sense
         AutomationElementCollection all;
         using (ElementCache().Activate())
         {
-            all = root.FindAll(TreeScope.Subtree, Condition.TrueCondition);
+            all = root.FindAll(TreeScope.Subtree, Automation.ControlViewCondition);
         }
         // An empty tree is a real answer — a window whose contents have not
         // been built yet has no controls, and walking it live to be told the
@@ -1288,6 +1293,15 @@ static class Sense
                 try {
                     object ro = el.GetCachedPropertyValue(ValuePattern.IsReadOnlyProperty, true);
                     if (ro is bool) j.B("readOnly", (bool)ro);
+                } catch { }
+                /* Whether it takes typed text. Chrome calls a select and a box
+                   with suggestions both ComboBox, and neither read-only —
+                   measured on selenium.dev's form — so read-only could not
+                   tell them apart, and a select was typed into. A text field
+                   has a text pattern; a select does not. */
+                try {
+                    object tp = el.GetCachedPropertyValue(AutomationElement.IsTextPatternAvailableProperty, true);
+                    if (tp is bool && (bool)tp && type != "Document") j.B("takesText", true);
                 } catch { }
                 try {
                     object toggle = el.GetCachedPropertyValue(TogglePattern.ToggleStateProperty, true);
@@ -1480,6 +1494,37 @@ static class Program
         guard.Start();
     }
 
+    /// A read of one window's controls, shared by every request for it that
+    /// arrives while it is going. Answered with a deadline, like Deadline, but
+    /// the work is not started twice: a timed-out read kept walking the tree
+    /// in the background, and the next turn's read walked it again beside it,
+    /// each slowing the other past its own deadline — turn after turn.
+    static readonly Dictionary<string, Task<string>> reading = new Dictionary<string, Task<string>>();
+
+    static void Shared(string id, int ms, IntPtr h, bool ontop, Func<string> work)
+    {
+        string key = h.ToInt64().ToString(CultureInfo.InvariantCulture) + (ontop ? ":ontop" : "");
+        Task<string> job;
+        lock (reading)
+        {
+            if (!reading.TryGetValue(key, out job) || job.IsCompleted)
+            {
+                job = Task.Factory.StartNew(() =>
+                {
+                    try { return work(); }
+                    catch (Exception e) { return new Json().S("error", e.GetType().Name + ": " + e.Message).ToString(); }
+                }, TaskCreationOptions.LongRunning);
+                reading[key] = job;
+            }
+        }
+        var guard = new Thread(() =>
+        {
+            Reply(id, job.Wait(ms) ? job.Result : new Json().S("error", "timeout").ToString());
+        });
+        guard.IsBackground = true;
+        guard.Start();
+    }
+
     static void Main()
     {
         // Before anything that measures anything. PER_MONITOR_AWARE_V2 is -4.
@@ -1588,8 +1633,17 @@ static class Program
                            measured on a Wikipedia article that blocked every
                            call, including a plain hit test, for the full six
                            seconds. Six seconds of nothing is worse than a
-                           second and a half and a screenshot. */
-                        Deadline(id, 1500, () => Sense.Elements(h, max, ontop));
+                           few and a screenshot.
+
+                           But not shorter than a big page takes to answer:
+                           GitHub's front page takes 1.2 to 1.4 seconds, and
+                           at a second and a half it came back empty on every
+                           turn of a run, so every click was a guess from the
+                           picture. And one read of a window at a time: a new
+                           request while one is still going waits for that
+                           one, rather than starting a second walk of the same
+                           tree beside it (Shared). */
+                        Shared(id, 2600, h, ontop, () => Sense.Elements(h, max, ontop));
                         break;
                     }
                     default:

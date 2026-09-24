@@ -79,14 +79,14 @@ import { runbook, appOf } from './runbook.mjs';
 import { isHaloWindow } from './apps.mjs';
 import { settle, fit } from './aim.mjs';
 import { scrollBy, regionChanged } from './scroll.mjs';
-import { actionSpace, decide as fastDecide, fieldText, addressFor, targetStillMatches, targetNamedInGoal, observationKey, ENOUGH, SURE_ENOUGH, shouldSubmitFilledField } from './fastpath.mjs';
+import { actionSpace, decide as fastDecide, fieldText, addressFor, targetStillMatches, focusLanded, targetNamedInGoal, observationKey, ENOUGH, SURE_ENOUGH, shouldSubmitFilledField } from './fastpath.mjs';
 import { makeMilestones } from './milestones.mjs';
 import { windowState } from './judge.mjs';
 import { heavyImages, HEAVY_IMAGE_WIDTH } from './llm.mjs';
-import { buildMarks, describeMarks, drawMarks, resolveMarks } from './marks.mjs';
+import { buildMarks, describeMarks, drawMarks, resolveMarks, markPoint } from './marks.mjs';
 import { refine, pickShape, shapesIn } from './zoom.mjs';
 import { planForm } from './formfill.mjs';
-import { planClick, planDrag, planShapeClick, planSearch, planChoose, matchShape, dragLanded, valueOnScreen } from './quickplan.mjs';
+import { planClick, planDrag, planShapeClick, planSearch, planChoose, planKey, planTick, planField, planAdd, planSort, planLink, planHover, linkWanted, matchShape, dragLanded, valueOnScreen } from './quickplan.mjs';
 import { upgradeDropdownClick } from './select.mjs';
 import { checkMilestoneEvidence } from './milestone-evidence.mjs';
 
@@ -109,6 +109,38 @@ const signature = (a) =>
  */
 const UNCHANGED_BELOW = 1.2;   // mean grey-level difference, 0-255
 const CELL_CHANGED_AT = 16;    // one region of the screen, clearly different
+/**
+ * Did anything named appear, go, or move between two sets of marks? The
+ * check the picture cannot make on small things: two letters trading
+ * places, a word that changed, a row that slid down.
+ */
+export function marksMoved(before = [], after = []) {
+  /* A box ticked or a value changed is a change too, in the same place:
+     measured, a planned tick on the-internet read as "nothing happened",
+     and the vision model ticked and unticked it twenty times. */
+  const state = (list) => new Map(list.filter((m) => m.kind === 'control' && m.name)
+    .map((m) => [`${m.role}|${m.name}|${Math.round(m.rect[0] / 8)},${Math.round(m.rect[1] / 8)}`, `${m.checked ?? ''}|${m.value ?? ''}`]));
+  const stateWas = state(before);
+  for (const [k, v] of state(after)) if (stateWas.has(k) && stateWas.get(k) !== v) return true;
+  const key = (m) => `${m.kind}|${m.role}|${m.name}`;
+  const centre = (m) => [m.rect[0] + (m.rect[2] / 2), m.rect[1] + (m.rect[3] / 2)];
+  const named = (list) => list.filter((m) => m.name && Array.isArray(m.rect));
+  const was = new Map();
+  for (const m of named(before)) was.set(key(m), [...(was.get(key(m)) ?? []), centre(m)]);
+  const now = named(after);
+  if (now.length !== named(before).length) return true;
+  for (const m of now) {
+    const places = was.get(key(m));
+    if (!places?.length) return true;
+    const [x, y] = centre(m);
+    // Its nearest namesake from before, taken so two of the same name each match one.
+    const i = places.map(([px, py]) => Math.hypot(px - x, py - y)).reduce((best, d, j, all) => (d < all[best] ? j : best), 0);
+    if (Math.hypot(places[i][0] - x, places[i][1] - y) > 8) return true;
+    places.splice(i, 1);
+  }
+  return false;
+}
+
 function sameScreen(a, b, factor = 1) {
   if (!a || !b || a.length !== b.length) return false;
   let sum = 0;
@@ -545,8 +577,10 @@ const ACT_TOOLS = [
           paste_attachment: {
             type: 'integer',
             description: 'For "paste": the NUMBER of something the person attached (listed as '
-              + '"Attached by the person"), to paste it exactly as they sent it. Never retype an '
-              + 'attachment into paste_text or type — this is exact and instant.',
+              + '"Attached by the person"), to paste it exactly as they sent it — a text as its '
+              + 'exact text, a picture as a picture, into whatever has keyboard focus. Never retype '
+              + 'an attachment into paste_text or type, and never paste the clipboard in place of '
+              + 'a picture — this is exact and instant.',
           },
           remember_as: {
             type: 'string',
@@ -568,7 +602,7 @@ const ACT_TOOLS = [
                 mark: { type: 'integer', description: 'The number of the box it is aimed at, from THIS screenshot.' },
                 to_mark: { type: 'integer' },
                 text: { type: 'string' },
-                paste_attachment: { type: 'integer', description: 'For "paste": the number of an attachment to paste.' },
+                paste_attachment: { type: 'integer', description: 'For "paste": the number of an attachment to paste, text or picture.' },
                 keys: { type: 'array', items: { type: 'string' } },
                 why: { type: 'string', description: 'Optional: a few words for the person watching.' },
               },
@@ -857,6 +891,13 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       `Halo can't use the mouse or keyboard right now — ${reachable.why}. Unlock the screen and try again.`);
   }
 
+  /* Asked alongside the first picture, not after it: none of these needs
+     the picture, and one after another they stood between the task and its
+     first move. */
+  const frontSoon = computer.foreground().catch(() => null);
+  const listedSoon = Promise.resolve().then(() => sense?.windows()).catch(() => null);
+  const appsSoon = Promise.resolve().then(() => apps.mentionedApps(task)).catch(() => []);
+
   let shot;
   let shotNeedsRefresh = false;
   try {
@@ -868,7 +909,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   if (!(await gate())) return;
 
   /* --- what is true before deciding anything --------------------------- */
-  const front = await computer.foreground().catch(() => null);
+  const front = await frontSoon;
   let workWindow = front && !isHaloWindow(front.title) ? front : null;
 
   /* Browsers only build their accessibility tree once something asks for it,
@@ -905,7 +946,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     precedent: '',
   };
   try {
-    const listed = (await sense?.windows()) ?? [];
+    const listed = (await listedSoon) ?? [];
     facts.windows = listed
       .filter((w) => !w.minimized && !w.tool && !isHaloWindow(w.title) && w.title !== 'Program Manager'
         // On the display Halo is working on.
@@ -921,7 +962,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   /* The page the job started on, by its title: the work window's, not
      whatever was in front — typed into the island, that was Halo. */
   const startTitle = workWindow?.title ?? null;
-  try { facts.apps = (await apps.mentionedApps(task)).map((a) => a.name); } catch { /* likewise */ }
+  try { facts.apps = ((await appsSoon) ?? []).map((a) => a.name); } catch { /* likewise */ }
   try {
     facts.precedent = runbook.forPrompt(context.whole || task, { app: appOf(workWindow ?? front) });
   } catch { /* precedent is a bonus, never a requirement */ }
@@ -993,7 +1034,16 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     ? [{ id: 'm0_1', do: String(task).slice(0, 100), doneWhen: String(task).slice(0, 180), kind: 'milestone', status: 'pending' }]
     : [];
   let timelineSettled = !milestoneMode;
-  if (milestoneMode) {
+  /* Asked for only once the job turns out to need the model at all. It is
+     a picture sent to the planning model, and that model bills a picture at
+     some thirty times the tokens: planned for every task, it was most of
+     what a task a plan finished in a second cost — and in a run of real-site
+     tasks, the reason the key hit its rate limit mid-task. A job planned
+     from its own words has its plan for a timeline. */
+  let timelineAsked = false;
+  const askForTimeline = () => {
+    if (timelineAsked || !milestoneMode) return;
+    timelineAsked = true;
     makeMilestones(llm, { task, shot, front: facts.front }).then((list) => {
       if (timelineSettled || !Array.isArray(list) || !list.length) return;
       timelineSettled = true;
@@ -1004,7 +1054,7 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         try { publish(); } catch { /* the loop has ended */ }
       }
     }).catch(() => { timelineSettled = true; });
-  }
+  };
   if (!(await gate())) return;
   onAudit('plan_made', { metadata: { steps: milestoneMode ? milestones.length : steps.length, done_when: doneWhen, live: true } });
   debug(`[live] ${steps.map((s) => `${s.kind}:${s.do}`).join(' | ')}`);
@@ -1245,17 +1295,27 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   const learned = [];         // free notes, newest last
   let clipboard = '';         // what Halo last saw on the clipboard
 
-  /* What the person sent along with the words: pasted text and files.
-     Shown by number and pasted by number (paste_attachment), never retyped:
-     a model copying three paragraphs into a tool call is slow, and the one
-     wrong word it makes is the one nobody asked for. */
+  /* What the person sent along with the words: pasted text, files and
+     pictures. Shown by number and pasted by number (paste_attachment), never
+     retyped: a model copying three paragraphs into a tool call is slow, and
+     the one wrong word it makes is the one nobody asked for.
+
+     ONE numbering for all of them, in the order the person attached them:
+     [1], [2], [3] in the scratchpad are positions in this list, whatever
+     kind each one is, so "paste_attachment: 2" means the same attachment in
+     the listing, in the model's tool call, in the feedback when a number is
+     wrong, and in the executor. A text is pasted as its exact text; a
+     picture is put on the clipboard as a picture (clipboard-image.mjs) and
+     pasted as one. An empty text, or a picture with no picture in it, is
+     left off the list, so it never takes a number that pastes nothing. */
   const material = (Array.isArray(context.attachments) ? context.attachments : [])
-    .filter((a) => a && a.kind === 'text' && typeof a.text === 'string' && a.text.trim());
-  /* Pictures cannot be pasted into another app yet — the clipboard here
-     takes text. Said to the model, and a plain paste is refused while one is
-     attached (below): "paste this picture into ChatGPT" otherwise pasted
-     whatever the person happened to have on their clipboard. */
-  const pictures = (Array.isArray(context.attachments) ? context.attachments : []).filter((a) => a && a.kind === 'image');
+    .filter((a) => a && ((a.kind === 'text' && typeof a.text === 'string' && a.text.trim())
+      || (a.kind === 'image' && typeof a.dataUrl === 'string' && a.dataUrl.startsWith('data:image/'))));
+  /* The pictures among them. A plain paste is refused while one is attached
+     and Halo does not know what the clipboard holds (below): "paste this
+     picture into ChatGPT" once pasted whatever the person happened to have
+     on their clipboard. */
+  const pictures = material.filter((a) => a.kind === 'image');
 
   /** Everything the run knows, as the lines the model is shown each turn. */
   const scratchpad = () => {
@@ -1263,14 +1323,16 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     if (material.length) {
       lines.push('Attached by the person (paste one with paste_attachment: its number):');
       material.forEach((a, i) => {
+        if (a.kind === 'image') {
+          // Its type as the data itself says, which is what will be pasted.
+          const type = /^data:([^;,]+)/.exec(a.dataUrl)?.[1] || a.mime || 'image';
+          lines.push(`  [${i + 1}] picture "${a.name || 'picture'}" (${type})`);
+          return;
+        }
         const text = String(a.text);
         const rows = text.split(/\r?\n/).length;
         lines.push(`  [${i + 1}] "${a.name || 'Pasted text'}" — ${rows} line${rows === 1 ? '' : 's'}, starts: ${preview(text, 160)}`);
       });
-    }
-    if (pictures.length) {
-      lines.push(`Also attached: ${pictures.length === 1 ? 'a picture' : `${pictures.length} pictures`} (${pictures.map((p) => `"${p.name || 'picture'}"`).join(', ')}). `
-        + 'Halo cannot paste pictures into apps yet. Never paste the clipboard in its place: if the job needs the picture put somewhere, stop and say that cannot be done yet.');
     }
     if (kept.size) {
       lines.push('What you have kept (use these rather than reading them off the screen again):');
@@ -1466,12 +1528,13 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
   let formTried = false;      // the task has been matched against the window's fields once
   let lastDrag = null;        // { item, place } — the marks of the last drag, for the check after it
   let quickCheck = null;      // where a drag planned from the task should have left things (quickplan.mjs)
+  let quickWhole = false;     // a plan from the task's words that is the whole task, going as planned so far
   let pictureScale = 1;       // shot pixels per pixel of the picture the model saw
   let semanticChange = null;
   const woken = new Set();
 
   /** Look again, and note what is in front as Halo looks. */
-  const observe = async (frame, { semanticOnly = false } = {}) => {
+  const observe = async (frame, { semanticOnly = false, lightly = false } = {}) => {
     semanticChange = null;
     if (sense && workWindow?.hwnd) {
       const hwnd = String(workWindow.hwnd);
@@ -1495,7 +1558,16 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
     }
     const foreground = computer.foreground().catch(() => null);
     const windows = sense?.windows().catch(() => null);
-    if (semanticOnly && !frame && pendingElements) {
+    if (lightly && !frame && pendingElements) {
+      /* Typed or pressed, in a batch, with nothing next that has to be found
+         on screen: nothing to wait for. The read goes on in the background
+         for whatever wants it next — the check at the end of the batch reads
+         the window itself if it has to. Waited for, it was a second after
+         every keystroke on a big page: measured on Wikipedia, 1.1s after
+         typing the search and 1.2s after the Enter. */
+      semanticChange = true;
+      shotNeedsRefresh = true;
+    } else if (semanticOnly && !frame && pendingElements) {
       const [snapshot, front] = await Promise.all([pendingElements, foreground]);
       if (snapshot?.elements?.length && String(front?.hwnd) === String(workWindow?.hwnd)
         && actionSpace(snapshot.elements).table.length >= ENOUGH && fastSnapshot) {
@@ -2029,10 +2101,29 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
        nothing is asked of the vision model. Not confirmed: look properly. */
     const mayContinue = flowOk;
     flowOk = false;
+    if (!mayContinue) quickWhole = false;
     if (!mayContinue && queued.length) {
       debug('[batch] stopped: the last action did not go as planned — looking again');
       queued = [];
       batchEnded = false;
+    }
+    /* A plan made from the task's own words that was the whole task, every
+       step of it gone as planned: the job is done. Asking the window whether
+       "click Add Element three times" happened cannot work — a page does not
+       show how often something was pressed — and its "not yet" sent the
+       vision model round again, which read the task afresh each time:
+       measured, twenty-one clicks. A plan with a real check (a drag, by
+       where things are now) keeps it, below. */
+    if (batchEnded && quickWhole) {
+      batchEnded = false;
+      quickWhole = false;
+      debug('[quick] the plan was the whole task and every step went as planned — done');
+      if (milestoneMode) {
+        for (const m of milestones) m.status = 'done';
+        milestoneIndex = milestones.length - 1;
+        timelineSettled = true;
+      }
+      choice = { call: { name: 'step_done', args: {} }, text: '', verified: true };
     }
     if (batchEnded && !guide && sense && workWindow?.hwnd && step.kind === 'live') {
       batchEnded = false;
@@ -2058,9 +2149,43 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
       let goalNow = whole;
       /* A drag planned from the task knows exactly where the thing should be
          now; the window's rectangles say whether it is, with nothing asked. */
-      const landed = (snap) => (quickCheck && snap ? dragLanded(quickCheck, buildMarks(snap, { within: workWindow.rect })) : null);
+      const landed = (snap, title = frontTitle) => {
+        /* A plan from the task can also know what the window will be called
+           once it has worked: a search for Alan Turing that opened his
+           article is a window titled "Alan Turing - Wikipedia". Every word
+           of it in the title, and none of what a results page says — that
+           is the job done. Asked of Jev in the task's own words ("search for
+           … and open his article") the answer was "not yet" with the
+           article open, and a vision turn spent learning otherwise. */
+        if (quickCheck?.title) {
+          const shown = String(title ?? '').toLowerCase();
+          /* The address too: a docs site names every results page just
+             "Search", and the words searched for are in its address. */
+          const address = String((snap?.elements ?? []).find((el) => /address and search bar/i.test(String(el.name ?? '')))?.value ?? '').toLowerCase();
+          const need = String(quickCheck.title).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1);
+          const refused = quickCheck.titleNot ? new RegExp(quickCheck.titleNot, 'i').test(shown) : false;
+          return need.length && need.every((w) => shown.includes(w) || address.includes(w)) && !refused ? true : null;
+        }
+        return quickCheck && snap ? dragLanded(quickCheck, buildMarks(snap, { within: workWindow.rect })) : null;
+      };
+      /* A plan that knows the name of the page it leads to waits for that
+         page by its name — a question that costs a hundredth of a second —
+         before anything slower. Straight after an Enter or a click on a
+         link, the old page is still in front: measured on Wikipedia, the
+         check read the old title, asked Jev twice and read the whole new
+         article before it saw the article was open. Stops early when the
+         name changes to something else, and the fuller check decides. */
+      let arrived = landed(snapshot) === true;
+      if (!arrived && quickCheck?.title) {
+        for (let i = 0; i < 10 && !arrived; i++) {
+          await computer.wait(200);
+          const now = (await computer.foreground().catch(() => null))?.title ?? '';
+          if (landed(null, now) === true) arrived = true;
+          else if (now && now !== frontTitle) break;
+        }
+      }
       // Both questions at once: a third of a second, not two thirds.
-      const [wholeProof, stageProof] = landed(snapshot) === true ? [{ confirmed: true, by: 'layout' }, null] : await Promise.all([
+      const [wholeProof, stageProof] = arrived ? [{ confirmed: true, by: quickCheck?.title ? 'title' : 'layout' }, null] : await Promise.all([
         checkMilestoneEvidence(whole, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot }),
         currentMilestone && currentMilestone.doneWhen !== brief
           ? checkMilestoneEvidence(currentMilestone, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot })
@@ -2077,8 +2202,10 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         await computer.wait(300);
         goalNow = whole;
         const again = dragFact(await Promise.resolve().then(() => sense.look?.(workWindow.hwnd, 160)).catch(() => null));
-        proof = landed(again) === true ? { confirmed: true, by: 'layout' }
-          : await checkMilestoneEvidence(whole, sense, workWindow.hwnd, llm, { title: frontTitle, task, snapshot: again });
+        // The title again too: a page that was still arriving has its name now.
+        const titleNow = (await computer.foreground().catch(() => null))?.title ?? frontTitle;
+        proof = landed(again, titleNow) === true ? { confirmed: true, by: 'layout' }
+          : await checkMilestoneEvidence(whole, sense, workWindow.hwnd, llm, { title: titleNow, task, snapshot: again });
       }
       if (proof?.confirmed === true && goalNow === whole && milestoneMode) {
         // The job is done, so every stage of it is.
@@ -2166,6 +2293,8 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
           const [first, ...rest] = items;
           queued = rest;
           turnMarks = now;
+          // Every part of the task a step, every step found on screen: the whole job (formfill.mjs).
+          quickWhole = form.covered === true && items.length === form.length;
           choice = { call: { name: 'act', args: { action: first.action, mark: first.markRef.n, text: first.text, why: first.why, replaceValue: first.replaceValue } }, text: '', queued: true };
           debug(`[form] planned from the task, no model: ${items.map((it) => `${it.action} "${it.markRef.name}"${it.text ? ` = ${it.text}` : ''}`).join(', ')}`);
           onAudit('form_planned', { metadata: { steps: items.length } });
@@ -2176,13 +2305,68 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
          model decides as usual. */
       if (!choice && snapshot) {
         const within = Array.isArray(workWindow.rect) && workWindow.rect.length === 4 ? workWindow.rect : null;
-        const now = buildMarks(snapshot, { within });
-        const q = [planDrag, planClick, planShapeClick, planSearch, planChoose].map((fn) => fn(task, now)).find((p) => p?.action);
+        /* Most specific first. A key before a click ("press Enter"), unless
+           the page has a button by that name; a dropdown before a tick
+           ("select Two in the Dropdown"); a link last, as "open" is said of
+           anything. Each has to be the whole task, or say it is not. Every
+           control a plan could name, not the ninety a picture can carry. */
+        const planFrom = (seen) => {
+          const marks = buildMarks(seen, { within, max: 400 });
+          return { marks, q: [planDrag, planKey, planClick, planShapeClick, planSearch, planChoose, planTick, planField, planAdd, planSort, planHover, planLink]
+            .map((fn) => fn(task, marks)).find((p) => p?.action) };
+        };
+        let { marks: now, q } = planFrom(snapshot);
+        /* A big page's read stops at 120 controls, and what the task names
+           can be the 121st: measured on GitHub, "open the Releases page"
+           found no Releases link in the first read and spent three vision
+           turns wandering into Tags. When the read was cut short and
+           nothing matched, the page is read again, whole, once — a second
+           or so, against several of them. */
+        if (!q && (snapshot.elements?.length ?? 0) >= 118) {
+          const whole = await Promise.resolve().then(() => sense.look(workWindow.hwnd, 400)).catch(() => null);
+          if ((whole?.elements?.length ?? 0) > snapshot.elements.length) {
+            const again = planFrom(whole);
+            if (again.q) {
+              ({ marks: now, q } = again);
+              pendingElements = Promise.resolve(whole);
+              fastSnapshot = whole;
+              debug(`[quick] found in a whole read of the page (${whole.elements.length} controls)`);
+            }
+          }
+        }
+        /* A link the task names can be below the fold, and Windows reports
+           only what is on screen. Hunting for it by picture, the vision
+           model clicked the first link it saw and scrolled the wrong page
+           for two minutes (the Node docs' "File system"). Scrolled for
+           instead, with the wheel, most of a screen at a time and a read
+           after each, as a person would: until it is there, or the page
+           has no further to go. */
+        const wantedLink = !q && Array.isArray(workWindow.rect) ? linkWanted(task) : null;
+        if (wantedLink) {
+          const [wx, wy, ww, wh] = workWindow.rect;
+          const at = markPoint({ rect: [wx + (ww / 2), wy + (wh * 0.6), 1, 1] }, shot);
+          for (let i = 0; i < 6 && !q; i++) {
+            if (!(await gate())) return;
+            const r = await execute({ computer, sense, shot, gate, action: { type: 'scroll', scroll_direction: 'down', scroll_amount: 0.8, x: at.x, y: at.y } });
+            if (!r?.moved) break;
+            const seen = await Promise.resolve().then(() => sense.look(workWindow.hwnd, 400)).catch(() => null);
+            if (!seen?.elements?.length) continue;
+            const found = planFrom(seen);
+            if (found.q?.action === 'click') {
+              ({ marks: now, q } = found);
+              pendingElements = Promise.resolve(seen);
+              fastSnapshot = seen;
+              debug(`[quick] "${wantedLink}" found after scrolling ${i + 1} time${i ? 's' : ''}`);
+            }
+          }
+        }
         if (q) {
           turnMarks = now;
           quickCheck = q.check ?? null;
+          quickWhole = !q.partial && !q.check;
           const args = { action: q.action, mark: q.mark, why: q.why };
           if (q.text) args.text = q.text;
+          if (Array.isArray(q.keys)) args.keys = q.keys;
           if (q.action === 'type') args.replaceValue = true;
           if (q.to_mark) args.to_mark = q.to_mark;
           if (q.target) args.target = q.target;
@@ -2198,6 +2382,9 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         }
       }
     }
+
+    // Nothing planned this turn: the model is in the job, so the timeline is worth having now.
+    if (!choice) askForTimeline();
 
     /* --- the fast path -------------------------------------------------
        Before spending a vision model on a picture of the window, ask
@@ -2655,11 +2842,16 @@ Do only that step.`,
     // Only the local fast path can attach an observed target; models cannot invent one.
     delete action.observedTarget;
     delete action.exact;
-    /* An attachment named by number becomes its exact text here, once, so
-       everything downstream — the executor, the record of what was typed,
-       the verdict — sees an ordinary paste of known text. */
+    /* An attachment named by number becomes what it is here, once. A text
+       becomes its exact text, so everything downstream — the executor, the
+       record of what was typed, the verdict — sees an ordinary paste of
+       known text. A picture becomes paste_image, its data URL, which the
+       executor puts on the clipboard as a picture before ctrl+v. Only ever
+       from an attachment: one the model made up is thrown away first. */
     const attachmentNo = Number(action.paste_attachment);
     delete action.paste_attachment;
+    delete action.paste_image;
+    delete action.paste_image_name;
     if (action.type === 'paste' && Number.isInteger(attachmentNo) && attachmentNo > 0) {
       const picked = material[attachmentNo - 1];
       /* A number that is not on the list pastes nothing. Dropped quietly, the
@@ -2671,11 +2863,32 @@ Do only that step.`,
         misses += 1;
         continue;
       }
-      action.paste_text = String(picked.text);
+      if (picked.kind === 'image') {
+        action.paste_image = picked.dataUrl;
+        action.paste_image_name = picked.name || 'picture';
+        delete action.paste_text;
+        /* The clipboard is about to hold a picture, not any text Halo knows
+           of: what it last copied will not be there to paste again, and must
+           not be recorded as pasted now. Forgotten, so a plain paste after
+           this is refused like any other while a picture is attached. */
+        clipboard = '';
+      } else {
+        action.paste_text = String(picked.text);
+      }
     }
-    if (action.type === 'paste' && !action.paste_text && pictures.length && !clipboard) {
-      feedback = 'Nothing was pasted: the clipboard holds the person\'s own things, not the picture they attached — '
-        + 'Halo cannot paste pictures into apps yet. If the job needs the picture, stop and say so.';
+    /* A plain paste pastes whatever is on the clipboard. While a picture is
+       attached and Halo does not know what that is — it has copied nothing
+       itself, or a picture it pasted has taken the place of what it had —
+       it is the person's own last copy or the wrong thing again, and "paste
+       this picture into ChatGPT" used to paste exactly the person's own.
+       Refused, and pointed at the two exact ways: the picture by its
+       number, or text as paste_text. */
+    if (action.type === 'paste' && !action.paste_text && !action.paste_image && pictures.length && !clipboard) {
+      const numbers = pictures.map((p) => material.indexOf(p) + 1);
+      feedback = 'Nothing was pasted: Halo does not know what is on the clipboard now — the person\'s own last copy, '
+        + 'or a picture pasted earlier — so a plain paste could put anything there. '
+        + `Paste the picture by its number instead: paste_attachment: ${numbers[0]}`
+        + `${numbers.length > 1 ? ` (the pictures are ${numbers.join(' and ')})` : ''}; or text with paste_text.`;
       misses += 1;
       continue;
     }
@@ -2710,7 +2923,12 @@ Do only that step.`,
         if (pic) action.markedAs = pic;
       }
       if (action.markedAs?.kind === 'control' && ['click', 'double_click', 'right_click', 'type'].includes(action.type)) {
-        action.observedTarget = { type: action.markedAs.role, name: action.markedAs.name, rect: action.markedAs.rect };
+        /* By the name Windows gives it, which is what the check before input
+           reads back. A label taken from the words beside a control
+           (withLabels, marks.mjs) is Halo's own: checked against it, the
+           control Windows calls nothing never matched, and every planned
+           tick of an unlabelled checkbox was held back as "changed". */
+        action.observedTarget = { type: action.markedAs.role, name: action.markedAs.inferred ? '' : action.markedAs.name, rect: action.markedAs.rect };
       }
     } else if (choice.fast && args.exact) {
       action.exact = true;
@@ -2918,7 +3136,13 @@ Do only that step.`,
       // The same click, found stale once already, is clicked this time: a
       // video or an animation under the target is always "changing", and
       // must not make it unclickable.
-      result = await execute({ computer, sense, shot, action, openThing, switchTo, llm, gate, trustStale: staleSignature === sig, mayRefuse: misfireStep !== stepIndex });
+      /* A planned step whose target was just found again in a fresh read of
+         the window is where that read says, whatever an older picture shows
+         there: the picture is skipped after a planned keystroke, and a
+         double-click on the to-do an Enter had just added was held back as
+         "that part of the screen changed" — which it had, by the Enter. */
+      const foundAfresh = choice.queued && Boolean(action.markedAs);
+      result = await execute({ computer, sense, shot, action, openThing, switchTo, llm, gate, trustStale: staleSignature === sig || foundAfresh, mayRefuse: misfireStep !== stepIndex });
     } catch (err) {
       return fail('action_failed', `That action did not go through: ${err.message}`);
     }
@@ -2935,6 +3159,7 @@ Do only that step.`,
       continue;
     }
     if (result?.stale) {
+      debug(`[turn ${turn}] held back: ${describe(action)} — ${result.said}`);
       staleSignature = sig;
       repeats = 0;
       lastSignature = null;
@@ -3008,7 +3233,12 @@ Do only that step.`,
     spent.act = Date.now() - tAct;
     const tLook = Date.now();
     onPhase('Observing');
-    try { await observe(result?.frame, { semanticOnly: (choice.fast || choice.queued) && !guide }); } catch (err) {
+    /* A planned keystroke with nothing next to aim at does not wait for a
+       fresh read of the window (observe, lightly). Typing lands in the field
+       the executor has just checked has the focus; a key goes where that was. */
+    const lightly = choice.queued && !guide && !POINTER.has(action.type) && result?.ok !== false && !result?.stale
+      && !(queued[0]?.markRef || queued[0]?.toMarkRef);
+    try { await observe(result?.frame, { semanticOnly: (choice.fast || choice.queued) && !guide, lightly }); } catch (err) {
       return fail('screen_unavailable', `Halo could not see the screen: ${err.message}`);
     }
     spent.look = Date.now() - tLook;
@@ -3042,8 +3272,22 @@ Do only that step.`,
       useWindow(seenFront);
     }
 
-    const changed = INVISIBLE.has(action.type) || (semanticChange ?? !sameScreen(lastGrey, shot.grey))
+    let changed = INVISIBLE.has(action.type) || (semanticChange ?? !sameScreen(lastGrey, shot.grey))
       || (action.type === 'scroll' && Math.abs(result?.moved ?? 0) > 0);
+    /* A thumbnail cannot see two letters trade places. Measured on
+       the-internet's drag page: the drag swapped the boxes, this said
+       "UNCHANGED", and the model dragged again and swapped them back. So a
+       pointer action the picture calls a no-op is asked about once more, in
+       words and places: anything named that appeared, went, or moved is a
+       change. Only then, so the usual case costs nothing. */
+    if (!changed && POINTER.has(action.type) && turnMarks.length && sense && workWindow?.hwnd) {
+      const after = await Promise.resolve(pendingElements).catch(() => null);
+      const within = Array.isArray(workWindow.rect) && workWindow.rect.length === 4 ? workWindow.rect : null;
+      if (after && marksMoved(turnMarks, buildMarks(after, { within }))) {
+        debug('[look] the picture looked the same, but the window says something moved — counted as a change');
+        changed = true;
+      }
+    }
 
     /* --- did what you meant to happen, happen? -------------------------
        "The screen changed" is the only verdict the loop could reach on its
@@ -3412,8 +3656,33 @@ export async function execute({ computer, sense, shot, action, openThing, switch
   if (action.observedTarget) {
     const target = action.observedTarget;
     const r = target.rect;
-    const hit = await sense?.hit(r[0] + r[2] / 2, r[1] + r[3] / 2);
-    if (!targetStillMatches(target, hit)) return { stale: true, said: 'The observed control changed or is covered. Observe again before input.' };
+    let hit = await sense?.hit(r[0] + r[2] / 2, r[1] + r[3] / 2);
+    /* Once more, a moment later, before calling it gone: a page settling
+       after it loads moves a field a few pixels and back — measured on
+       TodoMVC, a planned entry was held back for that and made by a vision
+       turn instead. */
+    if (!targetStillMatches(target, hit)) {
+      await computer.wait?.(150);
+      hit = await sense?.hit(r[0] + r[2] / 2, r[1] + r[3] / 2);
+    }
+    /* The words or picture inside a link or a button are part of it, not in
+       the way of it: a point on GitHub's "Releases" link answers with its
+       own text, "Releases (2)", and the click was held back as covered —
+       turn after turn. Only plain content, and only wholly inside it. */
+    const insideIt = (el) => el && ['Text', 'Image', 'Group'].includes(el.type) && Array.isArray(el.rect)
+      && el.rect[0] >= r[0] - 2 && el.rect[1] >= r[1] - 2 && el.rect[0] + el.rect[2] <= r[0] + r[2] + 2 && el.rect[1] + el.rect[3] <= r[1] + r[3] + 2;
+    if (!targetStillMatches(target, hit) && ['Hyperlink', 'Button', 'MenuItem', 'TabItem', 'ListItem'].includes(target.type)
+      && insideIt(hit?.at) && hit.at.enabled !== false && !hit.at.offscreen) {
+      hit = { ...hit, at: { ...target, enabled: true } };
+    }
+    if (!targetStillMatches(target, hit)) {
+      /* Say what is there instead. "Covered", with nothing more, had the
+         model aim at the same box twenty-three times — measured on the
+         Python docs, where Chrome's "Restore pages?" bubble sat on the
+         search box. Named, it is something to close first. */
+      const over = hit?.at && hit.at.name !== target.name ? ` — what is there now is ${hit.at.type} "${String(hit.at.name || '').slice(0, 60)}"` : '';
+      return { stale: true, said: `The observed control changed or is covered${over}. Observe again before input${over ? ', and close or move whatever is in the way' : ''}.` };
+    }
     if (!(await gate())) return { stop: true };
   }
 
@@ -3500,10 +3769,19 @@ export async function execute({ computer, sense, shot, action, openThing, switch
         return { ok: false, said: 'nothing was selected: use the dropdown centre and an exact simple option label' };
       }
       const physical = shot.toPhysical(action.x, action.y);
-      const hit = await sense?.hit(physical.x, physical.y);
-      const control = hit?.at;
+      /* Asked again, briefly, before giving up on it: straight after a page
+         arrives, Chrome can answer a point with the page around a select
+         for a moment — measured, the first turn's planned choice was held
+         back as "not there", and a vision turn later made the same choice
+         at the same point. */
+      let control = null;
+      for (const pause of [0, 120, 260]) {
+        if (pause) await computer.wait(pause);
+        control = (await sense?.hit(physical.x, physical.y))?.at ?? null;
+        if (control?.type === 'ComboBox') break;
+      }
       if (control?.type !== 'ComboBox' || (action.target && contradicts(action.target, control.name))) {
-        return { stale: true, said: 'The dropdown is not at that point now. Observe again before selecting.' };
+        return { stale: true, said: `The dropdown is not at that point now (found ${control?.type ?? 'nothing'}${control?.name ? ` "${String(control.name).slice(0, 40)}"` : ''}). Observe again before selecting.` };
       }
       if (String(control.value || '').trim().toLowerCase() === option.toLowerCase()) {
         return { ok: true, said: `${control.name} already shows ${option}` };
@@ -3518,12 +3796,27 @@ export async function execute({ computer, sense, shot, action, openThing, switch
       // that popup is inaccessible; Enter commits the highlighted option.
       for (const character of option.toLowerCase()) await computer.keypress([character === ' ' ? 'space' : character]);
       await computer.keypress(['enter']);
-      await computer.wait(100);
-      const fg = await sense?.foreground();
-      const seen = fg?.hwnd ? await sense.look(fg.hwnd, 150) : null;
-      const selected = seen?.elements?.find(el => el.type === 'ComboBox'
-        && (control.id ? el.id === control.id : el.name === control.name));
-      const value = String(selected?.value || '').trim();
+      /* Read back until it says so, for a moment at most. Chrome tells
+         Windows a select's new value a beat after the page shows it: read
+         once at 100ms it still said the old one, and a choice that had
+         worked was reported as failed and made all over again by the vision
+         model — measured, fourteen seconds. The box itself, by a hit test at
+         its middle, is a far cheaper read than the whole window. */
+      let value = '';
+      for (const pause of [110, 160, 240, 380]) {
+        await computer.wait(pause);
+        const at = (await sense?.hit(physical.x, physical.y).catch?.(() => null))?.at;
+        if (at?.type === 'ComboBox' && (!control.id || at.id === control.id)) {
+          value = String(at.value || '').trim();
+        } else {
+          const fg = await sense?.foreground();
+          const seen = fg?.hwnd ? await sense.look(fg.hwnd, 150) : null;
+          const selected = seen?.elements?.find(el => el.type === 'ComboBox'
+            && (control.id ? el.id === control.id : el.name === control.name));
+          value = String(selected?.value || '').trim();
+        }
+        if (value.toLowerCase() === option.toLowerCase()) break;
+      }
       if (value.toLowerCase() !== option.toLowerCase()) {
         return { ok: false, said: `${control.name} still shows ${value || 'an unconfirmed value'}; ${option} was not selected` };
       }
@@ -3692,7 +3985,7 @@ export async function execute({ computer, sense, shot, action, openThing, switch
         await computer.wait(80);
         if (!(await gate())) return { stop: true };
         const focused = await sense.focused();
-        if (!targetStillMatches(action.observedTarget, { found: focused?.found, at: focused?.at })) {
+        if (!focusLanded(action.observedTarget, { found: focused?.found, at: focused?.at })) {
           return { stale: true, said: 'The selected field did not receive focus. No text was entered.' };
         }
         if (action.replaceValue) await computer.keypress(['ctrl', 'a']);
@@ -3750,6 +4043,27 @@ export async function execute({ computer, sense, shot, action, openThing, switch
     }
 
     case 'paste': {
+      /* A picture the person attached (paste_attachment on a picture, see
+         the loop): put on the clipboard as a picture, then ctrl+v, the way a
+         person pastes one. If it cannot be put there, nothing is pressed at
+         all — ctrl+v would paste whatever the clipboard held before, which
+         is the person's own and not what anyone asked for. Putting it there
+         takes a helper process and most of a second, long enough for another
+         window to come to the front; if one did, nothing goes into it. */
+      if (action.paste_image) {
+        const name = String(action.paste_image_name || 'picture');
+        const front = await Promise.resolve().then(() => computer.foreground?.()).catch(() => null);
+        const put = await Promise.resolve().then(() => computer.writeClipboardImage?.(action.paste_image)).catch(() => false);
+        if (!put) return { said: `nothing was pasted: the picture ${name} could not be put on the clipboard` };
+        await computer.wait(120);           // the app hears that the clipboard changed
+        if (!(await gate())) return { stop: true };
+        const now = await Promise.resolve().then(() => computer.foreground?.()).catch(() => null);
+        if (front?.hwnd && now?.hwnd && String(front.hwnd) !== String(now.hwnd)) {
+          return { stale: true, said: `Nothing was pasted: "${short(now.title) || 'another window'}" came to the front while the picture was being readied. Here is a fresh look.` };
+        }
+        await computer.keypress(['ctrl', 'v']);
+        return { ok: true, said: `pasted the picture ${name}` };
+      }
       if (action.paste_text) {
         const put = await computer.writeClipboard?.(action.paste_text);
         if (!put) return { said: 'nothing was pasted: the clipboard could not be set' };
