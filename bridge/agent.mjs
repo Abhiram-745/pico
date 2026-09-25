@@ -399,7 +399,7 @@ export class HostAgent extends MockAgent {
     const hint = opts.mode || 'auto';
     let decision = hint === 'auto' && task && apps.parseOpen(task)
       ? { mode: 'agent', why: 'asks to open something', source: 'rules' }
-      : await route(task, { hint, llm: this.llm, attachments });
+      : await route(task, { hint, llm: this.llm, attachments, installed: apps.installedNamed });
     /* Something attached and no words at all, with the switch on "do it":
        there is no job in that — nothing says where it goes or what to do
        with it — so it is answered, as the router would have answered it. */

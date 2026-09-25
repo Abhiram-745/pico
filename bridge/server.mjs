@@ -1315,7 +1315,7 @@ await new Promise((resolve) => {
     console.log('');
     console.log(dim(toTerminal(encode(pairingUrl()))));
     console.log(`  ${dim('Local network only — nothing is exposed to the internet.')}`);
-    console.log(`  ${dim('Keep this window open. Closing it stops Halo.')}`);
+    console.log(`  ${dim(process.env.HALO_DETACHED ? 'Running in the background. Quit it from Settings in the Halo window.' : 'Keep this window open. Closing it stops Halo.')}`);
     console.log('');
     resolve();
   });
