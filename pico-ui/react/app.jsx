@@ -526,6 +526,22 @@ function SettingsView({ demo, petName, setPetName }) {
         </div>
       </div>
 
+      {/* Halo runs in the background with no console window, so this is how
+          it stops: there is nothing else left to close. */}
+      <div className="h-card">
+        <div className="h-card__row">
+          <div className="h-card__main">
+            <div className="h-card__title">Quit Halo</div>
+            <div className="h-card__sub">
+              {demo ? 'Only the installed app runs in the background.'
+                : 'Stops Halo and closes the island. Start it again from the Halo shortcut on your desktop or in Start.'}
+            </div>
+          </div>
+          <button type="button" className="h-pill h-pill--sm" disabled={demo}
+            onClick={() => { fetch('/quit', { method: 'POST' }).catch(() => {}); }}>Quit</button>
+        </div>
+      </div>
+
       <div className="h-card">
         <div className="h-card__title">What Halo has worked out</div>
         <div className="h-card__sub">
@@ -800,6 +816,22 @@ function App({ demo, conn }) {
     addEventListener('pagehide', onLeave);
     return () => removeEventListener('pagehide', onLeave);
   }, [demo]);
+
+  /* Quit from Settings: the bridge is going on purpose, so this window says
+     so and goes too, rather than sitting there "reconnecting" to nothing. */
+  const quitting = useStore(sel.quitting);
+  useEffect(() => {
+    if (!quitting) return undefined;
+    const t = setTimeout(() => { try { window.close(); } catch { /* the words stay */ } }, 1500);
+    return () => clearTimeout(t);
+  }, [quitting]);
+  if (quitting) {
+    return (
+      <div className="h-app h-app--quit">
+        <Empty icon="power" title={`${petName} has stopped`} sub="Start it again from the Halo shortcut on your desktop or in Start." />
+      </div>
+    );
+  }
 
   return (
     <div className="h-app" data-phase={phase}>

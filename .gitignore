@@ -35,3 +35,6 @@ build.json
 # The interface bundle, built from pico-ui/react by scripts/build-ui.mjs
 # (on start, in CI, and for the site). Generated, never edited.
 pico-ui/build/
+
+# Working copies made for helper agents (git worktree), never part of the repo.
+.claude/worktrees/

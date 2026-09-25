@@ -244,6 +244,11 @@ class Bridge {
         store.set({ runbook: { routes: Number(payload.routes) || 0, apps: payload.apps ?? [] } }, { type: 'runbook' });
         break;
 
+      // Halo was quit from Settings: the bridge is about to go, on purpose.
+      case 'quitting':
+        store.set({ quitting: true }, { type: 'quitting' });
+        break;
+
       case 'question':
         store.setQuestion(payload);
         break;

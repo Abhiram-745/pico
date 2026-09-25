@@ -63,6 +63,30 @@ for (const [k, v] of Object.entries(process.env)) {
   }
 }
 
+/* --- no console window ------------------------------------------------------
+   Started from the Desktop shortcut or with Windows, the bridge used to live
+   in a black console window titled "Halo" that had to stay open — and it
+   looks like clutter, so it gets closed. Measured: Halo stopped twice in one
+   evening that way ("stopping: SIGHUP (its console window was closed)" in
+   bridge.log), and the person saw only that Halo had gone.
+
+   So on Windows, a bridge that finds itself in a console starts itself again
+   in the background, with no window at all, and this one leaves — the
+   console closes on its own. Everything it would have printed goes to
+   bridge.log, and it is stopped from Settings in the Halo window ("Quit
+   Halo"), not by closing anything. `--console` keeps the old way, for
+   whoever wants to watch it. */
+if (process.platform === 'win32' && process.stdout.isTTY && !process.env.HALO_DETACHED
+  && !process.argv.includes('--console') && !process.env.PICO_DEBUG) {
+  spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+    detached: true, stdio: 'ignore', windowsHide: true, cwd: process.cwd(),
+    env: { ...process.env, HALO_DETACHED: '1' },
+  }).unref();
+  console.log('\n  Halo is starting in the background. The island appears at the top of your screen.');
+  console.log('  Quit it from Settings in the Halo window. This window closes by itself.\n');
+  process.exit(0);
+}
+
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 /* What shape Halo was in last time, and whether the three chords have been
@@ -990,6 +1014,22 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  /* --- quitting -------------------------------------------------------------
+     Halo runs without a console window now (see the top of this file), so
+     closing one is no longer how it stops: this is, from Settings. Loopback
+     only, like updates — a paired phone may drive Halo, not switch it off.
+     Every window is told first, so the app window can say Halo has stopped
+     rather than sit there reconnecting to nothing. */
+  if (url.pathname === '/quit' && req.method === 'POST') {
+    if (!/^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, ''))) { res.writeHead(403).end('Local only.'); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ quitting: true }));
+    console.log('[bridge] quitting, as asked from the app');
+    bridge.broadcast({ type: 'quitting', payload: {} });
+    setTimeout(() => { leave('quit'); }, 300);
+    return;
+  }
+
   // --- updates -----------------------------------------------------------
   // Loopback only: an update rewrites files on disk, so a paired phone on the
   // network must not be able to trigger one.
@@ -1364,6 +1404,32 @@ try {
 } catch (err) {
   console.warn(`[bridge] the island could not be opened (${err.message})`);
 }
+
+/* And kept there. The island is a window of its own, and windows go: the
+   laptop sleeps with the page's connection down long enough for it to
+   close itself, a monitor is unplugged, Chrome restarts. Measured on the
+   person's machine: a bridge up all night with no island at all, and
+   nothing on screen to say Halo was running. So every ten seconds, unless
+   the person hid it (Ctrl+Alt+H) or switched it off in the app, a missing
+   island is opened again — and the log says so. */
+let reopening = false;
+setInterval(async () => {
+  if (reopening || bridge.snapshot.shell?.hidden || bridge.snapshot.notch?.open === false) return;
+  if (bridge.notch.findWindow()) return;
+  reopening = true;
+  try {
+    console.log('[bridge] the island had gone — opening it again');
+    const result = await bridge.notch.open();
+    if (result?.ok) {
+      watchIslandHover();
+      bridge.broadcast({ type: 'notch', payload: { open: true } });
+    }
+  } catch (err) {
+    console.warn(`[bridge] the island could not be reopened (${err.message})`);
+  } finally {
+    reopening = false;
+  }
+}, 10_000).unref?.();
 
 /* ---------------------------------------------------------------------------
    The chords

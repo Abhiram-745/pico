@@ -419,3 +419,7 @@ body {
    showed their fallbacks; the palette's own dim and danger inks instead. */
 .h-update__sub { font-size: 11.5px; line-height: 1.45; color: var(--h-dim); text-align: center; }
 .h-update__sub--error { color: #ff8a82; }
+
+/* Quit from Settings: one sentence, in the middle, until the window closes. */
+.h-app--quit { display: grid; place-items: center; padding: 40px; }
+.h-app--quit .h-emptycard { max-width: 420px; }

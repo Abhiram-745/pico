@@ -28,6 +28,7 @@ export function useStore(select) {
 // Stable selectors, defined once, so subscriptions are not re-made each render.
 export const sel = {
   phase: (s) => s.phase,
+  quitting: (s) => Boolean(s.quitting),
   messages: (s) => s.messages,
   plan: (s) => s.plan,
   voice: (s) => s.voice,

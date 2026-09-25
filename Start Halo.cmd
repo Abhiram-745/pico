@@ -57,10 +57,12 @@ if defined NEEDS_INSTALL (
 
 echo.
 echo   Starting Halo...
-echo   The island appears at the top of your screen.
-echo   Keep this window open. Close it to stop.
+echo   The island appears at the top of your screen, and this window closes by itself:
+echo   Halo runs in the background. Quit it from Settings in the Halo window.
 echo.
 
 rem Anything passed in goes to the bridge: "Start Halo.cmd --app" opens the
-rem full window too, which is what the "Halo App" shortcut does.
+rem full window too, which is what the "Halo App" shortcut does. The bridge
+rem starts itself again in the background with no window and this one ends;
+rem "Start Halo.cmd --console" keeps it here instead, to watch what it does.
 node "bridge/server.mjs" %*
