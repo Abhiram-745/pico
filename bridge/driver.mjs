@@ -2463,6 +2463,8 @@ export async function runTask({ task, computer, llm, maxTurns = 24, hooks = {}, 
         const tDecide = Date.now();
         const picked = await fastDecide(llm, {
           goal: currentMilestone ? `${currentMilestone.do}. ${currentMilestone.doneWhen}` : brief,
+          // Whether a site is named at all, for OPEN_URL outside a browser.
+          task: [context.whole, brief].filter(Boolean).join('\n'),
           table, targets, window: frontTitle, history: done, recent: recentOps,
           windows: windowCache.filter((w) => !isHaloWindow(w.title)).slice(0, 12),
           /* What the window says, not only what can be pressed. Without it

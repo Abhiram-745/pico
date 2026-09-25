@@ -330,6 +330,23 @@ const RULES = [
   'asked for, the job is finished - choose DONE rather than going back to a search box to do it again.',
 ].join(' ');
 
+/**
+ * Does a goal name something on the web: an address, a site by name, or the
+ * web itself ("website", "online", "in the browser")?
+ *
+ * OPEN_URL used to be offered in every window. In File Explorer or Notepad
+ * nothing on the table is a web address, so the only way to "make progress"
+ * a model could see was often that one — and once chosen, addressFor asked a
+ * language model for an address and the default browser opened it. A job
+ * about a folder became a Google search. Now a window that is not a browser
+ * is only offered it when the job itself is about a site. The sites below are
+ * the ones that are websites first; one that is also an app on this computer
+ * (Spotify, Outlook, WhatsApp) is left to apps.open(), which asks which.
+ */
+const NAMES_A_SITE = /(?:https?:\/\/|www\.)\S|\b[a-z0-9-]+\.(?:com|net|org|io|dev|co|ai|app|gov|edu|uk|me|tv|gg|so|xyz|us|info|shop)\b|\b(?:website|web\s?site|web\s?page|site|url|online(?!\s+(?:store|shop|business|course|class|account|presence|meeting|form|order))|on\s+the\s+(?:web|internet)|in\s+(?:the\s+|a\s+|my\s+)?(?:web\s+)?browser|in\s+(?:chrome|edge|firefox|brave|opera)|new\s+tab|search\s+the\s+web|google|bing|duckduckgo|youtube|gmail|reddit|amazon|ebay|wikipedia|imdb|yelp|etsy|walmart|stack\s?overflow)\b/i;
+
+export const namesSite = (text) => NAMES_A_SITE.test(String(text ?? ''));
+
 const TARGET_RULES = [
   'Choose the best element IF the next operation is the one named in this question.',
   'Another question decides the operation; this one only picks where it would go.',
@@ -343,7 +360,7 @@ const TARGET_RULES = [
  * answer is unusable - which the caller must treat as "look at the screen
  * instead", never as "do nothing".
  */
-export async function decide(llm, { goal, table, targets, window: win, windows = [], browser = false, says = [], history = [], recent = [] }) {
+export async function decide(llm, { goal, task = '', table, targets, window: win, windows = [], browser = false, says = [], history = [], recent = [] }) {
   /* Other windows are targets too.
 
      Bringing one to the front was the commonest thing a run spent a whole
@@ -360,8 +377,14 @@ export async function decide(llm, { goal, table, targets, window: win, windows =
     ...(targets.TYPE_TEXT ? { TYPE_TEXT: 'Type into an editable field. The text itself is written afterwards, from the goal.' } : {}),
     ...(targets.SELECT ? { SELECT: 'Choose one option from a dropdown that is already open.' } : {}),
     ...(Object.keys(switchTo).length ? { SWITCH_TO: 'Bring one of the other open windows to the front.' } : {}),
-    OPEN_URL: 'Open a web address in a new tab. Use this once per thing the goal names, not once for all of them. '
-      + 'The address itself is written afterwards, from the goal.',
+    /* In a browser, or for a job that names a site (namesSite, above). A
+       desktop job in a desktop window is never offered the way out to the
+       web: `task` is the whole request, since a milestone's goal can leave
+       out the address the request gave. */
+    ...(browser || namesSite(goal) || namesSite(task) ? {
+      OPEN_URL: 'Open a web address in a new tab. Use this once per thing the goal names, not once for all of them. '
+        + 'The address itself is written afterwards, from the goal.',
+    } : {}),
     /* The keyboard, where the keyboard is exact.
 
        A key press cannot land one row out. Reaching the address bar by

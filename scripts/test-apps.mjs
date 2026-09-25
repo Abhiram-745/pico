@@ -9,7 +9,7 @@
    Run with: node scripts/test-apps.mjs
    ========================================================================== */
 
-import { parseOpen, preference, readChoice, resolve, findApp, namedAsPlace } from '../bridge/apps.mjs';
+import { parseOpen, preference, readChoice, resolve, findApp, namedAsPlace, installedNamed } from '../bridge/apps.mjs';
 
 let failed = 0;
 const check = (label, ok, detail = '') => {
@@ -56,9 +56,38 @@ for (const [text, want] of [
   ['open the claude website', 'site'],
   ['open claude.ai', 'site'],
   ['open spotify web app', 'site'],
+  // Said of the app itself: "Excel online", "Outlook on the web"...
+  ['open excel online', 'site'],
+  ['open outlook on the web', 'site'],
+  ['open the web version of word', 'site'],
+  ['open word website', 'site'],
+  ['open teams in the browser', 'site'],
+  ['open spotify web player', 'site'],
+  ['open the installed spotify', 'app'],
+  ['open the spotify desktop app', 'app'],
+  // ...not of the job after it, which is where these words used to count.
+  ['open excel and make a budget for my online store', null],
+  ['open outlook and email the website team', null],
+  ['open spotify and play my online playlist', null],
+  ['open whatsapp and send sam https://example.com', null],
 ]) {
   check(`${JSON.stringify(text)} -> ${preference(text)}`, preference(text) === want, `wanted ${want}`);
 }
+// With the name being opened: a plan step's, which need not be the "open X" one.
+for (const [text, name, want] of [
+  ['message sam on whatsapp web', 'whatsapp', 'site'],
+  ['open excel online and paste the table into whatsapp', 'whatsapp', null],
+  ['open excel online and paste the table into whatsapp', 'excel', 'site'],
+  ['email the website team in outlook', 'outlook', null],
+  ['open the whatsapp app and message sam', 'whatsapp', 'app'],
+  ['open teams in the browser', 'microsoft teams', 'site'],
+  // no name and no "open X": the whole text, as a chat job reads it
+  ['paste each prompt into chatgpt on the web', null, 'site'],
+]) {
+  const got = preference(text, name);
+  check(`${JSON.stringify(text)} (${name}) -> ${got}`, got === want, `wanted ${want}`);
+}
+check('"open the installed spotify" opens spotify', parseOpen('open the installed spotify')?.name === 'spotify');
 
 console.log('readChoice');
 const BOTH = [{ id: 'app', label: 'WhatsApp app' }, { id: 'site', label: 'WhatsApp Web' }];
@@ -110,6 +139,23 @@ if (process.platform === 'win32') {
   if (app) check('"the app" skips the question', r.kind === 'app');
   const w = await resolve('whatsapp', 'open whatsapp web');
   check('"web" skips the question', w.kind === 'site');
+
+  /* An installed app is never swapped for its website because of a word in
+     the rest of the job. With the app here it is the app, or the question;
+     only with it missing is the website offered — and that is asked too. */
+  for (const [name, text] of [
+    ['excel', 'open excel and make a budget for my online store'],
+    ['outlook', 'open outlook and email the website team'],
+  ]) {
+    const r2 = await resolve(name, text);
+    check(`"${text}" -> ${r2.kind}`, r2.kind !== 'site', 'wanted the app, or the question');
+  }
+  check('"excel online" still means the website', (await resolve('excel', 'open excel online')).kind === 'site');
+
+  // The shortcut matcher's and the router's view of the same list: at once, whole names only.
+  const np = await findApp('notepad');
+  if (np?.name === 'Notepad') check('installedNamed answers from the list already read', installedNamed('notepad')?.id === np.id);
+  check('installedNamed wants the whole name', installedNamed('note') === null);
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');
