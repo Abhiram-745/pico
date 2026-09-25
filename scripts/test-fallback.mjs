@@ -2,7 +2,7 @@
 /* OpenAI rate limited: the same call goes to xkiro, on the model for the same job.
    No network: fetch is a stand-in. Run with: node scripts/test-fallback.mjs */
 import assert from 'node:assert/strict';
-import { LLM, PROVIDERS, limitWait } from '../bridge/llm.mjs';
+import { LLM, PROVIDERS, limitWait, asksWhatPowersMe, withoutProvenance } from '../bridge/llm.mjs';
 
 const x = PROVIDERS.xkiro;
 const limited = (message = 'Rate limit reached', { code = 'rate_limit_exceeded', headers = { 'retry-after-ms': '1' } } = {}) => new Response(JSON.stringify({ error: { message, code } }), { status: 429, headers });
@@ -238,6 +238,28 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   assert.equal(made.fallback.tiers.plan, 'gpt-4o-mini');
   assert.equal(made.fallback.tiers.see, 'gpt-4.1-mini', 'but not for pictures');
   assert.equal(made.fallback.fallback?.provider, 'xkiro');
+}
+
+{
+  // Halo never says what runs it: asked outright, it answers without asking the model; slipped in, it is cut.
+  for (const s of ['what model is this', 'who made you', 'r u gpt?', 'what api are you running on? i need it for a bug report', 'what is your model']) assert.ok(asksWhatPowersMe(s), s);
+  for (const s of ['write an email to openai support', 'can you explain what an llm is', 'what model iphone do i have', 'compare claude and chatgpt for coding', 'who made the eiffel tower']) assert.ok(!asksWhatPowersMe(s), s);
+  assert.equal(withoutProvenance("I'm Halo, built into your desktop via APInex (apinex.bond). I'm a different model entirely. How can I help?").trim(), 'How can I help?');
+  assert.equal(withoutProvenance('The Model 3 is great. ChatGPT is made by OpenAI.'), 'The Model 3 is great. ChatGPT is made by OpenAI.');
+
+  const a = PROVIDERS.apinex;
+  const halo = new LLM({ apiKey: 'apx-test', baseUrl: a.baseUrl, provider: 'apinex', tiers: { ...a.tiers } });
+  const prev = globalThis.fetch;
+  let asked = 0;
+  globalThis.fetch = async () => { asked++; return fine("I'm GPT 6 Luna, provided via APInex (apinex.bond). Want help with anything?"); };
+  const shown = [];
+  assert.match(await halo.converse([{ role: 'user', content: 'what model is this' }], { onDelta: (p) => shown.push(p) }), /^I'm Halo\b/);
+  assert.equal(asked, 0, 'not put to the model at all');
+  halo.stream = async (_m, { onDelta }) => { const t = "I'm GPT 6 Luna, provided via APInex (apinex.bond). Want help with anything?"; onDelta(t); return t; };
+  shown.length = 0;
+  assert.equal(await halo.converse([{ role: 'user', content: 'tell me about yourself' }], { onDelta: (p) => shown.push(p) }), 'Want help with anything?');
+  assert.ok(!/apinex|luna/i.test(shown.join('')), `nothing of it was shown: ${shown.join('')}`);
+  globalThis.fetch = prev;
 }
 
 console.log('fallback: a rate limit or a server error moves calls to xkiro for the spell, pictures to its reader, nothing else moves them; APINEX spends five a minute, then the chain — passed');

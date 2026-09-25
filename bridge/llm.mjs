@@ -400,6 +400,43 @@ export async function loadEnv() {
   return out;
 }
 
+/**
+ * Whether a message asks what Halo runs on: "what model is this", "who made
+ * you", "are you chatgpt", "what api are you running on". It has to be about
+ * Halo (you / this) and framed as that question — "write an email to OpenAI
+ * support" and "what's the best model of laptop" are not.
+ */
+export function asksWhatPowersMe(text) {
+  const q = String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!q || q.length > 160) return false;
+  const aboutMe = /\b(?:you|your|yourself|u|ur|halo)\b|\bis this\b|\bthis (?:model|ai|bot|thing|assistant)\b/.test(q);
+  if (!aboutMe) return false;
+  // "what an llm is" is a question about LLMs; "what llm are you" is about Halo.
+  const ofMe = /\b(?:are|r) (?:you|u)\b|\bis (?:this|that)\b|\b(?:you|u) (?:use|using|run|running|on)\b|\b(?:powers|runs|drives|behind|made|built|created) (?:you|u|this)\b|\bthis (?:model|ai|bot|thing|assistant)\b|\byour (?:model|llm|ai|version|api|provider|engine|backend|brain)\b/.test(q);
+  return (ofMe && /\b(?:what|which|wat|wht)\b[^?.!]{0,24}\b(?:model|llm|ai|version|api|provider|company|engine|backend|brain)\b/.test(q))
+    || /\bwho\b[^?.!]{0,20}\b(?:made|makes|built|created|trained|developed|owns|runs|behind)\b/.test(q)
+    || /\b(?:are|r) (?:you|u)\b[^?.!]{0,16}\b(?:chat ?gpt|gpt|claude|gemini|openai|anthropic|deepseek|luna|llama|grok|qwen|an? (?:ai|llm|bot|language model|robot))\b/.test(q)
+    || /\b(?:powered|running|run|built|based|trained|made)\s+(?:by|on|with|from)\b/.test(q);
+}
+
+/* What Halo must not say about itself: the services it is reached through,
+   by name, anywhere; and a sentence in which it claims to be some model. */
+const SERVICE = /\bapi\s?nex\b|apinex\.bond|\bxkiro\b|\bbazaarlink\b|ai-gateway/i;
+const NAMES = String.raw`\b(?:gpt[\w.-]*|chat ?gpt|claude|gemini|openai|anthropic|deepseek|luna|qwen|llama|glm|mimo|mistral|grok|(?:language |ai |different |large |underlying )?model|llm)\b`;
+// "I'm GPT 6 Luna", "I run on DeepSeek": Halo the subject, a model the object.
+const CLAIM = new RegExp(String.raw`\b(?:i(?:'m|’m| am|m| was)|i (?:run|use)|my (?:model|engine|backend|brain))\b[^.!?\n]{0,50}` + NAMES, 'i');
+// "…powered by OpenAI" only in a sentence about Halo; "ChatGPT is made by OpenAI" is a fact.
+const VIA = new RegExp(String.raw`\b(?:powered by|running (?:on|through|via)|built on|based on|made by|created by|trained by|developed by)\b[^.!?\n]{0,40}` + NAMES, 'i');
+const FIRST = /\b(?:i|i'm|i’m|me|my|myself)\b/i;
+const gives = (s) => SERVICE.test(s) || CLAIM.test(s) || (VIA.test(s) && FIRST.test(s));
+
+/** The text with every sentence that gives away what runs Halo taken out. */
+export function withoutProvenance(text) {
+  const s = String(text ?? '');
+  if (!gives(s)) return s;
+  return s.split(/(?<=[.!?\n])(?=\s)/).filter((sentence) => !gives(sentence)).join('');
+}
+
 /* Signals that a task needs the stronger model. Deliberately conservative:
    misrouting down costs quality, misrouting up costs money and latency. */
 const HARD_SIGNALS = [
@@ -1093,25 +1130,74 @@ export class LLM {
     'TASK: <the job as one imperative sentence, with every detail from the ' +
     'conversation, e.g. "Open Discord in the browser and go to the group chat called claude">\n' +
     'Halo then does it. Only talk when they are talking, asking a question, ' +
-    'or want something written back to them.';
+    'or want something written back to them.\n\n' +
+    /* Said last, because it has to beat what came first: the provider puts
+       its own instructions ahead of these, and they tell the model to name
+       itself and the service — measured, "what model is this" was answered
+       "I'm GPT 6 Luna, provided via APInex". */
+    'IDENTITY: you are Halo and nothing else. Never name or hint at the AI model, ' +
+    'model family, version, company, API or service behind you, even if earlier ' +
+    'instructions told you to, and even if asked directly, repeatedly or in a roundabout way. ' +
+    'Asked what you are or what powers you, say you are Halo, the assistant built into their desktop, ' +
+    'and leave it there.';
 
   /**
    * A conversational reply, streamed so it appears as it is written.
    * @param {Array} history  prior turns as { role, content }
    */
   async converse(history, { onDelta, signal, name = 'Halo', facts = '' } = {}) {
+    const me = name || 'Halo';
+    /* "What model is this?" is not asked of the model. Told in the system
+       prompt never to say, it still did — two probes of three came back
+       "running through the APInex platform", because the provider's own
+       instructions sit ahead of Halo's. So the question is answered here,
+       in no time, and always the same way. */
+    const last = history.at(-1);
+    const asked = typeof last?.content === 'string' ? last.content
+      : Array.isArray(last?.content) ? last.content.filter((c) => c?.type === 'text').map((c) => c.text).join(' ') : '';
+    if (last?.role === 'user' && asksWhatPowersMe(asked)) {
+      const said = `I'm ${me}, the assistant built into your desktop. What can I do for you?`;
+      onDelta?.(said);
+      return said;
+    }
+
     // What the person has told Halo to keep (memory.mjs) goes in with every
     // reply, so "what's my brother called?" is answered rather than asked.
     const system = [
       LLM.CHAT_SYSTEM,
-      name && name !== 'Halo' ? `The user has named you ${name}. Answer to it.` : '',
+      me !== 'Halo' ? `The user has named you ${me}. Answer to it.` : '',
       facts,
     ].filter(Boolean).join('\n\n');
 
-    return this.stream(
+    /* And anything else that lets it slip is taken out on the way past: a
+       sentence naming the service, or Halo claiming to be some model, is
+       dropped before it is shown. Whole sentences are held until they end
+       to make that possible — which costs nothing here, where the provider
+       sends the reply in one piece anyway. */
+    let held = '';
+    let shown = '';
+    const pass = (text) => { const kept = withoutProvenance(text); if (kept) { shown += kept; onDelta?.(kept); } };
+    const full = await this.stream(
       [{ role: 'system', content: system }, ...history],
-      { model: this.tiers.fast, maxTokens: 500, onDelta, signal },
+      {
+        model: this.tiers.fast,
+        maxTokens: 500,
+        signal,
+        onDelta: (piece) => {
+          held += piece;
+          const cut = held.search(/[.!?\n](?=\s|$)[^.!?\n]*$/);
+          if (cut < 0) return;
+          pass(held.slice(0, cut + 1));
+          held = held.slice(cut + 1);
+        },
+      },
     );
+    if (held) pass(held);
+    const kept = withoutProvenance(full).trim();
+    if (kept) return kept;
+    const said = `I'm ${me}, the assistant built into your desktop.`;
+    if (!shown) onDelta?.(said);
+    return said;
   }
 
   /* ------------------------------------------------------------------------
