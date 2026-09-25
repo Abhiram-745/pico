@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { handleVoice, voiceRequestAllowed } from '../bridge/voice.mjs';
-import { actionSpace, decide, targetStillMatches, focusLanded, targetNamedInGoal } from '../bridge/fastpath.mjs';
+import { actionSpace, decide, targetStillMatches, focusLanded, targetNamedInGoal, namesSite } from '../bridge/fastpath.mjs';
 import { execute } from '../bridge/driver.mjs';
 import { HostAgent } from '../bridge/agent.mjs';
 
@@ -98,6 +98,25 @@ const llm = { evaluate: async (_, questions) => {
   };
 } };
 assert.equal(await decide(llm, { goal: 'Search for cats', ...space }), null, 'Merged heads must not execute an invented target');
+
+/* OPEN_URL is offered in a browser, or for a job that names a site — never to
+   a desktop job in a desktop window, where choosing it opened the browser on
+   an address a model made up. */
+const offersOpenUrl = async (args) => {
+  let offered = null;
+  await decide({ evaluate: async (_, questions) => { offered = Object.keys(questions.operation.criteria); return null; } }, { ...space, ...args });
+  return offered.includes('OPEN_URL');
+};
+assert.equal(await offersOpenUrl({ goal: 'Make a folder called Reports in Documents', window: 'Documents - File Explorer' }), false, 'no OPEN_URL for a folder job in Explorer');
+assert.equal(await offersOpenUrl({ goal: 'Type hello into the document', window: 'Untitled - Notepad' }), false, 'no OPEN_URL for typing in Notepad');
+assert.equal(await offersOpenUrl({ goal: 'Make a budget for my online store', window: 'Book1 - Excel' }), false, '"online store" is not a site');
+assert.equal(await offersOpenUrl({ goal: 'Search for cats', window: 'Google - Google Chrome', browser: true }), true, 'a browser keeps OPEN_URL');
+assert.equal(await offersOpenUrl({ goal: 'Open the price page', task: 'compare the price on amazon.com and ebay', window: 'Documents - File Explorer' }), true, 'a named site keeps OPEN_URL');
+assert.equal(await offersOpenUrl({ goal: 'Look up otters on YouTube', window: 'Untitled - Notepad' }), true);
+assert.equal(await offersOpenUrl({ goal: 'Open the company website', window: 'Untitled - Notepad' }), true);
+assert.equal(namesSite('go to https://example.com'), true);
+assert.equal(namesSite('rename the file to report.docx'), false, 'a file name is not an address');
+assert.equal(namesSite('in file explorer make a folder called Reports'), false);
 const events = [];
 const host = new HostAgent({ onCommand() {}, emit(type, payload) { events.push({ type, payload }); } }, { memory: { forPrompt: () => '' } });
 let interrupted = false;
@@ -110,4 +129,4 @@ await oldReply;
 assert.equal(interrupted, true);
 assert.ok(events.some(e => e.payload?.remove), 'An interrupted reply must remove its thinking placeholder');
 assert.ok(!events.some(e => e.payload?.text?.includes('cancelled')), 'Cancellation must not publish a provider error');
-console.log('Voice access, streamed audio, errors, target freshness, input cancellation, chat cancellation and malformed JEV heads passed.');
+console.log('Voice access, streamed audio, errors, target freshness, input cancellation, chat cancellation, malformed JEV heads and OPEN_URL outside a browser passed.');

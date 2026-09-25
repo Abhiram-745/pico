@@ -119,6 +119,7 @@ const ALIASES = new Map([
 const FILLER = new Set([
     'the', 'my', 'a', 'an', 'up', 'please', 'pls', 'for', 'me', 'now', 'app', 'application',
   'desktop', 'program', 'website', 'site', 'web', 'page', 'online', 'browser', 'version',
+  'installed',
 ]);
 
 /** Halo's own windows: the app ("Halo") and the island ("Halo Notch"). One
@@ -235,6 +236,24 @@ export async function findApp(name) {
   return best;
 }
 
+/**
+ * The installed app a name is exactly, from the list already read — never
+ * waiting on PowerShell for it.
+ *
+ * For the checks that have to answer at once, before anything moves: the
+ * shortcut matcher and the chat-or-job router. Whole names only (and the
+ * aliases people use), because those checks pull the phrase out of a
+ * sentence, and a loose match there would make "search for code review
+ * tips" about Visual Studio Code. Before the list has been read the answer
+ * is null, and those checks fall back on the names they know themselves.
+ */
+export function installedNamed(name) {
+  const wanted = norm(name);
+  if (!wanted || !cache?.length) return null;
+  const forms = new Set([wanted, ALIASES.get(wanted)].filter(Boolean));
+  return cache.find((app) => !NEVER.test(app.name) && forms.has(norm(app.name))) ?? null;
+}
+
 /** Words in a request that are never the name of what it is about. */
 const COMMON = new Set([
   'open', 'launch', 'start', 'run', 'go', 'to', 'and', 'then', 'send', 'message', 'write', 'type',
@@ -285,16 +304,74 @@ export async function mentionedApps(text) {
   return [...found.values()];
 }
 
+const APP_WORDS = /\b(?:app|application|desktop app|desktop version|program|installed)\b/;
+const WEB_APP = /\bweb ?app\b/;
+const SITE_WORDS = /\b(?:website|web site|site|web version|web app|web player|on the web|online|in (?:the |a |my )?(?:web )?browser|in (?:chrome|edge|firefox)|web)\b/;
+const ADDRESS = /(?:https?:\/\/|www\.)|\b[a-z0-9-]+\.(?:com|net|org|io|ai|app|co|uk|so|us|tv|me)\b/i;
+
+/* The same words, said of one name: "Outlook on the web", "Excel online",
+   "the web version of Word", "Teams in the browser", "the Spotify desktop
+   app". Written for norm()'s output, where "Word's" is "words" and every
+   dot is a space. */
+const SITE_AFTER = String.raw`(?:web(?:\s+(?:app|version|player|client))?|online|website|web\s+site|site|on\s+the\s+web|in\s+(?:the\s+|a\s+|my\s+)?(?:web\s+)?browser|in\s+(?:chrome|edge|firefox|brave))`;
+const SITE_BEFORE = String.raw`(?:(?:web|online|browser)(?:\s+(?:version|app|client))?(?:\s+(?:of|for))?|website\s+(?:of|for))(?:\s+the)?`;
+const APP_AFTER = String.raw`(?:app|application|desktop(?:\s+(?:app|version|client))?|program)`;
+const APP_BEFORE = String.raw`(?:installed|desktop(?:\s+(?:app|version))?(?:\s+of)?)(?:\s+the)?`;
+const escaped = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
  * What a request says about app versus website, if anything.
- *   'app'  — "the WhatsApp app", "desktop app", "the application"
+ *   'app'  — "the WhatsApp app", "desktop app", "the application", "the installed one"
  *   'site' — "website", "on the web", "in the browser", "WhatsApp Web", a URL
+ *
+ * Only about the thing being opened. These words used to count anywhere in
+ * the request, and the rest of a request is about the job, not the app:
+ * "open Excel and make a budget for my online store" went to office.com,
+ * and "open Outlook and email the website team" to outlook.live.com, with
+ * no question asked, on a computer with both installed. So the site words
+ * count only in the "open X" phrase itself ("open Excel online") or right
+ * against the name ("Outlook on the web", "the web version of Word").
+ *
+ * The app words still count anywhere once nothing near the name has said
+ * either way: at worst they keep the job on this computer, which is where
+ * someone who says "the app" wants it — and where a remembered "website"
+ * answer (open() below) must give way to them.
+ *
+ * `name` is what is being opened. Without one, the "open X" phrase of the
+ * request says what it is; with neither — a chat message for an assistant
+ * app, job.mjs — the whole text is read, as it always was.
  */
-export function preference(text) {
+export function preference(text, name = null) {
   const t = norm(text);
-  if (/\b(?:app|application|desktop app|desktop version|program)\b/.test(t) && !/\bweb ?app\b/.test(t)) return 'app';
-  if (/\b(?:website|web site|site|web version|web app|on the web|online|in (?:the |my )?browser|in (?:chrome|edge|firefox)|web)\b/.test(t)) return 'site';
-  if (/(?:https?:\/\/|www\.)|\b[a-z0-9-]+\.(?:com|net|org|io|ai|app|co|uk|so|us|tv|me)\b/i.test(String(text))) return 'site';
+  const opened = parseOpen(text);
+  const subject = norm(name ?? opened?.name ?? '');
+
+  if (!subject && !opened) {
+    if (APP_WORDS.test(t) && !WEB_APP.test(t)) return 'app';
+    if (SITE_WORDS.test(t)) return 'site';
+    if (ADDRESS.test(String(text))) return 'site';
+    return null;
+  }
+
+  /* The "open X" phrase, when it is this name's: "open whatsapp web" is,
+     but for a plan step opening WhatsApp, "open Excel online and …" is not.
+     Either name may be the longer: "Microsoft Teams" for "open teams in
+     the browser". */
+  const opens = norm(opened?.name);
+  const phrase = opened && (!name || norm(opened.said).includes(subject) || (opens && subject.includes(opens)))
+    ? opened.said : '';
+  const p = norm(phrase);
+  const n = subject ? escaped(subject) : null;
+  const near = (words) => (n ? new RegExp(String.raw`\b${n}\s+${words}\b`).test(t) : false);
+  const before = (words) => (n ? new RegExp(String.raw`\b${words}\s+${n}\b`).test(t) : false);
+
+  const site = (p && (SITE_WORDS.test(p) || ADDRESS.test(phrase))) || near(SITE_AFTER) || before(SITE_BEFORE);
+  const app = (p && APP_WORDS.test(p) && !WEB_APP.test(p)) || near(APP_AFTER) || before(APP_BEFORE);
+  if (app && !site) return 'app';
+  if (site && !app) return 'site';
+  if (site && app) return null;
+
+  if (APP_WORDS.test(t) && !WEB_APP.test(t)) return 'app';
   return null;
 }
 
@@ -375,7 +452,7 @@ export async function resolve(name, requestText = '') {
      few minutes, perhaps. Opening it is the one question the list has to
      settle outright, so here — only here — the new list is waited for. */
   if (!app && inflight) { await inflight; app = await findApp(key); }
-  const wants = preference(requestText);
+  const wants = preference(requestText, key);
   const title = app?.name ?? (key.charAt(0).toUpperCase() + key.slice(1));
 
   if (app && wants === 'app') return { kind: 'app', app };
@@ -655,10 +732,13 @@ export async function open(what, io = {}) {
       /* An address for a site that is also an installed app is still the
          person's call. The planner turning "open WhatsApp" into
          web.whatsapp.com is exactly the guess the question exists to stop —
-         unless the request itself said website, or it was settled already. */
+         unless the request itself said website, or it was settled already.
+         Settled as the app counts too: any answer at all used to send the
+         address to the browser, so "open the WhatsApp app", planned as
+         web.whatsapp.com, opened the website it had just said it did not want. */
       const known = [...SITES.entries()].find(([, s]) => hostOf(s.url) === host);
-      const settled = known && (preference(task) || choices.has(known[0]) || remembered(`open:${known[0]}`));
-      if (known && known[1].app && !settled && await findApp(known[0])) {
+      const pick = known ? (preference(task, known[0]) ?? choices.get(known[0]) ?? remembered(`open:${known[0]}`)) : null;
+      if (known && known[1].app && pick !== 'site' && await findApp(known[0])) {
         name = known[0];
         url = null;
       } else {
@@ -678,7 +758,10 @@ export async function open(what, io = {}) {
   /* --- a name ----------------------------------------------------------- */
   const key = norm(name);
   let decision = await resolve(key, task);
-  const settled = choices.get(key) ?? (preference(task) ? null : remembered(`open:${key}`));
+  /* A kept answer ("open Spotify as the website") applies only when this
+     request says nothing itself: "open the Spotify app", "the desktop app",
+     "the installed one" all beat it, through resolve() above. */
+  const settled = choices.get(key) ?? (preference(task, key) ? null : remembered(`open:${key}`));
   if (settled === 'app' && decision.app) decision = { kind: 'app', app: decision.app };
   if (settled === 'site' && decision.site) decision = { kind: 'site', site: decision.site };
 

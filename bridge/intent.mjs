@@ -103,6 +103,64 @@ const SCREEN_VERB_LEAD = new RegExp(`^(?:${POLITE}[,\\s]+)*(?:(?:double-?|right-
 /** …or as a later step of a chain: "type the name, then click Save". */
 const CHAINED_SCREEN_VERB = /\b(?:and|then|,)\s+(?:then\s+)?(?:(?:double-?|right-?)?click|tick|untick|uncheck)\b/i;
 
+/* --------------------------------------------------------------------------
+   Certainly a job in a desktop app
+
+   "In File Explorer make a folder called Reports in Documents" and
+   "calculate 12 times 7 in Calculator" came back from the rules undecided:
+   the order is not the first word of the first one, and "calculate" is not
+   an order in the second at all. Undecided goes to a model, and a model that
+   is unsure answers chat — so Halo worked out 84 in words, or explained how
+   to make a folder, while Calculator and Explorer sat there unused. Naming
+   an app on this computer as the place to do it is as plain as naming a
+   page: nobody says "in Notepad" about a conversation.
+
+   A question still wins ("in Excel, how do I freeze a row?"), and so does a
+   sentence with no order in it ("I love working in Excel"). "Calculate 12
+   times 7" with no app named is a sum to answer, and is chat.
+   -------------------------------------------------------------------------- */
+
+/** Apps and places on this computer that are only ever that, by the names people use. */
+const DESKTOP_APPS = String.raw`(?:(?:file|windows)\s+explorer|explorer|this\s+pc|notepad|calculator|calc|(?:windows\s+)?settings|control\s+panel|(?:ms\s+)?paint(?:\s+3d)?|word(?!\s+(?:order|for|of|form|count)\b)|excel|powerpoint|onenote|outlook|wordpad|start\s+menu|task\s+manager|device\s+manager|terminal|command\s+prompt|cmd|powershell|snipping\s+tool|photos|vs\s?code|visual\s+studio\s+code|recycle\s+bin|(?:documents|downloads|desktop|pictures|music|videos)\s+folder)`;
+const DESKTOP_PLACE = new RegExp(String.raw`\b(?:in|inside|into|using|on|from|via)\s+(?:the\s+|my\s+|a\s+new\s+|windows\s+|microsoft\s+)?${DESKTOP_APPS}(?:\s+(?:app|window))?\b`, 'i');
+/** An order for a desktop app: the screen verbs, and the ones only an app is given. */
+const DESKTOP_ORDER = new RegExp(`^(?:${VERB}|choose|pick|set|put|toggle|expand|collapse|mark|calculate|compute|work\\s+out|draw|sketch|change|adjust|edit|format|insert|highlight|pin|unpin)\\b`, 'i');
+const POLITE_LEAD = new RegExp(`^(?:${POLITE}[,\\s]+)*`, 'i');
+
+/** Folders on this computer, said as places: "go to Downloads", "my documents". */
+const KNOWN_FOLDER = /\b(?:documents|downloads|desktop|pictures|music|videos)\s+folder\b|\bmy\s+(?:documents|downloads|desktop|pictures|music|videos|files|computer|pc)\b|\b(?:this\s+pc|recycle\s+bin|program\s+files|appdata)\b|\b[c-h]:\\|\b(?:in|to|into|from|on|under)\s+(?:the\s+)?(?:documents|downloads|desktop|pictures|videos)\b/i;
+
+/** "Save it as report.txt": only a program saves as. */
+const SAVE_AS = /\bsave\s+(?:it|this|that|them|everything|the\s+\w+|a\s+copy)?\s*as\b/i;
+
+/** Arithmetic asked for with no app named: a sum to answer in words. */
+const A_SUM = new RegExp(`^(?:${POLITE}[,\\s]+)*(?:calculate|compute|work\\s+out|solve)\\b.*(?:\\d|\\b(?:plus|minus|times|divided|percent|squared|root)\\b)`, 'i');
+
+/**
+ * Where in the message a desktop app is named as the place to work — one of
+ * the fixed names above, or an app on this computer by its exact Start-menu
+ * name, when the caller can say what is installed (`installed(name)`, e.g.
+ * apps.installedNamed). This file is also the browser preview's router
+ * (scripts/build-site.mjs copies it as it is), so it cannot ask Windows
+ * itself: without a caller that can, the fixed names are all there is.
+ * Returns { index, end } or null.
+ */
+function desktopPlace(t, installed = null) {
+  const m = DESKTOP_PLACE.exec(t);
+  if (m) return { index: m.index, end: m.index + m[0].length };
+  if (typeof installed !== 'function') return null;
+  for (const p of t.matchAll(/\b(?:in|inside|into|using|on|from)\s+(?:the\s+|my\s+)?([a-z0-9][\w+'-]*(?:\s+[a-z0-9][\w+'-]*){0,2})/gi)) {
+    const words = p[1].split(/\s+/);
+    for (let k = words.length; k >= 1; k--) {
+      const name = words.slice(0, k).join(' ');
+      let found = null;
+      try { found = installed(name); } catch { /* no list is no match */ }
+      if (found) return { index: p.index, end: p.index + p[0].length - p[1].length + name.length };
+    }
+  }
+  return null;
+}
+
 /** Named surfaces. Mentioning one is strong evidence the screen is involved. */
 const APP_OR_SURFACE = /\b(?:chrome|edge|firefox|safari|browser|notepad|word|excel|powerpoint|outlook|gmail|mail|inbox|spotify|youtube|netflix|discord|slack|teams|zoom|whatsapp|telegram|vscode|vs\s?code|terminal|powershell|cmd|explorer|file\s?explorer|settings|control\s?panel|taskbar|start\s?menu|desktop|clipboard|calendar|calculator|photos|steam|figma|notion|github|reddit|twitter|instagram|facebook|linkedin|amazon|tab|window|folder|file|screen)\b/i;
 
@@ -142,10 +200,13 @@ const clean = (text) => String(text ?? '').trim();
  *   along with this message — see bridge/attachments.mjs. Only ever makes
  *   the call more confident, never less: with none, this behaves exactly as
  *   it did before attachments existed.
+ * @param {Function} [opts.installed]  name -> an installed app or null, from
+ *   a list already read (apps.installedNamed); lets "in <any installed app>"
+ *   count as a place to work. Optional: the fixed names work without it.
  * @returns {{mode:'chat'|'agent', why:string, certain:boolean}|null}
  *          null when the rules genuinely cannot call it.
  */
-export function localRoute(text, { attachments = [] } = {}) {
+export function localRoute(text, { attachments = [], installed = null } = {}) {
   const t = clean(text);
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
 
@@ -182,11 +243,12 @@ export function localRoute(text, { attachments = [] } = {}) {
   }
 
   const surface = APP_OR_SURFACE.test(t);
+  const inApp = desktopPlace(t, installed);
 
   // Prose asked for by name. Checked before the verbs, because "write" and
   // "tell" lead both kinds of sentence. Naming a place to put it flips it
   // back: "write a haiku in Notepad" is work.
-  if (WANTS_PROSE.test(t) && !surface) {
+  if (WANTS_PROSE.test(t) && !surface && !inApp) {
     return { mode: 'chat', why: 'asks for something written back', certain: true };
   }
 
@@ -217,11 +279,39 @@ export function localRoute(text, { attachments = [] } = {}) {
     return { mode: 'agent', why: 'an action on the screen', certain: true };
   }
 
+  /* An app on this computer named as the place, and an order to carry out
+     in it — before it ("calculate 12 times 7 in Calculator") or after it
+     ("in File Explorer make a folder"). Not a question, in either half. */
+  if (inApp) {
+    const body = t.replace(POLITE_LEAD, '');
+    const lead = t.length - body.length;
+    const order = inApp.index <= lead ? t.slice(inApp.end).replace(/^[\s,:;-]+/, '') : body;
+    const asks = question || /\?\s*$/.test(t) || ASKS_FOR_AN_ANSWER.some((re) => re.test(order));
+    if (!asks && (DESKTOP_ORDER.test(order) || CHAINED_VERB.test(t))) {
+      return { mode: 'agent', why: 'an action in an app on this computer', certain: true };
+    }
+  }
+
+  // "Save it as report.txt": only a program has a Save As.
+  if (!question && verb && SAVE_AS.test(t)) {
+    return { mode: 'agent', why: 'saving a file', certain: true };
+  }
+
+  // A sum with no app named is answered in words, not worked on a screen —
+  // unless something is to be done with the answer ("…and type it").
+  if (A_SUM.test(t) && !surface && !inApp && !CHAINED_VERB.test(t)) {
+    return { mode: 'chat', why: 'a sum to answer', certain: true };
+  }
+
   if (question && !verb) {
     return { mode: 'chat', why: 'a question, with nothing to act on', certain: true };
   }
 
   if (verb && surface) return { mode: 'agent', why: 'an action on a named app', certain: true };
+  /* An order about a folder on this computer — "go to Downloads", "search
+     my documents for the report" — is work on this computer, as plainly as
+     one that names an app. */
+  if (verb && KNOWN_FOLDER.test(t)) return { mode: 'agent', why: 'an action on a folder on this computer', certain: true };
   if (verb) return { mode: 'agent', why: 'an instruction', certain: false };
 
   return null;   // genuinely ambiguous — ask the model
@@ -248,14 +338,15 @@ const CLASSIFY_SYSTEM =
  * @param {object} opts.llm                  attached provider, or null
  * @param {Array} [opts.attachments]         pasted text, files or pictures
  *   sent with this message — see bridge/attachments.mjs
+ * @param {Function} [opts.installed]        name -> installed app or null (see localRoute)
  * @returns {Promise<{mode:'chat'|'agent', why:string, source:string}>}
  */
-export async function route(text, { hint = 'auto', llm = null, attachments = [] } = {}) {
+export async function route(text, { hint = 'auto', llm = null, attachments = [], installed = null } = {}) {
   if (hint === 'chat' || hint === 'agent') {
     return { mode: hint, why: 'you chose it', source: 'user' };
   }
 
-  const local = localRoute(text, { attachments });
+  const local = localRoute(text, { attachments, installed });
   if (local?.certain) return { ...local, source: 'rules' };
 
   const fallback = local

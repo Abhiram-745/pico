@@ -42,6 +42,10 @@ const CASES = [
   ['why is the sky blue', 'chat'],
   ['what type of file is this', 'chat'],
   ['what is the difference between a tab and a window', 'chat'],
+  // a sum with no app named is answered, not worked on a calculator
+  ['what is 12 times 7', 'chat'],
+  ['calculate 12 times 7', 'chat'],
+  ['work out 15 percent of 80', 'chat'],
 
   // --- asked for in words, not done ---
   ['write me a poem about rain', 'chat'],
@@ -105,6 +109,21 @@ const CERTAIN_JOBS = [
   'drag the file into the Done column',
   'scroll down to the comments',
   'type my name into the first box, then click Next',
+  // An app on this computer named as the place to do it, before or after the order.
+  'in file explorer make a folder called Reports in Documents',
+  'In File Explorer, create a new folder named Reports',
+  'calculate 12 times 7 in calculator',
+  'please, in notepad, type hello world',
+  'in settings turn on bluetooth',
+  'in paint draw a red circle',
+  'in excel make a budget table',
+  'in word write a cover letter',
+  'in the start menu pin notepad',
+  // Things only done to files and folders on this computer.
+  'save it as report.txt',
+  'go to downloads',
+  'go to my documents',
+  'search my documents for report',
 ];
 /* And what must not be: questions about clicking, and verbs that are only
    screen verbs sometimes. Each is either conversation or left to the model. */
@@ -117,6 +136,11 @@ const NOT_CERTAIN_JOBS = [
   'drag queens are fabulous',
   'explain what happens when I type a URL and then click Go',
   'find me a good book',
+  // An app named, but a question about it, or no order at all.
+  'In Excel, how do I freeze the top row?',
+  'how do I make a folder in file explorer?',
+  'what is the best font in word',
+  'I love working in excel',
 ];
 for (const text of CERTAIN_JOBS) {
   const r = localRoute(text);
@@ -148,7 +172,29 @@ for (const [text, want] of WITH_ATTACHMENT) {
   lines.push(`  ${ok ? ' ' : '✗'} ${JSON.stringify(text).slice(0, 50).padEnd(52)} ${r?.mode ?? 'ask'}${ok ? '' : ` (expected ${want})`}`);
 }
 
-const total = CASES.length + CERTAIN_JOBS.length + NOT_CERTAIN_JOBS.length + WITH_ATTACHMENT.length;
+/* Any installed app is a place to work too, when the caller can say what is
+   installed (the bridge passes apps.installedNamed). Without that — the
+   browser preview — only the fixed names count. */
+const INSTALLED = (name) => (['blender', 'sticky notes'].includes(String(name).toLowerCase()) ? { name } : null);
+const WITH_INSTALLED = [
+  ['make a cube in blender', true],
+  ['add a note in sticky notes saying buy milk', true],
+  ['in blender, how do I add a cube?', false],
+];
+for (const [text, certain] of WITH_INSTALLED) {
+  const r = localRoute(text, { installed: INSTALLED });
+  const ok = (r?.mode === 'agent' && r.certain === true) === certain;
+  if (!ok) failed += 1;
+  lines.push(`  ${ok ? ' ' : '✗'} ${JSON.stringify(text).slice(0, 50).padEnd(52)} ${r?.mode ?? 'ask'}${r?.certain ? ' (certain)' : ''}${ok ? '' : ` (expected ${certain ? 'a certain job' : 'not a certain job'})`}`);
+}
+{
+  const r = localRoute('calculate the total in blender');
+  const ok = !(r?.mode === 'agent' && r.certain === true);
+  if (!ok) failed += 1;
+  lines.push(`  ${ok ? ' ' : '✗'} ${'"calculate the total in blender" (no list)'.padEnd(52)} ${r?.mode ?? 'ask'}${ok ? '' : ' (expected not a certain job)'}`);
+}
+
+const total = CASES.length + CERTAIN_JOBS.length + NOT_CERTAIN_JOBS.length + WITH_ATTACHMENT.length + WITH_INSTALLED.length + 1;
 if (failed) {
   console.error('\n  intent router:\n');
   for (const l of lines) console.error(l);

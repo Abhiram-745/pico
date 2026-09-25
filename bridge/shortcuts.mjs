@@ -10,7 +10,8 @@
 
      open <a known app>      Start menu search, by keyboard — you see it happen
      go to <a site>          handed to the default browser
-     search the web for X    a search results page in the default browser
+     search the web for X    a search results page in the default browser —
+                             unless X is somewhere on this computer
 
    Anything not matched exactly goes to the full loop, which is also where a
    fast path falls back to if it cannot confirm it worked. The app list is a
@@ -19,6 +20,7 @@
    ========================================================================== */
 
 import { spawn } from 'node:child_process';
+import { installedNamed } from './apps.mjs';
 
 /** What to type into Start search, and how to recognise the window after. */
 const APPS = {
@@ -95,8 +97,69 @@ const SITES = {
 };
 const GO_TO_SITE = new RegExp(String.raw`^${POLITE}(?:open|go to|goto|visit|navigate to|take me to)\s+(${Object.keys(SITES).join('|')})${TRAILER}$`, 'i');
 
-const WEB_SEARCH = new RegExp(String.raw`^${POLITE}(?:search|google|look up|search the web|search online|search google)\s+(?:the web\s+|online\s+|google\s+)?(?:for\s+)?(.{2,200}?)\s*[.!?]*$`, 'i');
+const WEB_SEARCH = new RegExp(String.raw`^${POLITE}(search the web|search online|search google|search|google|look up)\s+(the web\s+|online\s+|google\s+)?(?:for\s+)?(.{2,200}?)\s*[.!?]*$`, 'i');
 const YT_SEARCH = new RegExp(String.raw`^${POLITE}(?:search|find|look up|play)\s+(?:for\s+)?(.{2,120}?)\s+on\s+youtube\s*[.!?]*$`, 'i');
+
+/* Said to be on the web, in so many words: "google X", "search the web for
+   X", "look up X online". Those go to the browser whatever X is. */
+const SAID_WEB = /\s+(?:online|on the web|on the internet|on google|on bing|on the net)$/i;
+
+/* --------------------------------------------------------------------------
+   Searching this computer is not searching the web
+
+   Every message that began "search", "google" or "look up" became a Google
+   results page, unless it said "on YouTube", "on my" or "on the". Halo is a
+   desktop agent, and a good share of what people ask it to search is on the
+   desktop: "search File Explorer for Reports", "search my documents for the
+   report", "look up Bluetooth in Settings", "search for Notepad" — all four
+   went to Google.
+
+   So a plain search is a web search only when nothing in it names a place on
+   this computer. Anything that does is left to the full loop (null), which
+   can see the screen and open Explorer or Settings itself. "Google" and "the
+   web" and "online" still mean the web, whatever else is said.
+   -------------------------------------------------------------------------- */
+
+/** Places on this computer that are never anything else, wherever they are said. */
+const ON_THIS_PC = /\b(?:(?:file|windows) explorer|this pc|my computer|my pc|control panel|start menu|task manager|device manager|recycle bin|settings|files|folders?|my (?:documents|downloads|desktop|pictures|photos|music|videos)|(?:documents|downloads|desktop|pictures|music|videos) folder|[c-h]:? drive)\b|\b[a-z]:\\/i;
+
+/** Folders, when they are the place searched rather than the thing searched
+    for: "search downloads for the invoice", not "search for music festivals". */
+const FOLDERS = new Set(['documents', 'downloads', 'desktop', 'pictures', 'photos', 'music', 'videos', 'explorer', 'onedrive']);
+
+/** Is this phrase the name of somewhere on this computer: a place, a folder, an app? */
+function isHere(phrase) {
+  const p = String(phrase ?? '').toLowerCase()
+    .replace(/^(?:the|my|this|your)\s+/, '')
+    .replace(/\s+(?:app|application|folder|window)$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!p) return false;
+  if (ON_THIS_PC.test(p) || FOLDERS.has(p) || APPS[p]) return true;
+  // What is installed, from the list already read — no waiting for it here.
+  return Boolean(installedNamed(p));
+}
+
+/**
+ * Does a search query name somewhere on this computer to search?
+ *   "file explorer for Reports"   the place first, then what to find in it
+ *   "bluetooth in settings"       what to find, then the place
+ *   "the report in my documents"  a place anywhere, in words that only mean one
+ */
+function searchesHere(query) {
+  const q = String(query ?? '').trim();
+  if (ON_THIS_PC.test(q)) return true;
+  const first = q.match(/^(.{2,40}?)\s+for\s+\S/i);
+  if (first && isHere(first[1])) return true;
+  const last = q.match(/\s(?:in|on|inside|within|using|from|through)\s+(.{2,40}?)$/i);
+  return Boolean(last && isHere(last[1]));
+}
+
+const webSearch = (query) => ({
+  kind: 'url',
+  url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+  label: `Searched the web for “${query}”.`,
+});
 
 /**
  * Match a request against the fast paths.
@@ -143,12 +206,18 @@ export function matchShortcut(text) {
   }
 
   m = t.match(WEB_SEARCH);
-  if (m && !/\bon\s+(?:youtube|my|the)\b/i.test(m[1])) {
-    return {
-      kind: 'url',
-      url: `https://www.google.com/search?q=${encodeURIComponent(m[1])}`,
-      label: `Searched the web for “${m[1]}”.`,
-    };
+  if (m) {
+    const [, verb, where] = m;
+    let query = m[3];
+    const saidWeb = /google|web|online/i.test(verb) || Boolean(where) || SAID_WEB.test(query);
+    query = query.replace(SAID_WEB, '').trim() || query;
+    if (saidWeb) return webSearch(query);
+
+    // "search for Notepad" is looking for the app, which is opening it.
+    const name = query.toLowerCase().replace(/^(?:the|my)\s+/, '').replace(/\s+(?:app|application)$/, '').trim();
+    if (APPS[name]) return { kind: 'app', name: APPS[name].search, app: APPS[name] };
+    if (installedNamed(name) || searchesHere(query)) return null;
+    if (!/\bon\s+(?:youtube|my|the)\b/i.test(query)) return webSearch(query);
   }
 
   m = t.match(OPEN_APP);
