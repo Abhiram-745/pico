@@ -183,4 +183,61 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
   assert.equal(seen.length, 1, 'xkiro was not asked');
 }
 
-console.log('fallback: a rate limit or a server error moves calls to xkiro for the spell, pictures to its reader, nothing else moves them — passed');
+{
+  // APINEX: "free/…" is its own name, not the gateway's, even with a gateway key.
+  const a = PROVIDERS.apinex;
+  const apinex = new LLM({ apiKey: 'apx-test', baseUrl: a.baseUrl, provider: 'apinex', tiers: { ...a.tiers }, gatewayKey: 'gw-test' });
+  assert.equal(apinex._where('free/gpt-6-luna').baseUrl, a.baseUrl);
+  assert.equal(apinex._where('alibaba/qwen3-max').baseUrl, 'https://ai-gateway.vercel.sh/v1', 'other slashed names still go to the gateway');
+
+  // Five a minute: the sixth goes to the next provider without asking APINEX to be told no.
+  const { xkiro } = make();
+  apinex.useFallback(xkiro);
+  const fromApinex = () => seen.filter((s) => s.host.includes('apinex')).length;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ host: new URL(url).host, model: body.model });
+    return url.includes('apinex') ? fine('from apinex') : fine('from xkiro');
+  };
+  seen.length = 0;
+  for (let i = 0; i < 5; i++) assert.equal(await apinex.chat([{ role: 'user', content: 'hi' }]), 'from apinex');
+  assert.equal(await apinex.chat([{ role: 'user', content: 'hi' }]), 'from xkiro');
+  assert.equal(fromApinex(), 5, 'APINEX asked five times, not six');
+  assert.equal(seen.at(-1).model, x.tiers.fast, 'on the model for the same job');
+
+  // As the minute moves on, APINEX has room again.
+  apinex._sent[0] -= 60_000;
+  assert.equal(await apinex.chat([{ role: 'user', content: 'hi' }]), 'from apinex');
+
+  // The last two slots of a minute are kept for replies: a picture gives its place up at three used.
+  apinex._sent = Array(3).fill(Date.now());
+  const withShot = [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }] }];
+  seen.length = 0;
+  assert.equal(await apinex.chat(withShot), 'from xkiro');
+  assert.equal(seen.at(-1).model, x.tiers.see, 'read by the other side\'s reader of pictures');
+  assert.equal(await apinex.chat([{ role: 'user', content: 'hi' }]), 'from apinex', 'while a reply still gets Luna');
+
+  // With nowhere else to go, the sixth waits for a slot rather than earning a 429.
+  const alone = new LLM({ apiKey: 'apx-test', baseUrl: a.baseUrl, provider: 'apinex', tiers: { ...a.tiers } });
+  alone._sent = Array(5).fill(Date.now() - 59_800);
+  const t0 = Date.now();
+  assert.equal(await alone.chat([{ role: 'user', content: 'hi' }]), 'from apinex');
+  assert.ok(Date.now() - t0 >= 150 && Date.now() - t0 < 2000, `waited ${Date.now() - t0}ms for the oldest to age out`);
+  globalThis.fetch = prev;
+}
+
+{
+  // With every key in .env: APINEX, then OpenAI, then xkiro — and PICO_MODEL only ever applies to OpenAI.
+  Object.assign(process.env, { APINEX_API_KEY: 'apx-test', OPENAI_API_KEY: 'sk-test', XKIRO_API_KEY: 'xk-test', PICO_PROVIDER: '', PICO_FALLBACK: '', PICO_MODEL: 'gpt-4o-mini', PICO_MODEL_SEE: '' });
+  const made = await LLM.fromEnv();
+  assert.equal(made.provider, 'apinex');
+  assert.equal(made.tiers.fast, 'free/gpt-6-luna');
+  assert.equal(made.tiers.see, 'free/deepseek-v4-pro-0813');
+  assert.equal(made.fallback?.provider, 'openai');
+  assert.equal(made.fallback.tiers.plan, 'gpt-4o-mini');
+  assert.equal(made.fallback.tiers.see, 'gpt-4.1-mini', 'but not for pictures');
+  assert.equal(made.fallback.fallback?.provider, 'xkiro');
+}
+
+console.log('fallback: a rate limit or a server error moves calls to xkiro for the spell, pictures to its reader, nothing else moves them; APINEX spends five a minute, then the chain — passed');

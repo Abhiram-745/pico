@@ -288,7 +288,9 @@ class Bridge {
     this.agent.attachLLM(llm);
     const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
     // The provider behind this one says so too: a slow step on a busy key is xkiro, not a fault.
-    const usual = `${label}${llm.fallback ? `, then ${llm.fallback.provider} if rate limited` : ''}`;
+    const behind = [];
+    for (let f = llm.fallback; f; f = f.fallback) behind.push(PROVIDERS[f.provider]?.label?.replace(/\s*\(.*\)$/, '') ?? f.provider);
+    const usual = `${label}${behind.length ? `, then ${behind.join(', then ')} if rate limited` : ''}`;
     this.agent.settings = {
       ...this.agent.settings,
       // One task uses several: the strongest model plans it, then the

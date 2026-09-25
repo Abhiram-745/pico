@@ -58,6 +58,70 @@ export const GATEWAY = {
 };
 
 export const PROVIDERS = {
+  /* APINEX — the person's pick (2026-09-25): GPT-6 Luna, free.
+
+     Its free models are named "free/<model>", and that slash is its own,
+     not the gateway's: `own` keeps those names here (see _where()).
+
+     The catch is the allowance: five requests a minute on a free key,
+     answered past that with a 429 that asks for up to a minute's wait. A
+     task makes more calls than that, so `rpm` is counted here, before
+     asking — the sixth call in a minute goes straight to the next provider
+     instead of spending a round trip on being told no (see useFallback()).
+
+     Measured 2026-09-25 on the person's key, one request every 12.6s —
+     a short reply, a tool call picking a mark, and reading a label off a
+     screenshot:
+
+       free/gpt-6-luna         reply 1.25s  tool 0.94s  picture 4.9s, right
+       free/deepseek-v4-pro    reply 0.99s  tool 0.90s  picture 4.6s, right
+       free/mimo-v2.6-pro      reply 1.00s  tool 1.32s  picture 5.4s, right
+       free/deepseek-v4.1-fl.  reply 1.04s  tool 1.04s  picture 6.1s, right
+       free/glm-5.3-flash      reply 1.46s  tool 0.98s  picture 4.3s, right
+
+     Every other "free/" name on the list (gemini-3.8-flash, kimi-k3,
+     qwen-3.8-max, gemini-3.1-pro, both claude-4.6s…) answers 402: a
+     subscription only. The five that answer are within noise of each
+     other on one run each, and share the one allowance.
+
+     So again, head to head: three replies and two pictures each, the models
+     taken in turn so no one of them had the quiet end of the minute. Median:
+
+       free/gpt-6-luna         reply 1.01s (0.75 best)  picture 5.06s
+       free/deepseek-v4-pro    reply 1.06s              picture 3.93s  <- quickest to see
+       free/glm-5.3-flash      reply 1.04s              picture 5.02s
+       free/deepseek-v4.1-fl.  reply 1.18s              picture 4.86s (one took 12s)
+       free/mimo-v2.6-pro      reply 1.24s              picture 4.79s
+
+     Every picture read right. Luna also says the least: four tokens to
+     greet someone, where the others use twenty to forty-five.
+
+     What moves Luna: reasoning_effort "none" (0.80s against 1.04s; left
+     alone it spends ~30 tokens thinking about "say hi"). What does not:
+     picture detail or size — high, low, 1600 wide or 1024, it is the same
+     1342 tokens and ~5s, so pictures are not shrunk for it. Its Responses
+     API answers 200 with nothing in it, so tool calls go by Chat. */
+  apinex: {
+    label: 'APINEX',
+    baseUrl: 'https://api.apinex.bond/v1',
+    envKey: 'APINEX_API_KEY',
+    responses: false,
+    own: /^free\//,
+    rpm: 5,
+    keepForText: 2,
+    /* The quickest at each job, by the head-to-head below: Luna for
+       anything without a picture, DeepSeek V4 Pro for anything with one —
+       and planning is one of those, since the plan is made looking at the
+       screen. */
+    tiers: {
+      fast: 'free/gpt-6-luna',
+      text: 'free/gpt-6-luna',
+      hard: 'free/gpt-6-luna',
+      see: 'free/deepseek-v4-pro-0813',
+      plan: 'free/deepseek-v4-pro-0813',
+    },
+    prefer: {},
+  },
   openai: {
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
@@ -307,7 +371,7 @@ export const HEAVY_IMAGE_WIDTH = 1024;
 
 /** Whether a model takes a reasoning effort at all. Asking one that does not
     costs a refused request before every model's first real answer. */
-export const reasons = (model) => /^(?:gpt-5|od)/.test(String(model));
+export const reasons = (model) => /^(?:free\/)?(?:gpt-[56]|od)/.test(String(model));
 
 /** A lower effort to try when a model refuses the one asked for. */
 const EFFORT_FALLBACK = { max: 'high', xhigh: 'high', high: 'medium', medium: 'low', low: 'minimal', minimal: 'none', none: null };
@@ -377,6 +441,9 @@ export class LLM {
     this._effort = new Map();      // model -> the effort it last accepted
     this._noOriginal = new Set();  // models that refuse full-detail pictures
     this.singleModel = new Set(Object.values(tiers)).size === 1;
+    this._rpm = PROVIDERS[provider]?.rpm ?? 0;   // requests a minute the key allows, where it is counted
+    this._sent = [];                             // when each of this minute's requests went
+    this._keepForText = PROVIDERS[provider]?.keepForText ?? 0;   // of those, the last few are kept for calls without a picture
     this.evaluator = this.gatewayKey ? GATEWAY.evaluator : 'unavailable';
   }
 
@@ -385,13 +452,15 @@ export class LLM {
     /* PICO_MODEL sets every job at once; a PICO_MODEL_<JOB> beside it overrides
        that one job. So "gpt-4o-mini for everything, gpt-4.1-mini to look at
        the screen" is two lines, not five. */
-    const singleModel = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-5-mini'].includes(env.PICO_MODEL) ? env.PICO_MODEL : null;
+    const oneModel = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-5-mini'].includes(env.PICO_MODEL) ? env.PICO_MODEL : null;
 
     // Explicit choice wins. Otherwise OpenAI, which is where the models that
     // can actually read a screen are; anything else needs its own key in .env,
     // and with no key at all Halo asks for one on first run.
     const wanted = (env.PICO_PROVIDER || '').toLowerCase();
-    const order = singleModel ? ['openai'] : wanted && PROVIDERS[wanted] ? [wanted] : ['openai', 'xkiro', 'bazaarlink'];
+    /* APINEX first when there is a key for it: nobody pastes one by accident.
+       PICO_MODEL names OpenAI models, so it only ever applies to OpenAI. */
+    const order = wanted && PROVIDERS[wanted] ? [wanted] : ['apinex', 'openai', 'xkiro', 'bazaarlink'];
 
     /* Carried alongside whichever provider is chosen, not instead of one:
        the gateway serves the free text models and Jev, and the provider
@@ -402,6 +471,7 @@ export class LLM {
       const p = PROVIDERS[name];
       const apiKey = env[p.envKey];
       if (!apiKey) continue;
+      const singleModel = name === 'openai' ? oneModel : null;
 
       const made = new LLM({
         apiKey,
@@ -427,10 +497,27 @@ export class LLM {
          real-site tasks, the key ran out mid-task and the run ended with
          "Rate limited" while nothing else was wrong. With an xkiro key in
          .env as well, the same call goes there instead, on the model that
-         does the same job, and the run carries on. */
-      if (name !== 'xkiro' && env[PROVIDERS.xkiro.envKey] && !/^(?:0|false|off)$/i.test(env.PICO_FALLBACK ?? '')) {
-        const x = PROVIDERS.xkiro;
-        made.useFallback(new LLM({ apiKey: env[x.envKey], baseUrl: x.baseUrl, provider: 'xkiro', tiers: { ...x.tiers, text: x.tiers.text || x.tiers.fast } }));   // no gateway key: its models are named with a slash too, and would be sent there
+         does the same job, and the run carries on.
+
+         A chain, not a pair: APINEX's five a minute run out inside most
+         tasks, so after it comes OpenAI, and after OpenAI xkiro — each one
+         whose key is in .env, each on its own default models. */
+      if (!/^(?:0|false|off)$/i.test(env.PICO_FALLBACK ?? '')) {
+        let tail = made;
+        for (const next of ['openai', 'xkiro']) {
+          const q = PROVIDERS[next];
+          if (next === name || !env[q.envKey]) continue;
+          const one = next === 'openai' ? oneModel : null;
+          const t = q.tiers;
+          const backup = new LLM({
+            apiKey: env[q.envKey],
+            baseUrl: q.baseUrl,
+            provider: next,
+            tiers: { fast: one || t.fast, text: one || t.text || t.fast, hard: one || t.hard, see: t.see, plan: one || t.plan },   // pictures stay on the cheap reader: see PROVIDERS.openai.tiers.see
+          });   // no gateway key: xkiro's models are named with a slash too, and would be sent there
+          tail.useFallback(backup);
+          tail = backup;
+        }
       }
       return made;
     }
@@ -470,7 +557,7 @@ export class LLM {
         : String(theirs?.message || `${other.provider} is not answering either.`).trim();
       return Object.assign(new Error(`${/[.!?]$/.test(mine) ? mine : `${mine}.`} ${said}`), { status: theirs?.status ?? 429, both: true });
     };
-    const wrap = (name, fix) => {
+    const wrap = (name, fix, looks) => {
       const own = this[name].bind(this);
       this[name] = async (...args) => {
         // A stream that has already said something is not started again elsewhere.
@@ -503,6 +590,21 @@ export class LLM {
             return own(...args);
           }
         }
+        /* This minute's allowance already spent (APINEX's five): the other
+           side at once, and this side — waiting for a slot — only if it
+           cannot answer. Asking here first would be a 429 and a minute's
+           spell, where a slot is free again within seconds.
+
+           A call with a picture in it gives up its place sooner, while a few
+           remain: it costs about the same on the other side (5s on Luna, 4.5s
+           on xkiro's reader), where a reply without one is 1s here and 13s
+           there. So the last slots of a minute go to replies. */
+        if (this._room() <= (looks(args) ? this._keepForText : 0) && Date.now() >= (this._otherUntil ?? 0)) {
+          try { return await there(); } catch (err) {
+            if (stopped()) throw err;
+            noteOther(err);
+          }
+        }
         try { return await own(...args); } catch (err) {
           /* A server that is down or overloaded (5xx, after fetchPatiently's
              own retries on a 503) is the same to the person as one that is
@@ -523,9 +625,11 @@ export class LLM {
       };
     };
     const pictured = (list) => (list || []).some((m) => (Array.isArray(m?.content) ? m.content : [m]).some((c) => c?.type === 'image' || c?.type === 'image_url'));
-    wrap('chat', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast', pictured(m)) }]);
-    wrap('stream', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast', pictured(m)) }]);
-    wrap('respond', ([req = {}]) => [{ ...req, model: swap(req.model ?? this.tiers.see, 'see', pictured(req.content) || pictured(req.history)) }]);
+    const inChat = ([m]) => pictured(m);
+    const inTurn = ([req = {}]) => pictured(req.content) || pictured(req.history);
+    wrap('chat', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast', pictured(m)) }], inChat);
+    wrap('stream', ([m, o = {}]) => [m, { ...o, model: swap(o.model ?? this.tiers.fast, 'fast', pictured(m)) }], inChat);
+    wrap('respond', ([req = {}]) => [{ ...req, model: swap(req.model ?? this.tiers.see, 'see', inTurn([req])) }], inTurn);
   }
 
   /** Strip the key from anything on its way to a log or a client. */
@@ -542,7 +646,7 @@ export class LLM {
       body.tool_choice = 'required';
       body.parallel_tool_calls = false;   // one action per turn, then look again
     }
-    if (/^gpt-5/.test(model)) {
+    if (/^(?:free\/)?gpt-[56]/.test(model)) {
       body.max_completion_tokens = maxTokens;
       // Chatting and planning need no thinking budget, and asking for one is
       // most of the latency on a reasoning-capable model. Driving the desktop
@@ -568,14 +672,36 @@ export class LLM {
    * provider, which will refuse it plainly rather than silently.
    */
   _where(model) {
-    if (this.gatewayKey && String(model).includes('/')) {
+    if (this.gatewayKey && String(model).includes('/') && !PROVIDERS[this.provider]?.own?.test(model)) {
       return { baseUrl: GATEWAY.baseUrl, apiKey: this.gatewayKey, responses: false };
     }
     return { baseUrl: this.baseUrl, apiKey: this.apiKey, responses: this._responses };
   }
 
-  _post(model, messages, opts) {
+  /** Requests this key has left in the current minute; Infinity where the
+      provider does not count them. */
+  _room() {
+    if (!this._rpm) return Infinity;
+    const now = Date.now();
+    while (this._sent.length && now - this._sent[0] >= 60_000) this._sent.shift();
+    return this._rpm - this._sent.length;
+  }
+
+  /** Take one of this minute's requests, waiting for the oldest to age out
+      when they are all spent — a few seconds here is better than the 429
+      and the minute-long retry-after that asking anyway earns. */
+  async _slot(at, signal) {
+    if (!this._rpm || at.baseUrl !== this.baseUrl) return;
+    while (this._room() <= 0) {
+      if (signal?.aborted) return;
+      await new Promise((r) => setTimeout(r, Math.max(50, this._sent[0] + 60_050 - Date.now())));
+    }
+    this._sent.push(Date.now());
+  }
+
+  async _post(model, messages, opts) {
     const at = this._where(model);
+    await this._slot(at, opts.signal);
     return fetchPatiently(`${at.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -883,6 +1009,7 @@ export class LLM {
     let res;
     try {
       const at = this._where(useModel);
+      await this._slot(at, signal);
       res = await fetchPatiently(`${at.baseUrl}/responses`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${at.apiKey}`, 'Content-Type': 'application/json' },
