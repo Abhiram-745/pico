@@ -82,6 +82,31 @@ export function targetNamedInGoal(goal, picked) {
   return !/\b(?:not|never|without|avoid|don t|do not|no)(?:\s+(?:click|choose|select|open|type|press|the|a|an)){0,3}$/.test(text.slice(Math.max(0, at - 32), at).trimEnd());
 }
 
+/** Exact, unambiguous navigation in a readable menu needs no model call.
+ * Only explicit navigation clauses qualify; arbitrary goal text cannot turn
+ * Send/Delete buttons into an automatic next action. Policy still gates input.
+ */
+export function namedNavigation(goal, space, history = []) {
+  const norm = text => String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const clauses = String(goal || '').split(/\s+(?:and then|then|and)\s+|[;.]/i);
+  for (const clause of clauses) {
+    const match = norm(clause).match(/^(?:please )?(?:open|click|select|go to) (?:the )?(.+)$/);
+    if (!match) return null;
+    const rows = space.table.filter(row => row.operations.includes('CLICK') && !row.covered
+      && /^(Button|MenuItem|TabItem|ListItem|TreeItem|Hyperlink)$/.test(row.role)
+      && (match[1] === norm(row.label) || match[1] === `${norm(row.label)} view` || match[1] === `${norm(row.label)} tab`));
+    if (!rows.length) return null;
+    if (rows.length !== 1) return null;
+    const row = rows[0];
+    if (history.some(line => /^(clicked|opened|selected)\b/i.test(line) && norm(line).includes(norm(row.label)))) continue;
+    if (row.selected) continue;
+    const element = space.targets.CLICK[row.index];
+    if (!element) return null;
+    return { operation: 'CLICK', index: row.index, row, element, confidence: 1, margin: 1, named: true };
+  }
+  return null;
+}
+
 /** Confirm a previously observed target against a fresh UI Automation hit. */
 export function targetStillMatches(expected, hit) {
   if (!expected || !hit?.found) return false;

@@ -23,6 +23,8 @@ The current build runs on Node.js and starts from `Start Halo.cmd`. The older co
 
 ## Use it
 
+Agent batches visible actions through the existing safety checks and shows executed outcomes. See the [Agent control guide](docs/agent-control.md) for batching, recovery, and checks.
+
 The current interface has **Agent** and **Desktop** modes. Agent carries out tasks with OpenAI. Desktop collects progress from selected local agent sessions and readable app windows in **Workspace**. It includes custom app selection, quiet updates, pause/resume, optional OpenAI briefings, and light/dark/system appearance. See the [desktop companion guide](docs/desktop-companion.md) for supported signals and limits.
 
 1. Download [`Halo-Setup.exe`](https://github.com/Abhiram-745/pico/releases/latest/download/Halo-Setup.exe) and run it. It's a normal Windows installer — pick a folder, it installs, adds Start-menu and Desktop shortcuts, and offers to launch Halo. On first run it asks for your OpenAI key — it goes to Windows Credential Manager, not a JSON file.

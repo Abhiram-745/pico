@@ -35,10 +35,10 @@ import {
    -------------------------------------------------------------------------- */
 const PATHS = {
   send: 'M12 19V5 M5 12l7-7 7 7',
-  stop: 'M7 7h10v10H7z',
+  stop: 'M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z',
   mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5 11a7 7 0 0 0 14 0 M12 18v3 M8 21h8',
   volume: 'M11 5 6 9H3v6h3l5 4z M15.5 8.5a5 5 0 0 1 0 7 M18.5 5.5a9 9 0 0 1 0 13',
-  pause: 'M9 5v14 M15 5v14',
+  pause: 'M7 5h3v14H7z M14 5h3v14h-3z',
   play: 'M8 5.5v13l10.5-6.5z',
   skip: 'M5 5.5v13l9-6.5z M18 5v14',
   check: 'M20 6 9 17l-5-5',
@@ -659,10 +659,21 @@ export function PlanSteps({ limit = 12, dense = false }) {
 
 export function ActivityLog() {
   const plan = useStore(sel.plan);
-  if (!plan?.activity?.length) return null;
-  return <details className="h-activity"><summary>Activity · {plan.activity.length} recent actions</summary>
+  if (!plan?.activity?.length) return <RunRecovery />;
+  return <><RunRecovery /><details className="h-activity"><summary>Activity · {plan.activity.length} recent actions</summary>
     <ol>{plan.activity.map((item, index) => <li key={`${item.id}:${index}`}>{item.text}</li>)}</ol>
-  </details>;
+  </details></>;
+}
+
+export function RunRecovery() {
+  const plan = useStore(sel.plan);
+  const phase = useStore(sel.phase);
+  const desktop = useStore(sel.desktopMonitor);
+  if (!plan?.recovery || desktop?.enabled || isActive(phase)) return null;
+  return <div className="h-recovery" role="status">
+    <span>{plan.recovery.reason}</span>
+    <button type="button" onClick={() => bridge.send('submitTask', { text: plan.recovery.task, mode: 'agent' })}>Continue task</button>
+  </div>;
 }
 
 /** Pause or resume, skip, stop — the controls for a run in hand. */

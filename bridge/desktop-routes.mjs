@@ -21,6 +21,14 @@ export async function handleDesktopRoutes(req, res, pathname, { monitor, persist
   try {
     if (pathname === '/desktop-monitor' && req.method === 'GET') reply(200, monitor.snapshot());
     else if (pathname === '/desktop-monitor/refresh' && req.method === 'POST') reply(200, await monitor.refresh());
+    else if (/^\/desktop-monitor\/(dismiss|open)\/[a-f0-9]{16}$/.test(pathname) && req.method === 'POST') {
+      const [, action, id] = pathname.match(/\/(dismiss|open)\/([a-f0-9]{16})$/);
+      if (action === 'dismiss') {
+        if (!monitor.dismiss(id)) reply(404, { error: 'This update is no longer available.' });
+        else reply(200, monitor.snapshot());
+      } else if (await monitor.openResult(id)) reply(200, { opened: true });
+      else reply(409, { error: 'No unique app window is available. Open the app directly to find this session.' });
+    }
     else if (pathname === '/desktop-monitor/settings' && req.method === 'POST') {
       let raw = '';
       for await (const chunk of req) {

@@ -69,9 +69,9 @@ export function parseCodexSession(raw, mtime, now = Date.now(), metadata = {}) {
       const kind = p.type;
       const at = Date.parse(row.timestamp);
       if (Number.isFinite(at) && ['user_message', 'task_started', 'turn_started', 'task_complete', 'task_completed', 'turn_completed', 'turn_aborted', 'task_aborted', 'error', 'turn_failed', 'approval_requested', 'request_user_input'].includes(kind)) lastActivity = at;
-      if (kind === 'user_message') { asked = p.message || ''; state = 'working'; confidence = 'inferred'; detail = 'A prompt was submitted; waiting for a lifecycle signal.'; sawSignal = true; }
-      if (kind === 'task_started' || kind === 'turn_started') { state = 'working'; confidence = 'high'; detail = 'Codex reported that the turn started.'; sawSignal = true; }
-      if (kind === 'task_complete' || kind === 'task_completed' || kind === 'turn_completed') { state = 'completed'; confidence = 'high'; latest = p.last_agent_message || latest; detail = 'Codex reported that the turn finished. Check its result before relying on it.'; sawSignal = true; }
+      if (kind === 'user_message') { asked = p.message || ''; latest = ''; state = 'working'; confidence = 'inferred'; detail = 'A prompt was submitted; waiting for a lifecycle signal.'; sawSignal = true; }
+      if (kind === 'task_started' || kind === 'turn_started') { latest = ''; state = 'working'; confidence = 'high'; detail = 'Codex reported that the turn started.'; sawSignal = true; }
+      if (kind === 'task_complete' || kind === 'task_completed' || kind === 'turn_completed') { state = 'completed'; confidence = 'high'; latest = p.last_agent_message || latest; detail = 'Reply ended. No result excerpt was exposed; review it in the app.'; sawSignal = true; }
       if (kind === 'turn_aborted' || kind === 'task_aborted') { state = 'idle'; confidence = 'high'; detail = 'The Codex turn was interrupted.'; sawSignal = true; }
       if (kind === 'error' || kind === 'turn_failed') { state = 'failed'; confidence = 'high'; detail = 'Codex reported an error. Open the app for details.'; sawSignal = true; }
       if (kind === 'approval_requested' || kind === 'request_user_input') { state = 'waiting'; confidence = 'high'; detail = 'Codex requested your input or approval.'; sawSignal = true; }
@@ -83,7 +83,10 @@ export function parseCodexSession(raw, mtime, now = Date.now(), metadata = {}) {
         latest = textContent(p.content) || latest;
         if (p.phase === 'commentary') inferActivity(row.timestamp);
       }
-      if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'local_shell_call') inferActivity(row.timestamp);
+      if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'local_shell_call') {
+        inferActivity(row.timestamp);
+        detail = p.name ? `Using ${monitorText(p.name, 60)}` : 'Running a local tool';
+      }
     }
   }
   if (!sawSignal && !id && !rows.some((row) => row.type === 'session_meta')) return null;
@@ -105,12 +108,12 @@ export function parseClaudeSession(raw, mtime, now = Date.now(), metadata = {}) 
     const content = row.message.content;
     const text = textContent(content);
     if (row.type === 'user') {
-      if (text.trim() && !/^<(system-reminder|command-|local-command|ide_)/.test(text.trim())) asked = text;
+      if (text.trim() && !/^<(system-reminder|command-|local-command|ide_)/.test(text.trim())) { asked = text; latest = ''; }
       state = 'working'; confidence = 'inferred'; detail = 'Claude received a prompt or tool result; current activity is inferred.';
     } else {
       latest = text || latest;
       const stop = row.message.stop_reason;
-      if (stop === 'end_turn' || stop === 'stop_sequence') { state = 'completed'; confidence = 'high'; detail = 'Claude finished its reply. Check its result before relying on it.'; }
+      if (stop === 'end_turn' || stop === 'stop_sequence') { state = 'completed'; confidence = 'high'; detail = 'Reply ended. No result excerpt was exposed; review it in the app.'; }
       else if (Array.isArray(content) && content.some((p) => p?.type === 'tool_use')) { state = 'working'; confidence = 'inferred'; detail = 'Claude requested a tool; completion has not been observed.'; }
       else { state = 'unknown'; confidence = 'limited'; detail = 'Claude wrote a reply; no end-of-turn signal is available.'; }
     }
@@ -187,7 +190,12 @@ export async function readAgentSessions(selectedApps, now = Date.now()) {
     if (!selectedApps.includes(appId)) continue;
     const { files } = await recentFiles(root, { depth, now });
     for (const file of files) {
-      try { const content = await tail(file.path); const session = parse(content.raw, content.mtime, now, metadataFromHeader(content.header, appId)); if (session) result.push({ appId, ...session, sessionId: hash(file.path) }); } catch { /* being replaced */ }
+      try {
+        const content = await tail(file.path);
+        const metadata = metadataFromHeader(content.header, appId);
+        const session = parse(content.raw, content.mtime, now, metadata);
+        if (session) result.push({ appId, ...session, sessionId: hash(metadata.id || file.path) });
+      } catch { /* being replaced */ }
     }
   }
   return result;
@@ -241,6 +249,23 @@ export function normalizeMonitorSettings(input = {}, previous = DEFAULT_MONITOR_
   return settings;
 }
 
+const monitorFingerprint = apps => hash(apps.map(app => `${app.id}:${app.state}:${app.latest || app.detail}:${Boolean(app.dismissed)}`).join('|'));
+const TERMINAL = new Set(['completed', 'failed', 'waiting']);
+// Result identity is content based so mirrored rollouts / repeated observations
+// of the same reply do not become separate cards. Distinct prompts stay separate.
+const resultId = (app) => hash(JSON.stringify([app.appId, app.project || '', app.state, app.asked || '', app.latest || (app.source === 'transcript' ? '' : app.detail)]));
+export function distinctMonitorApps(apps) {
+  const unique = new Map();
+  const identities = new Set();
+  for (const app of [...apps].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0))) {
+    if (identities.has(app.id)) continue;
+    identities.add(app.id);
+    const key = TERMINAL.has(app.state) ? resultId(app) : app.id;
+    if (!unique.has(key)) unique.set(key, { ...app, resultId: resultId(app) });
+  }
+  return [...unique.values()];
+}
+
 function localSummary(apps, enabled, paused) {
   if (!enabled) return 'Choose the apps to watch, then start Desktop mode.';
   if (paused) return 'Watching is paused. Your last updates are still here.';
@@ -248,7 +273,8 @@ function localSummary(apps, enabled, paused) {
   const working = apps.filter((app) => app.state === 'working');
   if (waiting.length) return `${waiting.length} ${waiting.length === 1 ? 'app needs' : 'apps need'} your attention. ${working.length ? `${working.length} still working.` : 'Open the app to continue.'}`;
   if (working.length) return `${working.length} ${working.length === 1 ? 'session is' : 'sessions are'} working. You can get on with something else.`;
-  if (apps.some((app) => app.state === 'completed')) return 'A reply has finished. Your recent results are ready to review.';
+  const finished = apps.find((app) => app.state === 'completed' && !app.dismissed);
+  if (finished) return `${finished.label}${finished.project ? ` · ${finished.project}` : ''}: ${finished.latest || `Reply finished${finished.asked ? ` for ${finished.asked}` : ''}. Open the app to review the result.`}`;
   if (!apps.length) return 'No selected apps found yet. Open an app or add its name to your watch list.';
   return 'Your selected apps are open. Waiting for a clear progress signal.';
 }
@@ -259,12 +285,39 @@ export class DesktopMonitor {
     this.windowReader = windowReader || (() => readWindows(this.sense)); this.sessionReader = readSessions; this.now = now;
     this.settings = normalizeMonitorSettings();
     this.enabled = false; this.paused = false; this.apps = []; this.events = [];
+    this._dismissed = new Set();
     this.updatedAt = null; this.error = null; this.summaryError = null;
     this.summary = { text: localSummary([], false, false), source: 'local', at: now() };
     this._epoch = 0; this._timer = null; this._busy = null; this._previous = new Map(); this._lastAiAt = 0; this._lastAiFingerprint = ''; this._aiController = null;
   }
   snapshot() {
     return structuredClone({ enabled: this.enabled, paused: this.paused, apps: this.apps, events: this.events, summary: this.summary, updatedAt: this.updatedAt, error: this.error, summaryError: this.summaryError, settings: this.settings });
+  }
+  dismiss(id) {
+    if (!this.apps.some(app => app.resultId === id) && !this.events.some(event => event.id === id)) return false;
+    this._dismissed.add(id);
+    if (this._dismissed.size > 200) this._dismissed.delete(this._dismissed.values().next().value);
+    this.events = this.events.filter(event => event.id !== id);
+    this.apps = this.apps.map(app => app.resultId === id ? { ...app, dismissed: true } : app);
+    this.summary = { text: localSummary(this.apps, this.enabled, this.paused), source: 'local', at: this.now() };
+    this._publish();
+    return true;
+  }
+  // Explicit user gesture only. Resolve a fresh, unambiguous app window;
+  // never execute transcript links, commands or paths to open a result.
+  async openResult(id) {
+    const app = this.apps.find(app => app.resultId === id) || this.events.find(event => event.id === id);
+    if (!app || !this.sense?.focus) return false;
+    const inventory = await this.windowReader();
+    const windows = Array.isArray(inventory) ? inventory : inventory?.windows || [];
+    const definition = APPS.find(item => item.id === app.appId);
+    const candidates = windows.filter(window => !/Halo Notch/i.test(window.title || '') && (definition
+      ? definition.process.test(window.process || '') || definition.title.test(window.title || '')
+      : `${window.process || ''} ${window.title || ''}`.toLowerCase().includes(app.label.toLowerCase())));
+    const named = app.project ? candidates.filter(window => String(window.title || '').toLowerCase().includes(app.project.toLowerCase())) : [];
+    const matches = named.length ? named : candidates;
+    if (matches.length !== 1 || !/^\d+$/.test(String(matches[0].hwnd))) return false;
+    return Boolean((await this.sense.focus(matches[0].hwnd))?.ok);
   }
   _publish() { try { this.onUpdate(this.snapshot()); } catch { /* a disconnected UI */ } }
   configure(input = {}) {
@@ -325,50 +378,32 @@ export class DesktopMonitor {
             }
           }
           if (epoch !== this._epoch || !this.enabled || this.paused) return this.snapshot();
-          apps.push({ id: `${app.id}:window:${hash(window.hwnd || window.title || app.id)}`, appId: app.id, label: app.label, state: signal?.state || 'open', detail: signal?.detail || (app.id === 'chrome' ? 'Browser is open. Only window titles are available; background tab progress is unknown.' : 'Window is open. No reliable task progress signal is exposed.'), source: signal?.source || 'window', confidence: signal?.confidence || 'limited', windowTitle: monitorText(window.title, 120), lastActivity: signal ? at : null, updatedAt: at });
+          apps.push({ id: `${app.id}:window:${hash(window.hwnd || window.title || app.id)}`, appId: app.id, label: app.label, state: signal?.state || 'open', detail: signal?.detail || 'Open · waiting for a progress signal', source: signal?.source || 'window', confidence: signal?.confidence || 'limited', windowTitle: monitorText(window.title, 120), lastActivity: signal ? at : null, updatedAt: at });
         }
       }
-      this.apps = apps.slice(0, MAX_ROWS);
+      this.apps = distinctMonitorApps(apps).slice(0, MAX_ROWS).map(app => ({ ...app, dismissed: this._dismissed.has(app.resultId) }));
       const next = new Map();
       for (const app of this.apps) {
         // Text streaming is not a new event each poll; only meaningful state transitions.
-        const fingerprint = `${app.state}:${app.source}`;
+        const fingerprint = `${app.state}:${app.source}:${TERMINAL.has(app.state) ? app.resultId : ''}`;
         next.set(app.id, fingerprint);
-        if (this._previous.get(app.id) === fingerprint) continue;
-        const title = app.state === 'completed' ? 'Reply finished' : app.state === 'waiting' ? 'Needs your attention' : app.state === 'working' ? 'Working' : app.state === 'failed' ? 'Reported an error' : app.state === 'open' ? 'App detected' : 'Status updated';
+        if (this._previous.get(app.id) === fingerprint || !['working', 'waiting', 'completed', 'failed'].includes(app.state) || app.dismissed) continue;
+        if (this.events.some(event => event.id === app.resultId)) continue;
+        const title = app.state === 'completed' ? 'Reply finished' : app.state === 'waiting' ? 'Needs your attention' : app.state === 'working' ? 'Working' : 'Reported an error';
         const firstSeen = !this._previous.has(app.id);
         const eventAt = firstSeen && app.source === 'transcript' && app.lastActivity ? Math.min(at, app.lastActivity) : at;
-        this.events.unshift({ id: hash(`${app.id}:${fingerprint}:${at}`), appId: app.appId, label: app.label, project: app.project, state: app.state, title, detail: app.detail, source: app.source, confidence: app.confidence, at: eventAt, observedAt: at });
+        this.events.unshift({ id: app.resultId, appId: app.appId, label: app.label, project: app.project, state: app.state, title, detail: app.latest || app.detail, latest: app.latest, asked: app.asked, source: app.source, confidence: app.confidence, at: eventAt, observedAt: at });
       }
       this._previous = next;
       this.events = this.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS);
       this.updatedAt = at; this.error = available ? null : 'Window discovery is unavailable. Local agent sessions can still appear.';
-      const fingerprint = hash(this.apps.map((app) => `${app.id}:${app.state}:${app.latest || app.detail}`).join('|'));
+      const fingerprint = monitorFingerprint(this.apps);
       if (this.summary.source !== 'openai' || !this.settings.aiSummaries || fingerprint !== this._lastAiFingerprint) {
         this.summary = { text: localSummary(this.apps, true, false), source: 'local', at };
       }
       this._publish();
-      if (this.settings.aiSummaries && this.summarize && this.apps.length && this.now() - this._lastAiAt >= 60_000 && fingerprint !== this._lastAiFingerprint) {
-        this._lastAiAt = this.now();
-        const controller = new AbortController();
-        this._aiController = controller;
-        const timeout = setTimeout(() => controller.abort(), 20_000);
-        timeout.unref?.();
-        try {
-          const result = await this.summarize({ apps: this.apps.map(({ label, project, state, detail, latest, source, confidence }) => ({ label, project, state, detail, latest, source, confidence })), updatedAt: at }, { signal: controller.signal });
-          if (epoch !== this._epoch || !this.enabled || this.paused) return this.snapshot();
-          const text = monitorText(typeof result === 'string' ? result : result?.text, 500);
-          if (text) { this.summary = { text, source: 'openai', at: this.now() }; this.summaryError = null; this._lastAiFingerprint = fingerprint; this._publish(); }
-          else throw new Error('Empty summary');
-        } catch {
-          if (epoch === this._epoch && this.enabled && !this.paused) {
-            this.summaryError = 'OpenAI summary unavailable. Showing local progress signals.';
-            this._publish();
-          }
-        } finally {
-          clearTimeout(timeout);
-          if (this._aiController === controller) this._aiController = null;
-        }
+      if (!this._aiController && this.settings.aiSummaries && this.summarize && this.apps.some(app => !app.dismissed) && this.now() - this._lastAiAt >= 60_000 && fingerprint !== this._lastAiFingerprint) {
+        void this._refreshBriefing(epoch, at, fingerprint);
       }
     } catch {
       if (epoch === this._epoch) {
@@ -381,4 +416,27 @@ export class DesktopMonitor {
     }
     return this.snapshot();
   }
+  async _refreshBriefing(epoch, at, fingerprint) {
+    this._lastAiAt = this.now();
+    const controller = new AbortController();
+    this._aiController = controller;
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    timeout.unref?.();
+    try {
+      const result = await this.summarize({ apps: this.apps.filter(app => !app.dismissed).map(({ label, project, state, detail, latest, source, confidence }) => ({ label, project, state, detail, latest, source, confidence })), updatedAt: at }, { signal: controller.signal });
+      if (epoch !== this._epoch || !this.enabled || this.paused || controller.signal.aborted || monitorFingerprint(this.apps) !== fingerprint) return;
+      const text = monitorText(typeof result === 'string' ? result : result?.text, 500);
+      if (text) { this.summary = { text, source: 'openai', at: this.now() }; this.summaryError = null; this._lastAiFingerprint = fingerprint; this._publish(); }
+      else throw new Error('Empty summary');
+    } catch {
+      if (epoch === this._epoch && this.enabled && !this.paused && monitorFingerprint(this.apps) === fingerprint) {
+        this.summaryError = 'OpenAI summary unavailable. Showing local progress signals.';
+        this._publish();
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (this._aiController === controller) this._aiController = null;
+    }
+  }
+
 }

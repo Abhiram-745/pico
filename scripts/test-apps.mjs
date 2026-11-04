@@ -19,6 +19,9 @@ const check = (label, ok, detail = '') => {
 
 console.log('parseOpen');
 const OPENS = [
+  ['open Locked chats', null],
+  ['open Locked chats and open Mira', null],
+  ['open chat Mira', null],
   ['open whatsapp', { name: 'whatsapp', rest: '' }],
   ['Open Claude', { name: 'claude', rest: '' }],
   ['please open the whatsapp app', { name: 'whatsapp' }],

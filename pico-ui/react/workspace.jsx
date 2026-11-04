@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './parts.jsx';
 import { useStore } from './hooks.js';
 import { store } from '../src/store.js';
+import { DesktopResultActions } from './desktop-results.jsx';
 import { SignalOrbit } from './signal-orbit.jsx';
 
 const selectMonitor = (s) => s.desktopMonitor;
@@ -244,7 +245,7 @@ export function WorkspaceView({ demo = false }) {
         <div className="w-filters" role="group" aria-label="Filter updates">{[['all', 'All updates'], ['attention', 'Needs you'], ['finished', 'Finished']].map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}</div>
         {visibleEvents.length ? <ol className="w-events">{visibleEvents.map((event, index) => <li key={event.id || `${event.appId}-${index}`} className="w-event" data-tone={stateOf(event).tone}>
           <span className="w-event__node" aria-hidden="true"><Icon name={stateOf(event).tone === 'attention' ? 'hand' : stateOf(event).tone === 'complete' ? 'check' : stateOf(event).tone === 'error' ? 'alert' : 'activity'} size={13} /></span>
-          <div><div className="w-event__meta"><strong>{event.label || event.appId || 'Desktop'}</strong><time>{age(event.at, now)}</time></div><h3>{event.title || stateOf(event).label}</h3>{event.detail && <p>{event.detail}</p>}<span className="w-event__source">{sourceName(event.source)}</span></div>
+          <div><div className="w-event__meta"><strong>{event.label || event.appId || 'Desktop'}{event.project ? ` · ${event.project}` : ''}</strong><time>{age(event.at, now)}</time></div><h3>{event.title || stateOf(event).label}</h3>{event.asked && <p>Task · {readableExcerpt(event.asked)}</p>}{event.detail && <p>{event.detail}</p>}<span className="w-event__source">{sourceName(event.source)}</span>{!demo && ['completed', 'waiting', 'failed'].includes(event.state) && <DesktopResultActions id={event.id} />}</div>
         </li>)}</ol> : <div className="w-feedempty"><Icon name={filter === 'attention' ? 'check' : 'activity'} size={22} /><h3>{filter === 'attention' ? 'Nothing needs you here.' : filter === 'finished' ? 'Finished work will land here.' : 'The next useful change goes here.'}</h3><p>{filter === 'attention' ? 'You can stay with what you are doing.' : 'Updates appear when a selected app reports a meaningful change.'}</p></div>}
       </section>
     </div>

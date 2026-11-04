@@ -252,7 +252,7 @@ function ChatView({ petName }) {
                 <header className="h-runcard__head">
                   {running && !plan.finished ? <Presence px={20} /> : <span className={`h-runcard__done${plan.succeeded ? '' : ' is-bad'}`}><Icon name={plan.succeeded ? 'check' : 'x'} size={11} /></span>}
                   <span className="h-runcard__title">
-                    {plan.finished ? (plan.succeeded ? 'Finished' : 'Stopped') : `${PHASE_COPY[phase]?.title ?? 'Working'}`}
+                    {plan.finished ? (plan.succeeded ? 'Finished' : plan.recovery ? 'Ready to continue' : 'Stopped') : `${PHASE_COPY[phase]?.title ?? 'Working'}`}
                   </span>
                   <span className="h-runcard__count">
                     {plan.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length} of {plan.steps.length}

@@ -97,3 +97,20 @@ assert.equal(state.enabled,false,'A failed agent stop must not enable monitoring
 assert.equal(JSON.stringify(failed.data).includes('private diagnostics'),false);
 assert.equal(calls.length,0);
 console.log('Desktop routes: local origin/method guards, validation, size limits, ordered mode transitions and preference persistence passed.');
+
+reset(true);
+const eventId = '0123456789abcdef';
+const resultMonitor = { ...monitor,
+  dismiss(id) { calls.push(['dismiss', id]); return id === eventId; },
+  async openResult(id) { calls.push(['open', id]); return id === eventId; },
+};
+assert.equal((await run(`/desktop-monitor/open/${eventId}`, { method: 'GET' }, { monitor: resultMonitor })).status, 405);
+assert.equal((await run(`/desktop-monitor/open/${eventId}`, { method: 'POST', ip: '10.0.0.1' }, { monitor: resultMonitor })).status, 403);
+assert.equal((await run('/desktop-monitor/open/../../cmd', { method: 'POST' }, { monitor: resultMonitor })).status, 405);
+assert.equal(calls.length, 0, 'read requests and remote callers cannot focus windows');
+assert.equal((await run(`/desktop-monitor/open/${eventId}`, { method: 'POST' }, { monitor: resultMonitor })).data.opened, true);
+assert.deepEqual(calls, [['open', eventId]], 'only a server-known opaque result ID is passed');
+assert.equal((await run('/desktop-monitor/open/ffffffffffffffff', { method: 'POST' }, { monitor: resultMonitor })).status, 409);
+assert.equal((await run(`/desktop-monitor/dismiss/${eventId}`, { method: 'POST' }, { monitor: resultMonitor })).status, 200);
+assert.equal((await run('/desktop-monitor/dismiss/ffffffffffffffff', { method: 'POST' }, { monitor: resultMonitor })).status, 404);
+console.log('Result routes: explicit local-only open/dismiss, opaque IDs and unavailable-window handling passed.');
