@@ -38,7 +38,7 @@ import { NotchWindow } from './notch-window.mjs';
 /* The one list of chords, shared with the pages that teach and show them.
    A .js module of plain data, imported by Node and the bundler alike. */
 import { TAUGHT, byId } from '../pico-ui/src/keybinds.js';
-const CHORDS = [...TAUGHT, byId('toggleVoice')].filter(Boolean);
+const CHORDS = [...TAUGHT, byId('toggleVoice'), byId('stop')].filter(Boolean);
 import * as autostart from './autostart.mjs';
 import { IslandHost } from './island-host.mjs';
 import { Sense } from './sense.mjs';
@@ -46,6 +46,11 @@ import { check as checkUpdate, install as installUpdate, localBuild } from './up
 import { chatArchive } from './chats.mjs';
 import { Guide } from './guide.mjs';
 import { memory } from './memory.mjs';
+import * as hostStatus from './status.mjs';
+import { DesktopMonitor } from './desktop-monitor.mjs';
+import { summarizeDesktop } from './desktop-summary.mjs';
+import { handleDesktopRoutes } from './desktop-routes.mjs';
+import { appearancePreference, handleAppearance } from './appearance.mjs';
 import { routines } from './routines.mjs';
 import { runbook } from './runbook.mjs';
 import { migrateFromPico, readJson, writeJson } from './home.mjs';
@@ -106,6 +111,7 @@ function saveShellState(patch) {
   return next;
 }
 const PORT = Number(process.env.PICO_BRIDGE_PORT) || 4177;
+const HEADLESS = process.argv.includes('--headless');
 
 /* --app: open the full window as well as the island. It is what the
    "Halo App" shortcut runs, so that one shortcut works whether or not Halo
@@ -159,6 +165,7 @@ const ALLOWED_COMMANDS = new Set([
   'moveCard',        // { x, y } — the card has been dragged
   'onboarded',       // { done: true } — the three chords have been practised
   'forgetRoutes',    // {} — throw away what Halo learnt about doing things here
+  'refreshStatus',   // {} — read the state of the machine now, not at the next tick
 ]);
 
 // A typed answer — a tapped option, or a word or two — is short by nature,
@@ -258,6 +265,16 @@ class Bridge {
     };
 
     this.agent = new HostAgent(this.transport, { memory, routines });
+    /* What the model is told about the machine whenever it answers: read
+       fresh if the last look is more than a few seconds old. */
+    this.agent.statusFacts = async () => {
+      if (Date.now() - (this.status?.at ?? 0) > 15_000) await this.refreshStatus();
+      return hostStatus.describe(this.status, this.agentInfo());
+    };
+    this.status = null;
+    this._statusBusy = null;
+    this._statusTimer = setInterval(() => { if (this.clients.size && !this.desktopMonitor?.snapshot().enabled) this.refreshStatus(); }, 20_000);
+    this._statusTimer.unref?.();
     this.agent.start();
 
     /* The chat that was open when Halo last stopped, back where it was: on
@@ -348,6 +365,29 @@ class Bridge {
     });
   }
 
+  /** Halo's own part of the picture: working on something, or idle. */
+  agentInfo() {
+    const phase = this.snapshot.phase?.phase ?? 'Idle';
+    const run = this.agent.lastRun;
+    return {
+      busy: WORKING.has(phase),
+      phase,
+      task: this.currentTask || '',
+      lastTask: run?.task ?? '',
+      lastOk: Boolean(run?.succeeded),
+    };
+  }
+
+  /** Look at the machine (Claude Code sessions, chat apps) and tell every window. */
+  refreshStatus() {
+    this._statusBusy ??= hostStatus.gather().then((s) => {
+      this.status = s;
+      this.broadcast({ type: 'status', payload: { ...s, agent: this.agentInfo() } });
+    }).catch((err) => console.warn('[bridge] status:', err.message))
+      .finally(() => { this._statusBusy = null; });
+    return this._statusBusy;
+  }
+
   emitSettings() {
     this._fromHost('settings', this.agent.settings);
   }
@@ -421,6 +461,9 @@ class Bridge {
     send('chats', { list: chatArchive.list(), current: chatArchive.currentId });
     send('memory', { facts: memory.list() });
     send('routines', { items: routines.list() });
+    send('status', this.status && { ...this.status, agent: this.agentInfo() });
+    send('desktopMonitor', this.desktopMonitor?.snapshot());
+    send('appearance', appearancePreference());
     for (const m of this.messages) send('message', m);
     send('phase', s.phase);
     send('pauseState', s.pauseState);
@@ -500,6 +543,12 @@ class Bridge {
         // A counter rather than a flag: pressing it twice must reach the page
         // twice, and a page that reloads must not act on a stale one.
         this.broadcast({ type: 'focusChat', payload: { at: Date.now() } });
+        break;
+      case 'stop':
+        /* Straight to the agent, not via a page: this has to work when no
+           window is focused and none is even open. */
+        this._hostHandler?.({ command: 'stop', payload: {} });
+        this.setShell({ show: true });
         break;
       case 'toggleVoice':
         this.setShell({ show: true });
@@ -610,10 +659,17 @@ class Bridge {
       return;
     }
 
+    if (command === 'refreshStatus') { this.refreshStatus(); return; }
+
+    if (['submitTask', 'routineRun', 'resume'].includes(command) && this.desktopMonitor?.snapshot().enabled) {
+      client.conn.sendJSON({ type: 'error', payload: { title: 'Desktop mode is watching', message: 'Switch to Agent mode to ask Halo to do a task.', recoverable: true } });
+      return;
+    }
     if (command === 'submitTask') {
       const prepared = prepareSubmitTask(payload);
       if (!prepared) return;
       const { text, attachments, mode } = prepared;
+      this.currentTask = text.slice(0, 160);
 
       // Echo it to everyone, so the phone and the laptop show the same thread
       // rather than each keeping its own half of it. The sender already added
@@ -896,6 +952,8 @@ let leaving = false;
 const leave = async (why) => {
   if (leaving) return;
   leaving = true;
+  bridge?.desktopMonitor?.stop();
+  bridge?._hostHandler?.({ command: 'stop', payload: {} });
   try { await bridge?.notch?.close(); } catch { /* going anyway */ }
   try { islandHost?.stop?.(); } catch { /* likewise */ }
   if (process.env.PICO_DEBUG) console.log(`[bridge] closing (${why})`);
@@ -932,6 +990,13 @@ try {
   console.warn(`[bridge] the interface could not be rebuilt (${String(err.message).split('\n')[0]}); serving the last build`);
 }
 const bridge = new Bridge();
+const desktopMonitor = new DesktopMonitor({
+  onUpdate: (state) => bridge.broadcast({ type: 'desktopMonitor', payload: state }),
+  summarize: summarizeDesktop,
+});
+bridge.desktopMonitor = desktopMonitor;
+const desktopSettings = readJson('desktop-monitor.json', {});
+desktopMonitor.configure(desktopSettings);
 
 const server = createServer(async (req, res) => {
   const ip = req.socket.remoteAddress || '';
@@ -941,6 +1006,25 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname === '/appearance') {
+    await handleAppearance(req, res, (event) => bridge.broadcast(event));
+    return;
+  }
+  if (url.pathname.startsWith('/desktop-monitor')) {
+    await handleDesktopRoutes(req, res, url.pathname, {
+      monitor: desktopMonitor,
+      persist: (settings) => writeJson('desktop-monitor.json', settings),
+      onModeChange: (mode) => {
+        if (mode === 'desktop') {
+          bridge._hostHandler?.({ command: 'stop', payload: {} });
+          bridge.voiceOwnerClient = null;
+          bridge.snapshot.voiceSession = { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null };
+          bridge.broadcast({ type: 'voiceSession', payload: bridge.snapshot.voiceSession });
+        }
+      },
+    });
+    return;
+  }
   if (url.pathname.startsWith('/voice/')) {
     try { await handleVoice(req, res, url.pathname); }
     catch { if (!res.headersSent) res.writeHead(500); res.end(); }
@@ -1335,6 +1419,8 @@ await new Promise((resolve) => {
 // The accessibility helper is what lets a click land on the middle of the
 // control the model meant; without it clicks go where the model pointed.
 const sense = await Sense.start();
+desktopMonitor.sense = sense;
+desktopMonitor.start();
 let lastPointer = 0;
 const computer = await loadComputer({
   sense,
@@ -1400,39 +1486,20 @@ bridge.notch = new NotchWindow({
    whatever size it happened to be, its content clipped against a frame that
    will not move again. Opening it here adopts it instead. */
 try {
-  await bridge.notch.open();
-  watchIslandHover();
-  bridge.broadcast({ type: 'notch', payload: { open: true } });
+  if (!HEADLESS) await bridge.notch.open();
+  if (!HEADLESS) watchIslandHover();
+  bridge.broadcast({ type: 'notch', payload: { open: !HEADLESS } });
 } catch (err) {
   console.warn(`[bridge] the island could not be opened (${err.message})`);
 }
 
-/* And kept there. The island is a window of its own, and windows go: the
-   laptop sleeps with the page's connection down long enough for it to
-   close itself, a monitor is unplugged, Chrome restarts. Measured on the
-   person's machine: a bridge up all night with no island at all, and
-   nothing on screen to say Halo was running. So every ten seconds, unless
-   the person hid it (Ctrl+Alt+H) or switched it off in the app, a missing
-   island is opened again — and the log says so. */
-let reopening = false;
-setInterval(async () => {
-  if (reopening || bridge.snapshot.shell?.hidden || bridge.snapshot.notch?.open === false) return;
+/* Closing the floating window is an explicit exit. Never recreate a window
+   the person closed. Hidden windows are still owned by the app. */
+setInterval(() => {
+  if (leaving || bridge.snapshot.shell?.hidden || bridge.snapshot.notch?.open === false) return;
   if (bridge.notch.findWindow()) return;
-  reopening = true;
-  try {
-    console.log('[bridge] the island had gone — opening it again');
-    const result = await bridge.notch.open();
-    if (result?.ok) {
-      watchIslandHover();
-      bridge.broadcast({ type: 'notch', payload: { open: true } });
-    }
-  } catch (err) {
-    console.warn(`[bridge] the island could not be reopened (${err.message})`);
-  } finally {
-    reopening = false;
-  }
-}, 10_000).unref?.();
-
+  void leave('window closed');
+}, 1000).unref?.();
 /* ---------------------------------------------------------------------------
    The chords
 
@@ -1443,7 +1510,7 @@ setInterval(async () => {
    register, says so in the log, and changes nothing else.
    --------------------------------------------------------------------------- */
 const MOD = { alt: 1, ctrl: 2, shift: 4 };
-const VK = { KeyA: 0x41, KeyF: 0x46, KeyG: 0x47, KeyH: 0x48, KeyK: 0x4B, KeyV: 0x56, Space: 0x20 };
+const VK = { KeyA: 0x41, KeyF: 0x46, KeyG: 0x47, KeyH: 0x48, KeyK: 0x4B, KeyV: 0x56, KeyX: 0x58, Space: 0x20 };
 
 if (islandHost) {
   islandHost.onRegistered = (id) => {
@@ -1470,22 +1537,13 @@ if (islandHost) {
   console.log(`[bridge] chords: ${CHORDS.map((b) => `${b.keys.join('+')} ${b.label.toLowerCase()}`).join(', ')}`);
 }
 
-/* Start with Windows, arranged once.
-
-   Halo is meant to be there when you reach for a chord, which it cannot be
-   if starting it is a thing you have to remember. So the first run of an
-   installed copy adds the Startup shortcut itself — the bridge only, no
-   window, nothing on screen until asked (see autostart.mjs) — and records
-   that it has done so, so that turning it off in Settings stays off.
-   A copy running from a source folder is left alone: that is a checkout,
-   not somebody's Halo. */
+/* Starting with Windows is an explicit preference in Settings. Installing
+   or updating the app must never silently switch it on. Existing startup
+   shortcuts are left as the person configured them. */
 {
   const saved = shellState();
   const installed = !ROOT.includes(`${sep}Downloads${sep}`) && !existsSync(join(ROOT, '.git'));
   if (!saved.autostartAsked && installed) {
-    autostart.enable()
-      .then((st) => console.log(`[bridge] Halo will start with Windows${st?.enabled ? '' : ' (could not be arranged)'}`))
-      .catch(() => {});
     saveShellState({ autostartAsked: true });
   }
 }
@@ -1561,4 +1619,4 @@ if (llm) {
 
 // Opened only once the provider is attached, so the window never sees a
 // bridge without one.
-if (OPEN_APP) openAppWindow();
+if (OPEN_APP && !HEADLESS) openAppWindow();

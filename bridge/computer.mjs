@@ -600,6 +600,38 @@ export async function loadComputer({ onPointer, sense = null } = {}) {
       try { libnut?.focusWindow(Number(hwnd)); return true; } catch { return false; }
     },
 
+    /**
+     * Put a window Halo has just opened on the display Halo works on, when
+     * Windows put it somewhere else.
+     *
+     * Windows opens an app wherever that app last was, or on the primary
+     * display — not on the one Halo is looking at. With two screens that
+     * left Halo accepting the new window as its work window while every
+     * screenshot and every list of controls covered the other display: the
+     * model was shown a screen without the app on it, and the clicks aimed
+     * from the app's own accessibility rectangles landed on the display
+     * nobody was watching. Only ever a window this run opened; the person's
+     * own windows stay where they put them. Returns whether it moved.
+     */
+    async bringOnto(hwnd) {
+      if (!libnut || !hwnd) return false;
+      let r = null;
+      try { r = libnut.getWindowRect(Number(hwnd)); } catch { return false; }
+      if (!r || !(r.width > 0) || !(r.height > 0)) return false;
+      const bx = bounds.x ?? 0;
+      const by = bounds.y ?? 0;
+      const cx = r.x + (r.width / 2);
+      const cy = r.y + (r.height / 2);
+      if (cx >= bx && cx < bx + bounds.width && cy >= by && cy < by + bounds.height) return false;
+      const width = Math.min(r.width, bounds.width - 40);
+      const height = Math.min(r.height, bounds.height - 60);
+      try {
+        libnut.moveWindow(Number(hwnd), { x: Math.round(bx + ((bounds.width - width) / 2)), y: Math.round(by + Math.max(0, (bounds.height - height) / 3)) });
+        if (width !== r.width || height !== r.height) libnut.resizeWindow(Number(hwnd), { width, height });
+        return true;
+      } catch { return false; }
+    },
+
     wait(ms = 500) { return sleep(Math.min(Math.max(ms, 0), 5000)); },
 
     stop() { sense?.stop(); if (screen !== local) screen.stop(); },

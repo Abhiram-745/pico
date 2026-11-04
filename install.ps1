@@ -1,6 +1,8 @@
 ﻿[CmdletBinding()]
 param(
-    [switch]$StartAtLogin
+    [switch]$StartAtLogin,
+    [switch]$NoLaunch,
+    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\Halo')
 )
 
 <#
@@ -15,18 +17,60 @@ param(
 
 $ErrorActionPreference = "Stop"
 $source = Split-Path -Parent $MyInvocation.MyCommand.Path
-$installRoot = Join-Path $env:LOCALAPPDATA "Programs\Halo"
+$installRoot = [IO.Path]::GetFullPath($InstallRoot)
 $startMenu = [Environment]::GetFolderPath("StartMenu")
 $shortcutPath = Join-Path $startMenu "Programs\Halo.lnk"
 $desktop = [Environment]::GetFolderPath("Desktop")
 $desktopShortcutPath = Join-Path $desktop "Halo.lnk"
 $launcherPath = Join-Path $installRoot "Start Halo.cmd"
-$iconPath = Join-Path $installRoot "phone\icons\icon-192.png"
+$iconPath = Join-Path $installRoot "scripts\pico.ico"
+$hiddenLauncherPath = Join-Path $installRoot "Start Halo.vbs"
+$nodePath = (Get-Command node -ErrorAction Stop).Source
+
+# Update only an installed bridge that belongs to this exact destination.
+# A development bridge or any other Node app is left alone.
+$installedServer = Join-Path $installRoot 'bridge\server.mjs'
+$owned = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($installedServer) })
+if ($owned.Count) {
+    try { Invoke-RestMethod -Uri 'http://localhost:4177/quit' -Method Post -TimeoutSec 5 | Out-Null } catch { }
+    foreach ($appProcess in $owned) {
+        $remaining = Get-Process -Id $appProcess.ProcessId -ErrorAction SilentlyContinue
+        if ($remaining) {
+            try { $remaining.WaitForExit(8000) | Out-Null } catch { }
+            $remaining = Get-Process -Id $appProcess.ProcessId -ErrorAction SilentlyContinue
+            if ($remaining) { throw 'Close the installed Halo app before updating it.' }
+        }
+    }
+}
 
 if ((Resolve-Path $source).Path -ne $installRoot) {
     New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
-    Get-ChildItem -LiteralPath $source | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $installRoot -Recurse -Force
+    # Keep the install independent of this checkout, without copying git,
+    # downloaded legacy executables, test artifacts, or machine settings.
+    foreach ($folder in @('bridge', 'pico-ui', 'phone', 'scripts', 'node_modules')) {
+        $sourceFolder = Join-Path $source $folder
+        if (Test-Path -LiteralPath $sourceFolder -PathType Container) {
+            Copy-Item -LiteralPath $sourceFolder -Destination $installRoot -Recurse -Force
+        }
+    }
+    foreach ($file in @('Start Halo.cmd', 'package.json', 'package-lock.json', '.env.example', 'README.md', 'SAFETY.md', 'WINDOWS-TEST.md', 'build.json', 'install.ps1')) {
+        $sourceFile = Join-Path $source $file
+        if (Test-Path -LiteralPath $sourceFile -PathType Leaf) {
+            Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $installRoot $file) -Force
+        }
+    }
+    $guide = Join-Path $source 'docs\desktop-companion.md'
+    if (Test-Path -LiteralPath $guide) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $installRoot 'docs') | Out-Null
+        Copy-Item -LiteralPath $guide -Destination (Join-Path $installRoot 'docs\desktop-companion.md') -Force
+    }
+    # An existing installation owns its provider configuration. Carry a local
+    # checkout's configuration only when there isn't one in the installation.
+    $sourceEnv = Join-Path $source '.env'
+    $installedEnv = Join-Path $installRoot '.env'
+    if ((Test-Path -LiteralPath $sourceEnv) -and -not (Test-Path -LiteralPath $installedEnv)) {
+        Copy-Item -LiteralPath $sourceEnv -Destination $installedEnv
     }
 }
 
@@ -55,22 +99,52 @@ if (-not (Test-Path $launcherPath)) {
     Write-Error "`"Start Halo.cmd`" was not found in $installRoot — is this an extracted Halo release folder?"
 }
 
+# A downloaded portable package may not include dependencies; complete the
+# installation now so a hidden first launch does not hide a failed install.
+if (-not (Test-Path -LiteralPath (Join-Path $installRoot 'node_modules\react-dom'))) {
+    Push-Location $installRoot
+    try {
+        & npm.cmd ci --omit=dev --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw 'Could not install Halo dependencies.' }
+    } finally { Pop-Location }
+}
+
+# The desktop shortcut starts Node without a console window. Arguments are
+# limited to the app flag; no command text is accepted through this wrapper.
+$nodeCommand = '"' + $nodePath + '" "' + $installedServer + '"'
+$vbCommand = $nodeCommand.Replace('"', '""')
+$vbDirectory = $installRoot.Replace('"', '""')
+$vbSource = @"
+Option Explicit
+Dim shell, command, argument
+Set shell = CreateObject("WScript.Shell")
+shell.CurrentDirectory = "$vbDirectory"
+command = "$vbCommand"
+For Each argument In WScript.Arguments
+  If argument = "--app" Then command = command & " --app"
+Next
+shell.Run command, 0, False
+"@
+[IO.File]::WriteAllText($hiddenLauncherPath, $vbSource, [Text.Encoding]::Unicode)
+$wscriptPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+$hiddenArguments = '//B //Nologo "' + $hiddenLauncherPath + '" --app'
+
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $launcherPath
-$shortcut.Arguments = "--app"
+$shortcut.TargetPath = $wscriptPath
+$shortcut.Arguments = $hiddenArguments
 $shortcut.WorkingDirectory = $installRoot
 $shortcut.Description = "Halo desktop agent"
-$shortcut.WindowStyle = 7
+$shortcut.WindowStyle = 1
 if (Test-Path $iconPath) { $shortcut.IconLocation = "$iconPath,0" }
 $shortcut.Save()
 
 $desktopShortcut = $shell.CreateShortcut($desktopShortcutPath)
-$desktopShortcut.TargetPath = $launcherPath
-$desktopShortcut.Arguments = "--app"
+$desktopShortcut.TargetPath = $wscriptPath
+$desktopShortcut.Arguments = $hiddenArguments
 $desktopShortcut.WorkingDirectory = $installRoot
 $desktopShortcut.Description = "Halo desktop agent"
-$desktopShortcut.WindowStyle = 7
+$desktopShortcut.WindowStyle = 1
 if (Test-Path $iconPath) { $desktopShortcut.IconLocation = "$iconPath,0" }
 $desktopShortcut.Save()
 
@@ -82,11 +156,14 @@ $desktopShortcut.Save()
 if ($StartAtLogin) {
     $startup = [Environment]::GetFolderPath("Startup")
     $startupShortcut = $shell.CreateShortcut((Join-Path $startup "Halo.lnk"))
-    $startupShortcut.TargetPath = $launcherPath
+    $startupShortcut.TargetPath = $wscriptPath
+    $startupShortcut.Arguments = '//B //Nologo "' + $hiddenLauncherPath + '"'
     $startupShortcut.WorkingDirectory = $installRoot
     $startupShortcut.Description = "Start Halo when I sign in"
     $startupShortcut.Save()
 }
 
-Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot -WindowStyle Minimized
+if (-not $NoLaunch) {
+    Start-Process -FilePath $wscriptPath -ArgumentList $hiddenArguments -WorkingDirectory $installRoot -WindowStyle Hidden
+}
 Write-Host "Halo installed for the current user at $installRoot"

@@ -112,12 +112,12 @@ export const KEYBINDS = [
   {
     id: 'stop',
     label: 'Stop now',
-    hint: 'Ends the task at once. Escape does the same while Halo is working.',
-    keys: ['Ctrl', 'Shift', 'Backspace'],
-    code: 'Backspace',
+    hint: 'Ends the task at once, from anywhere — even while Halo is working in another app. Escape does the same inside Halo.',
+    keys: ['Ctrl', 'Alt', 'X'],
+    code: 'KeyX',
     ctrl: true,
-    alt: false,
-    shift: true,
+    alt: true,
+    shift: false,
     taught: false,
   },
   {

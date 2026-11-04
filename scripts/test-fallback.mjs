@@ -228,16 +228,20 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
 }
 
 {
-  // With every key in .env: APINEX, then OpenAI, then xkiro — and PICO_MODEL only ever applies to OpenAI.
-  Object.assign(process.env, { APINEX_API_KEY: 'apx-test', OPENAI_API_KEY: 'sk-test', XKIRO_API_KEY: 'xk-test', PICO_PROVIDER: '', PICO_FALLBACK: '', PICO_MODEL: 'gpt-4o-mini', PICO_MODEL_SEE: '' });
+  // Prefer OpenAI when several keys exist; model overrides apply only to it.
+  Object.assign(process.env, { APINEX_API_KEY: 'apx-test', OPENAI_API_KEY: 'sk-test', XKIRO_API_KEY: 'xk-test', PICO_PROVIDER: '', PICO_FALLBACK: '', PICO_MODEL: 'gpt-4o-mini', PICO_MODEL_SEE: 'gpt-4.1-mini' });
   const made = await LLM.fromEnv();
-  assert.equal(made.provider, 'apinex');
-  assert.equal(made.tiers.fast, 'free/gpt-6-luna');
-  assert.equal(made.tiers.see, 'free/deepseek-v4-pro-0813');
-  assert.equal(made.fallback?.provider, 'openai');
-  assert.equal(made.fallback.tiers.plan, 'gpt-4o-mini');
-  assert.equal(made.fallback.tiers.see, 'gpt-4.1-mini', 'but not for pictures');
-  assert.equal(made.fallback.fallback?.provider, 'xkiro');
+  assert.equal(made.provider, 'openai');
+  assert.equal(made.tiers.plan, 'gpt-4o-mini');
+  assert.equal(made.tiers.see, 'gpt-4.1-mini', 'but not for pictures');
+  assert.equal(made.fallback?.provider, 'xkiro');
+  assert.equal(made.fallback.tiers.see, x.tiers.see);
+  process.env.PICO_PROVIDER = 'apinex';
+  const explicit = await LLM.fromEnv();
+  assert.equal(explicit.provider, 'apinex');
+  assert.equal(explicit.tiers.fast, 'free/gpt-6-luna');
+  assert.equal(explicit.fallback?.provider, 'openai');
+  assert.equal(explicit.fallback.fallback?.provider, 'xkiro');
 }
 
 {

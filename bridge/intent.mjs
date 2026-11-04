@@ -192,6 +192,9 @@ const ATTACHMENT_TO_PLACE = /\b(?:paste|put|send|drop|upload|attach|insert)\b[^.
 
 const clean = (text) => String(text ?? '').trim();
 
+/* Asks about how things are going, answered from the live status (status.mjs). */
+const STATUS_ASK = /^(?:(?:hey |yo |halo )?(?:how(?:'s| is| are)|what(?:'s| is| are)|any|is|are|did|has|have)\b.*\b(?:doing|going on|status|progress|unread|messages?|notifications?|working|finished|done|waiting)\b.*|(?:status|update|catch me up|brief me|summary|sitrep)\b.*)$/i;
+
 /**
  * Decide from the text alone.
  * @param {string} text
@@ -221,6 +224,10 @@ export function localRoute(text, { attachments = [], installed = null } = {}) {
   }
 
   if (PLEASANTRY.test(t)) return { mode: 'chat', why: 'a greeting', certain: true };
+
+  /* "How's Claude doing", "any messages", "what's going on": answered from the live
+     status Halo reads (status.mjs), not by opening the app to look. */
+  if (STATUS_ASK.test(t)) return { mode: 'chat', why: 'a question about how things are going', certain: true };
 
   if (ABOUT_PICO.some((re) => re.test(t))) {
     return { mode: 'chat', why: 'a question about Halo', certain: true };

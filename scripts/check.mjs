@@ -194,9 +194,9 @@ for (const f of files) {
    This is the one behaviour where being wrong is immediately visible: a
    misrouted greeting means Halo takes over the desktop to type "hello".
    -------------------------------------------------------------------------- */
-for (const suite of ['test-intent.mjs', 'test-apps.mjs', 'test-shortcuts.mjs', 'test-aim.mjs', 'test-scroll.mjs', 'test-driver.mjs', 'test-milestones.mjs', 'test-select-option.mjs', 'test-memory.mjs', 'test-voice-fastpath.mjs', 'test-microphone.mjs', 'test-voice-session.mjs', 'test-marks.mjs', 'test-judge.mjs', 'test-formfill.mjs', 'test-quickplan.mjs', 'test-repeat.mjs', 'test-attachments.mjs', 'test-job.mjs', 'test-policy.mjs', 'test-clipboard-image.mjs', 'test-picture-paste.mjs', 'test-fallback.mjs', 'test-recap.mjs']) {
+for (const suite of ['test-desktop-monitor.mjs', 'test-desktop-summary.mjs', 'test-desktop-routes.mjs', 'test-intent.mjs', 'test-apps.mjs', 'test-shortcuts.mjs', 'test-aim.mjs', 'test-scroll.mjs', 'test-driver.mjs', 'test-milestones.mjs', 'test-select-option.mjs', 'test-memory.mjs', 'test-voice-fastpath.mjs', 'test-microphone.mjs', 'test-voice-session.mjs', 'test-marks.mjs', 'test-judge.mjs', 'test-formfill.mjs', 'test-quickplan.mjs', 'test-repeat.mjs', 'test-attachments.mjs', 'test-job.mjs', 'test-policy.mjs', 'test-clipboard-image.mjs', 'test-picture-paste.mjs', 'test-fallback.mjs', 'test-recap.mjs']) {
   try {
-    execFileSync(process.execPath, [join(ROOT, 'scripts', suite)], { stdio: 'pipe' });
+    execFileSync(process.execPath, [join(ROOT, 'scripts', suite)], { stdio: 'pipe', timeout: 60_000 });
   } catch (err) {
     fail(`${suite}:\n${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trimEnd());
   }

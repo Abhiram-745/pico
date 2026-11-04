@@ -42,7 +42,7 @@ export const NOTCH_TITLE = 'Halo Notch';
 const DEFAULT_FRAME = { side: 7, top: 30, bottom: 7 };
 // The island at rest, before the page has measured itself: WIDTHS.compact in
 // island.jsx by the compact bar's 36px (island.css).
-const COMPACT = { width: 216, height: 36 };
+const COMPACT = { width: 236, height: 36 };
 
 const CANDIDATES = [
   `${process.env.ProgramFiles}\\Google\\Chrome\\Application\\chrome.exe`,

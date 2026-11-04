@@ -400,6 +400,21 @@ export async function loadEnv() {
   return out;
 }
 
+/** Explicit provider choices win; otherwise prefer a direct OpenAI key. */
+export function providerOrder(env = {}) {
+  const wanted = String(env.PICO_PROVIDER || '').trim().toLowerCase();
+  return wanted && PROVIDERS[wanted] ? [wanted] : ['openai', 'apinex', 'xkiro', 'bazaarlink'];
+}
+
+/** Server-only credentials for optional desktop summaries. Never sent to UI. */
+export async function loadOpenAIConfig() {
+  const env = { ...(await loadEnv()), ...process.env };
+  const directModel = (value) => typeof value === 'string' && /^(?:gpt-|o[134](?:-|$))/.test(value) && !value.includes('/');
+  const model = [env.OPENAI_SUMMARY_MODEL, env.PICO_MODEL_TEXT, env.PICO_MODEL]
+    .find(directModel) || PROVIDERS.openai.tiers.text;
+  return { apiKey: env.OPENAI_API_KEY || '', model };
+}
+
 /**
  * Whether a message asks what Halo runs on: "what model is this", "who made
  * you", "are you chatgpt", "what api are you running on". It has to be about
@@ -489,15 +504,12 @@ export class LLM {
     /* PICO_MODEL sets every job at once; a PICO_MODEL_<JOB> beside it overrides
        that one job. So "gpt-4o-mini for everything, gpt-4.1-mini to look at
        the screen" is two lines, not five. */
-    const oneModel = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-5-mini'].includes(env.PICO_MODEL) ? env.PICO_MODEL : null;
+    const oneModel = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-5-mini', 'gpt-5-nano'].includes(env.PICO_MODEL) ? env.PICO_MODEL : null;
 
     // Explicit choice wins. Otherwise OpenAI, which is where the models that
     // can actually read a screen are; anything else needs its own key in .env,
     // and with no key at all Halo asks for one on first run.
-    const wanted = (env.PICO_PROVIDER || '').toLowerCase();
-    /* APINEX first when there is a key for it: nobody pastes one by accident.
-       PICO_MODEL names OpenAI models, so it only ever applies to OpenAI. */
-    const order = wanted && PROVIDERS[wanted] ? [wanted] : ['apinex', 'openai', 'xkiro', 'bazaarlink'];
+    const order = providerOrder(env);
 
     /* Carried alongside whichever provider is chosen, not instead of one:
        the gateway serves the free text models and Jev, and the provider
@@ -691,7 +703,9 @@ export class LLM {
       // and with no budget at all the model just repeats its last action.
       // The accepted values differ by model, so `_noReasoningEffort` drops
       // the parameter entirely if one rejects it.
-      if (!this._noReasoningEffort) body.reasoning_effort = effort;
+      /* gpt-5, -mini and -nano have no "none": the lowest they take is "minimal".
+         Refused, the parameter was dropped and they spent the whole reply thinking. */
+      if (!this._noReasoningEffort) body.reasoning_effort = effort === 'none' && /^(?:free\/)?gpt-5(?:-(?:mini|nano))?$/.test(model) ? 'minimal' : effort;
     } else {
       body.max_tokens = maxTokens;
       // Choosing an action wants the likeliest answer; talking can vary.
@@ -1038,7 +1052,7 @@ export class LLM {
       max_output_tokens: maxTokens,
       store: false,
     };
-    if (asked) body.reasoning = { effort: asked };
+    if (asked) body.reasoning = { effort: asked === 'none' && /^gpt-5(?:-(?:mini|nano))?$/.test(useModel) ? 'minimal' : asked };
     /* A model with no reasoning is choosing one action from a screen: the
        most likely answer is the one wanted, every time. */
     else body.temperature = 0;

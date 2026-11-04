@@ -33,6 +33,9 @@ export const HOST_EVENTS = [
   'plan',        // { steps: [{ do, kind, status }], index, doneWhen, finished?, succeeded? } | null
   'runFinished', // { task, steps, succeeded } — what "save as shortcut" would keep
   'memory',      // { facts } — everything Halo has been told to keep
+  'status',      // { at, claudeCode, apps, agent } — how the machine and Halo are doing
+  'desktopMonitor', // selected apps, evidence, and meaningful progress changes
+  'appearance', // persisted System/Light/Dark preference, shared between profiles
   'routines',    // { items } — saved shortcuts
   'chats',       // { list, current } — every conversation, newest first
   'chatOpened',  // { id, messages } — an earlier chat, reopened in every window
@@ -66,6 +69,7 @@ export const UI_COMMANDS = [
   'setShell',     // { mode?, hidden?, guide?, toggle? } — island, card, hidden, guiding
   'moveCard',     // { x, y } — the floating card was dragged there
   'onboarded',    // {} — the chords have been practised; do not ask again
+  'refreshStatus', // {} — read the machine's state now
   'forgetRoutes', // {} — throw away what it learnt about doing things here
   'openNotch',    // {} — raise the notch window on the real desktop
   'closeNotch',   // {}
@@ -170,6 +174,18 @@ class Bridge {
 
       case 'memory':
         store.setMemory(payload.facts);
+        break;
+
+      case 'status':
+        store.setStatus(payload);
+        break;
+
+      case 'desktopMonitor':
+        store.set({ desktopMonitor: payload }, { type: 'desktopMonitor' });
+        break;
+
+      case 'appearance':
+        window.dispatchEvent(new CustomEvent('halo:appearance', { detail: payload }));
         break;
 
       case 'routines':

@@ -11,6 +11,7 @@
     "start": "node bridge/server.mjs",
     "build": "node scripts/build-site.mjs",
     "check": "node scripts/check.mjs",
+    "check:desktop": "node scripts/test-desktop-monitor.mjs && node scripts/test-desktop-summary.mjs && node scripts/test-desktop-routes.mjs",
     "ui": "node scripts/build-ui.mjs",
     "ui:watch": "node scripts/build-ui.mjs --watch"
   },

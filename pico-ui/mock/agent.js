@@ -113,6 +113,18 @@ export class MockAgent {
     this.emit('settings', this.settings);
     this.emit('memory', { facts: this.previewMemory });
     this.emit('routines', { items: this.previewRoutines });
+    this.emit('status', {
+      at: Date.now(), sawWindows: true,
+      agent: { busy: false, phase: 'Idle', task: '', lastTask: 'Open Spotify and play my liked songs', lastOk: true },
+      claudeCode: { available: true, sessions: [
+        { project: 'halo', state: 'working', age: 4000, asked: 'make Halo run on my OpenAI key', latest: 'Wiring the status hub into the app window.' },
+        { project: 'portfolio', state: 'waiting', age: 22 * 60000, asked: 'fix the hero', latest: 'Done — the hero now scales down on phones. Want me to push it?' },
+      ] },
+      apps: [
+        { id: 'whatsapp', label: 'WhatsApp', unread: 4, windows: 1 },
+        { id: 'discord', label: 'Discord', unread: null, windows: 1 },
+      ],
+    });
     // As the real bridge does once Windows accepts Ctrl+Alt+V.
     this.emit('voiceShortcut', { available: true });
     this.setPhase('Idle');

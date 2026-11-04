@@ -67,6 +67,10 @@ jobs:
           STAGE=out/Halo
           mkdir -p "$STAGE"
           cp -r pico-ui phone bridge "$STAGE"/
+          mkdir -p "$STAGE/scripts" "$STAGE/docs"
+          # The bridge imports this module even when the UI is prebuilt.
+          cp scripts/build-ui.mjs scripts/pico.ico "$STAGE/scripts/"
+          cp docs/desktop-companion.md "$STAGE/docs/"
           cp README.md SAFETY.md WINDOWS-TEST.md install.ps1 .env.example package.json package-lock.json "$STAGE"/
           cp "Start Halo.cmd" "$STAGE"/
           rm -rf "$STAGE"/pico-ui/mock/audit-sample.jsonl
@@ -83,8 +87,17 @@ jobs:
             "" \
             "1. Install Node.js (https://nodejs.org) if you have not already." \
             "2. Double-click \"Start Halo.cmd\"." \
-            "3. Paste your OpenAI key into the .env file it opens, save, run it again." \
+            "3. Add your OpenAI key in the app if prompted." \
+            "4. Choose Agent for tasks, or Desktop for selected-app progress." \
             > "$STAGE"/READ-ME-FIRST.txt
+
+          # Catch incomplete packages before they reach either download.
+          test -f "$STAGE/scripts/build-ui.mjs"
+          test -f "$STAGE/pico-ui/build/app.js"
+          test -f "$STAGE/pico-ui/build/island.js"
+          test -f "$STAGE/bridge/desktop-monitor.mjs"
+          test -f "$STAGE/docs/desktop-companion.md"
+          test ! -f "$STAGE/.env"
 
           cd out
           zip -qr "Halo-latest.zip" Halo

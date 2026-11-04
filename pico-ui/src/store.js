@@ -153,6 +153,8 @@ const initial = () => ({
   lastRun: null,
 
   memory: [],              // [{ id, text, source, created }] — what Halo keeps
+  status: null,            // { at, claudeCode, apps, agent } — the state of the machine, as last read
+  desktopMonitor: null,
   routines: [],            // [{ id, name, task, steps, runs, lastRun }] — saved shortcuts
   chats: { list: [], current: null, loaded: false },   // every conversation, newest first
   chatSearch: null,        // { q, results } — the last search this window asked for
@@ -267,6 +269,11 @@ class Store {
   setLastRun(run) {
     this.state.lastRun = run && run.task ? run : null;
     this.emit({ type: 'lastRun', lastRun: this.state.lastRun });
+  }
+
+  setStatus(status) {
+    this.state.status = status && typeof status === 'object' ? status : null;
+    this.emit({ type: 'status', status: this.state.status });
   }
 
   // --- what Halo keeps -----------------------------------------------------

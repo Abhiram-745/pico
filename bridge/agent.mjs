@@ -477,10 +477,12 @@ export class HostAgent extends MockAgent {
     let timedOut = false;
     const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, 90_000);
     try {
+      const live = this.statusFacts ? await this.statusFacts().catch(() => '') : '';
+      if (abort.signal.aborted || this.superseded(token)) return;
       full = await this.llm.converse(turns, {
         signal: abort.signal,
         name: this.petName,
-        facts: this.memory.forPrompt(),
+        facts: [this.memory.forPrompt(), live].filter(Boolean).join('\n\n'),
         onDelta: (piece) => {
           if (this.superseded(token)) return;
           full += piece;

@@ -30,6 +30,8 @@ import { createRoot } from 'react-dom/client';
 import { store, isActive, PHASE_COPY } from '../src/store.js';
 import { bridge, connect } from '../src/bridge.js';
 import { stopEverything } from '../src/voice-session.js';
+import { DesktopPeek, setDesktopMode } from './desktop-peek.jsx';
+import './appearance.jsx';
 import { chats } from '../src/chats.js';
 import { permissions, LEVELS } from '../src/permissions.js';
 import { TAUGHT, written } from '../src/keybinds.js';
@@ -40,7 +42,7 @@ import {
 } from './parts.jsx';
 
 /** Content width for each size. Height is whatever the content needs. */
-export const WIDTHS = { compact: 216, peek: 340, live: 420, voice: 480, open: 540, card: 380 };
+export const WIDTHS = { compact: 236, peek: 300, live: 380, voice: 440, open: 480, card: 380 };
 
 const SHORT = {
   Idle: 'Ready',
@@ -172,6 +174,10 @@ function useMeasure(rootRef, view, onMeasure) {
   const post = useCallback((force = false) => {
     const root = rootRef.current;
     if (!root) return;
+    // Use the display, not the current native viewport: that viewport is
+    // still only 36px high while the island is starting to expand.
+    const displayHeight = window.screen?.availHeight || 800;
+    root.style.setProperty('--island-max-height', `${Math.max(220, Math.min(460, Math.floor(displayHeight * .58)))}px`);
     const wasCapped = root.classList.contains('is-capped');
     if (wasCapped) root.classList.remove('is-capped');
     const height = Math.ceil(root.offsetHeight);
@@ -220,6 +226,8 @@ function useMeasure(rootRef, view, onMeasure) {
    The island
    -------------------------------------------------------------------------- */
 function Island({ onMeasure }) {
+  const monitor = useStore(sel.desktopMonitor);
+  const desktopMode = Boolean(monitor?.enabled);
   const [petName] = usePetName();
   const phase = useStore(sel.phase);
   const plan = useStore(sel.plan);
@@ -334,6 +342,16 @@ function Island({ onMeasure }) {
     showFlash(ok ? 'done' : 'fail', s.summary, 6500);
   });
   useStoreEvent(['error'], (s) => { if (s.error && !s.error.quiet) showFlash('fail', s.error.message, 6000); });
+  const latestDesktopEvent = useRef(null);
+  useStoreEvent(['desktopMonitor'], (s) => {
+    const m = s.desktopMonitor;
+    const latest = m?.events?.[0];
+    if (!m?.enabled || m.paused || !latest) return;
+    const previous = latestDesktopEvent.current;
+    latestDesktopEvent.current = latest.id;
+    if (!previous || previous === latest.id || m.settings?.quiet) return;
+    if (['waiting', 'completed', 'failed'].includes(latest.state)) showFlash('reply', `${latest.label}: ${latest.title || latest.detail}`, 6000);
+  });
   useStoreEvent(['message'], (s, meta) => {
     const m = meta.message;
     if (m?.from === 'pico' && m.done && !meta.restored) showFlash('reply', m.text, 6000);
@@ -432,6 +450,14 @@ function Island({ onMeasure }) {
       : guardian.canAct === false ? 'Chat only' : 'Ready';
   }
   if (waitingOnPerson) mark = 'attention';
+  if (desktopMode) {
+    const needsYou = monitor.apps?.filter(a => ['waiting', 'failed'].includes(a.state)).length || 0;
+    const working = monitor.apps?.filter(a => a.state === 'working').length || 0;
+    const desktopLine = monitor.paused ? 'Paused' : needsYou ? `${needsYou} need you` : working ? `${working} working` : 'Watching';
+    head = view === 'compact' ? <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{desktopLine}</> : 'Your workspace';
+    line = monitor.paused ? 'Monitoring paused' : flash?.text || `${desktopLine} · Desktop mode`;
+    mark = needsYou ? 'attention' : 'dot';
+  }
   /* Nothing is coming back from the bridge, so nothing else on the bar is
      worth believing. Said in the one place that is always visible. */
   if (!connected) {
@@ -480,6 +506,15 @@ function Island({ onMeasure }) {
           </div>
 
           <div className="h-island__trail">
+            <IconButton icon={desktopMode ? 'chat' : 'monitor'} label={desktopMode ? 'Switch to Agent mode' : 'Switch to Desktop mode'} size={13} onClick={async e => {
+              e.stopPropagation();
+              try { await setDesktopMode(!desktopMode); open(); }
+              catch (err) { showFlash('fail', err.message, 6000); }
+            }} />
+            <IconButton icon="x" label="Quit Halo" onClick={(e) => {
+              e.stopPropagation();
+              fetch('/quit', { method: 'POST' }).catch(() => {});
+            }} />
             {view !== 'compact' && running && <RunControls size={14} />}
             {(view === 'compact' || !running) && (
               <span className="h-glyph" data-mark={mark}>
@@ -490,10 +525,10 @@ function Island({ onMeasure }) {
             )}
             {(view === 'open' || view === 'card') && (
               <>
-                <button type="button" className="h-perm" data-level={level} title={`Permissions: ${lvl.label} — ${lvl.hint}`}
+                {!desktopMode && <button type="button" className="h-perm" data-level={level} title={`Permissions: ${lvl.label} — ${lvl.hint}`}
                   onClick={() => { const order = ['ask', 'smart', 'all']; permissions.set(order[(order.indexOf(level) + 1) % order.length]); }}>
                   <Icon name="shield" size={13} /><span>{lvl.label}</span>
-                </button>
+                </button>}
                 {messages.length > 0 && <IconButton icon="plus" label="New chat" onClick={() => { chats.newChat(); open(); }} />}
                 <IconButton icon="expand" label="Open the Halo window" onClick={() => bridge.send('openApp', {})} />
                 {view === 'card'
@@ -548,6 +583,7 @@ function Island({ onMeasure }) {
         {/* --- open and card: everything --------------------------------- */}
         {(view === 'open' || view === 'card') && (
           <div className="h-island__panel">
+            {desktopMode ? <DesktopPeek monitor={monitor} /> : <>
             <Thread className="h-island__thread" />
 
             {plan && (
@@ -618,9 +654,10 @@ function Island({ onMeasure }) {
               </div>
             )}
 
+            </>}
           </div>
         )}
-        <div className="h-island__composer" hidden={!(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
+        <div className="h-island__composer" hidden={desktopMode || !(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
           <Composer petName={petName} inputRef={inputRef} acceptShortcut taskStopShown={view !== 'compact' && running} />
         </div>
       </div>

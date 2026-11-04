@@ -1,0 +1,165 @@
+/* Appearance is resolved in appearance.jsx, shared across app and island.
+   Dark keeps its existing materials. Light uses its own ink and surfaces. */
+.h-appearance { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 9px; color: var(--h-dim); font-size: 11px; }
+.h-appearance label { display: inline-flex; align-items: center; gap: 8px; }
+.h-appearance select { min-width: 83px; padding: 5px 7px; border: 1px solid var(--h-line-hi); border-radius: 7px; color: var(--h-ink); background: var(--h-well); font: inherit; cursor: pointer; }
+.h-appearance select:focus-visible { outline: 2px solid var(--h-good); outline-offset: 3px; }
+.h-appearance option { background: #171a19; color: #eef3f0; }
+.h-side { overflow-y: auto; scrollbar-width: thin; }
+.h-appearance { flex: none; }
+
+/* The native host clips the actual surface; nothing paints its outer bounds. */
+html:has(#island), body:has(#island) { background: transparent; }
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink-0: #f6f8f7;
+  --ink-1: #f0f4f2;
+  --ink-2: #ffffff;
+  --ink-3: #eaf0ed;
+  --ink-4: #e0e8e3;
+  --ink-5: #d1ddd5;
+  --text-hi: #202a25;
+  --text-mid: #52625a;
+  --text-lo: #64736b;
+  --text-dim: #77857d;
+  --glass-bg: #fffffff0;
+  --glass-bg-strong: #fffffffa;
+  --glass-border: #203d2d18;
+  --glass-border-hi: #203d2d2d;
+  --glass-inner: inset 0 1px 0 #ffffff;
+  --shadow-lift: 0 22px 60px -25px #304d3a30, 0 4px 16px -8px #304d3a24;
+  --shadow-pet: 0 12px 24px -14px #304d3a35;
+  --h-ink: #202a25;
+  --h-dim: #52625a;
+  --h-faint: #68786f;
+  --h-well: #284b3610;
+  --h-well-hi: #284b361a;
+  --h-line: #284b361a;
+  --h-line-hi: #284b3633;
+  --h-ask: #6651b7;
+  --h-approve: #98600e;
+  --h-hand: #246c9f;
+  --h-good: #28714e;
+  --h-bad: #bb3a3e;
+  --h-light-surface: #ffffff;
+  --h-light-soft: #f0f4f2;
+  --h-light-shadow: 0 14px 40px -24px #304d3a38;
+}
+
+/* App frame, navigation, cards and editable controls. */
+[data-theme="light"]:has(#app), [data-theme="light"] body:has(#app) { background: #f6f8f7; }
+[data-theme="light"] .h-app { background: #f6f8f7; color: var(--h-ink); }
+[data-theme="light"] .h-side { background: #edf2ef; border-color: var(--h-line); }
+[data-theme="light"] .h-main { background: #f9fbfa; }
+[data-theme="light"] .h-appearance option { background: #fff; color: var(--h-ink); }
+[data-theme="light"] .h-chatrow__actions { background: linear-gradient(90deg, transparent, #e1e8e3 30%); }
+[data-theme="light"] .h-chatrow[data-current="true"] .h-chatrow__actions { background: linear-gradient(90deg, transparent, #dce5df 30%); }
+[data-theme="light"] .h-chatrow[data-current="true"]::before { background: var(--h-good); }
+[data-theme="light"] :is(.h-input, .h-chatrow__edit, .h-screenmap) { background: #fff; color: var(--h-ink); }
+[data-theme="light"] :is(.h-card, .h-runcard, .h-fact, .h-stat, .h-run) { background: var(--h-light-surface); box-shadow: inset 0 0 0 1px var(--h-line); }
+[data-theme="light"] .h-card--soft { background: #eaf3ed; }
+[data-theme="light"] :is(.h-card__icon, .h-kv code, .h-step__skip) { color: var(--h-dim); }
+[data-theme="light"] .h-segment__opt[data-on="true"] { background: #fff; color: var(--h-ink); }
+[data-theme="light"] .h-toggle { background: #bac8bf; }
+[data-theme="light"] .h-toggle[aria-checked="true"] { background: var(--h-good); }
+[data-theme="light"] :is(.h-page, .h-chats__scroll, .h-composer__input, .h-island__thread) { scrollbar-color: #bccbc2 transparent; }
+[data-theme="light"] .h-input:focus { box-shadow: inset 0 0 0 1px var(--h-good), 0 0 0 3px #28714e10; }
+[data-theme="light"] :is(.h-welcome__title, .h-empty__hello) { color: var(--h-ink); background: none; -webkit-text-fill-color: currentColor; }
+[data-theme="light"] :is(.h-notice, .h-stopbar) { background: #fbeaec; color: #943036; }
+[data-theme="light"] .h-notice strong { color: #7b2429; }
+[data-theme="light"] .h-drop-overlay { background: #edf5f0ed; border-color: #28714e80; color: var(--h-ink); }
+[data-theme="light"] .h-update__sub--error, [data-theme="light"] .h-mode-error { color: #a33e32; }
+[data-theme="light"] :is(.h-meter, .h-run__meter) { background: #284b3614; }
+[data-theme="light"] :is(.h-meter i, .h-run__meter i) { background: var(--h-good); }
+
+/* Shared conversation and decisions; message text keeps normal contrast. */
+[data-theme="light"] :is(.h-msg--pico, .h-md-pre code, .h-att__chip, .h-chip, .h-ibtn) { color: var(--h-ink); }
+[data-theme="light"] .h-msg--you { background: #e4eee7; }
+[data-theme="light"] .h-md-code { background: #284b3610; }
+[data-theme="light"] .h-att__preview { background: #fff; color: var(--h-ink); box-shadow: 0 0 0 1px var(--h-line-hi), var(--shadow-lift); }
+[data-theme="light"] :is(.h-att__preview pre, .h-decision__target) { color: var(--h-dim); }
+[data-theme="light"] .h-att__x { background: #e5ece7; color: var(--h-ink); box-shadow: 0 0 0 1px var(--h-line-hi); }
+[data-theme="light"] :is(.h-md-pre, .h-att--image) { background: #eef3f0; }
+[data-theme="light"] .h-thread__jump { background: #fff; color: var(--h-ink); box-shadow: 0 0 0 1px var(--h-line-hi), var(--h-light-shadow); }
+[data-theme="light"] .h-thread__jump:hover { background: #edf3ef; }
+[data-theme="light"] .h-decision { background: linear-gradient(120deg, color-mix(in oklab, var(--tone) 7%, white), white); }
+[data-theme="light"] .h-decision__icon { background: color-mix(in oklab, var(--tone) 10%, white); }
+[data-theme="light"] .h-step[data-status="done"] .h-step__mark { background: #e1f0e7; color: var(--h-good); }
+[data-theme="light"] .h-step[data-status="failed"] .h-step__mark,
+[data-theme="light"] .h-step[data-status="changed"] .h-step__mark { background: #f9e4e6; color: var(--h-bad); }
+[data-theme="light"] :is(.h-ibtn--stop, .h-stop-button, .h-pill--danger) { color: #a42e35; background: #fae9ea; }
+[data-theme="light"] :is(.h-ibtn--stop, .h-stop-button, .h-pill--danger):hover { color: #82232a; background: #f6d7da; }
+[data-theme="light"] .h-pill:hover { background: #284b3626; }
+[data-theme="light"] .h-chip:hover { background: #284b3610; }
+[data-theme="light"] .h-lightbox { background: #e8efebde; }
+[data-theme="light"] .h-lightbox__x { background: #fff; color: var(--h-ink); box-shadow: var(--h-light-shadow); }
+
+/* Primary action buttons retain their deliberate dark metal face. */
+[data-theme="light"] .h-mbtn { color: #fff; background: #24382b; }
+[data-theme="light"] .h-mbtn:disabled { color: #c3d0c7; }
+
+/* A light writing surface, with quieter tactile keyboard hints. */
+[data-theme="light"] .h-composer,
+[data-theme="light"] .h-composer.h-clicky,
+[data-theme="light"] .h-composer.h-clicky.is-voice { background: linear-gradient(#fff, #f3f7f4); color: var(--h-ink); box-shadow: inset 0 0 0 1px #284b3626, 0 10px 28px -20px #304d3a55; }
+[data-theme="light"] .h-composer.h-clicky:focus-within { box-shadow: inset 0 0 0 1px #28714e66, 0 0 0 3px #28714e0c; }
+[data-theme="light"] .h-composer.h-clicky .h-composer__input::placeholder { color: var(--h-faint); }
+[data-theme="light"] :is(.h-voice__status, .h-composer.h-clicky .h-voice__status) { color: var(--h-dim); }
+[data-theme="light"] :is(.h-voice__end, .h-composer__attach, .h-clicky__speak, .h-composer__mode) { color: var(--h-dim); }
+[data-theme="light"] :is(.h-voice__end, .h-composer__attach, .h-clicky__speak):hover { color: var(--h-ink); background: var(--h-well); }
+[data-theme="light"] .h-composer__mode[data-mode="chat"] { color: #21638c; background: #e3eff7; }
+[data-theme="light"] .h-composer__mode[data-mode="agent"] { color: #28714e; background: #e1eee6; }
+[data-theme="light"] .h-composer__tag { color: #21638c; background: #e3eff7; }
+[data-theme="light"] :is(.h-clicky__note, .h-composer__note) { color: #a42e35; }
+[data-theme="light"] .h-keycaps { background: #284b3606; box-shadow: inset 0 0 0 1px var(--h-line); }
+[data-theme="light"] .h-keycaps kbd { color: #4c5b52; background: linear-gradient(#fff, #e5ece7); box-shadow: inset 0 0 0 1px #284b3626, inset 0 1px 0 #fff, 0 2px 0 #284b3626; }
+[data-theme="light"] .h-wave i { background: #b5c3b9; }
+[data-theme="light"] .h-wave i[data-on="true"] { background: #477b62; }
+
+/* The floating surface is opaque; its surrounding native window is clear. */
+[data-theme="light"] .h-island { background: #fcfefd; color: var(--h-ink); box-shadow: inset 0 0 0 1px #284b361c; }
+[data-theme="light"] .h-island[data-view="card"] { background: linear-gradient(#fff, #f5f8f6); border-color: var(--h-line); box-shadow: 0 24px 60px -30px #304d3a55, inset 0 1px 0 #fff; }
+[data-theme="light"] :is(.h-perm, .h-history__title) { color: var(--h-dim); }
+[data-theme="light"] .h-perm[data-level="smart"] { color: #21638c; }
+[data-theme="light"] .h-perm[data-level="all"] { color: #98600e; background: #fcf0dd; }
+[data-theme="light"] .h-empty__hello { color: var(--h-ink); background: none; -webkit-text-fill-color: currentColor; }
+[data-theme="light"] .h-rail i { background: #284b3614; }
+[data-theme="light"] .h-rail i[data-status="current"] { background: linear-gradient(90deg, #aac5b5, #28714e, #aac5b5); }
+[data-theme="light"] .h-guide { background: #e9f1f8; border-color: #246c9f2b; }
+[data-theme="light"] :is(.h-guide__cursor, .h-guide__say b) { color: #246c9f; }
+[data-theme="light"] .h-keys { background: #284b3608; border-color: var(--h-line); }
+[data-theme="light"] .h-keys kbd { color: var(--h-ink); background: #fff; box-shadow: 0 1px 0 #284b3626, inset 0 0 0 1px #284b3620; }
+
+/* Progress peek shares the workspace's ink without requiring its full sheet. */
+[data-theme="light"] :is(.h-desktop-peek__intro, .h-desktop-peek__apps small, .h-desktop-peek__apps article > span:last-child) { color: var(--h-dim); }
+[data-theme="light"] .h-desktop-peek__intro span:last-child { color: var(--h-good); }
+[data-theme="light"] .h-desktop-peek > p { color: var(--h-ink); }
+[data-theme="light"] .h-desktop-peek__apps article { border-color: var(--h-line); }
+[data-theme="light"] .h-desktop-peek__dot[data-state="working"] { background: var(--h-good); }
+[data-theme="light"] .h-desktop-peek__dot[data-state="waiting"],
+[data-theme="light"] .h-desktop-peek__dot[data-state="failed"] { background: var(--h-approve); }
+[data-theme="light"] .h-desktop-peek button { background: #284b360a; border-color: var(--h-line); color: var(--h-ink); }
+[data-theme="light"] .h-desktop-peek button:hover { background: #284b3618; }
+
+/* First launch and menus must not flash back to dark while the app is light. */
+[data-theme="light"] #splash { background: #f6f8f7; color: var(--h-ink); }
+[data-theme="light"] :is(.sp__name, .sp__say) { color: var(--h-dim); }
+[data-theme="light"] .sp__glow { background: radial-gradient(circle, #b8d7c533, transparent 62%); }
+[data-theme="light"] .sp__ring { border-color: #284b3614; border-top-color: #28714e; border-right-color: #28714e66; }
+[data-theme="light"] .sp__bar { background: #284b3614; }
+[data-theme="light"] .sp__bar i { background: linear-gradient(90deg, transparent, #28714e); }
+[data-theme="light"] .sp__do { color: var(--h-ink); background: #fff; border-color: var(--h-line-hi); }
+[data-theme="light"] .h-onboard { background: #eef4f0ed; }
+[data-theme="light"] .h-onboard__sheet { background: linear-gradient(#fff, #f6f9f7); border-color: var(--h-line); box-shadow: var(--shadow-lift); }
+[data-theme="light"] .h-onboard__skip { color: var(--h-dim); background: #284b3608; border-color: var(--h-line-hi); }
+[data-theme="light"] .h-onboard__state[data-beat="done"] { color: var(--h-good); }
+[data-theme="light"] .setup { background-image: linear-gradient(168deg, #f7faf8, #eaf2ec); }
+[data-theme="light"] .setup__error { color: #a42e35; }
+[data-theme="light"] .setup__reveal { color: var(--h-dim); background: var(--h-well); }
+[data-theme="light"] :is(.palette__error, .card--error, .notice, .notice__title) { color: #a42e35; }
+
+@media (max-width: 700px) {
+  .h-appearance { padding-inline: 4px; }
+  .h-appearance label { gap: 5px; }
+}

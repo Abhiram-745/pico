@@ -32,12 +32,16 @@ import { installHotkeys } from '../src/hotkeys.js';
 import { useStore, useStoreEvent, sel, usePetName, useDebounced, ago } from './hooks.js';
 import { Beam, MetalButton, Orb } from './fx.jsx';
 import { Onboard } from './onboard.jsx';
+import { WorkspaceView, ModeSwitch } from './workspace.jsx';
+import { AppearanceControl } from './appearance.jsx';
 import { KEYBINDS } from '../src/keybinds.js';
 import {
   ActivityLog, Composer, Decision, Icon, IconButton, MascotView, PlanSteps, Presence, RunControls, SaveShortcut, Thread, useDecision,
 } from './parts.jsx';
 
 const SECTIONS = [
+  { id: 'workspace', label: 'Workspace', icon: 'monitor' },
+  { id: 'today', label: 'Today', icon: 'activity' },
   { id: 'chat', label: 'Chat', icon: 'chat' },
   { id: 'shortcuts', label: 'Shortcuts', icon: 'bolt' },
   { id: 'memory', label: 'Memory', icon: 'brain' },
@@ -49,7 +53,7 @@ const SECTIONS = [
 
 const sectionFromHash = () => {
   const id = location.hash.replace(/^#/, '');
-  return SECTIONS.some((s) => s.id === id) ? id : 'chat';
+  return SECTIONS.some((s) => s.id === id) ? id : 'today';
 };
 
 /* --------------------------------------------------------------------------
@@ -159,6 +163,8 @@ function ChatView({ petName }) {
   const error = useStore(sel.error);
   const chatState = useStore(sel.chats);
   const decision = useDecision(null);
+
+
   const running = isActive(phase);
   const title = chatState.list.find((c) => c.id === chatState.current)?.title;
   const empty = !messages.length && !plan && !decision;
@@ -392,6 +398,109 @@ function MemoryView() {
 /* --------------------------------------------------------------------------
    Activity — the audit timeline, drawn by the module the phone also uses.
    -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   Today: what is going on, across everything
+   -------------------------------------------------------------------------- */
+const CC_STATE = {
+  working: { label: 'Working', tone: 'live' },
+  waiting: { label: 'Waiting on you', tone: 'warn' },
+  idle: { label: 'Idle', tone: 'quiet' },
+};
+
+function StatusRow({ tone, name, state, line, meta }) {
+  return (
+    <div className="h-stat" data-tone={tone}>
+      <span className="h-stat__dot" />
+      <div className="h-stat__body">
+        <div className="h-stat__top"><span className="h-stat__name">{name}</span><span className="h-stat__state">{state}</span></div>
+        {line && <div className="h-stat__line">{line}</div>}
+      </div>
+      {meta && <span className="h-stat__meta">{meta}</span>}
+    </div>
+  );
+}
+
+/* Always on screen, on every page, while Halo is working. */
+function StopBar() {
+  const phase = useStore(sel.phase);
+  if (!isActive(phase)) return null;
+  return (
+    <div className="h-stopbar" role="status">
+      <span className="h-stopbar__text">Halo is working — {PHASE_COPY[phase]?.title ?? phase}</span>
+      <button type="button" className="h-stopbar__btn" onClick={() => bridge.send('stop')}>Stop <kbd>Ctrl+Alt+X</kbd></button>
+    </div>
+  );
+}
+
+function TodayView({ go }) {
+  const status = useStore(sel.status);
+  const phase = useStore(sel.phase);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    bridge.send('refreshStatus');
+    const t = setInterval(() => tick((n) => n + 1), 10000);   // "3m ago" keeps moving between reads
+    return () => clearInterval(t);
+  }, []);
+
+  const agent = status?.agent;
+  const busy = agent?.busy;
+  const cc = status?.claudeCode;
+  const apps = (status?.apps ?? []).filter((a) => !['cursor', 'vscode', 'chrome', 'edge', 'claude'].includes(a.id) || a.unread != null);
+  const needsYou = [
+    ...(cc?.sessions ?? []).filter((s) => s.state === 'waiting' && s.age < 3600_000).map((s) => `Claude Code (${s.project}) finished and is waiting on you`),
+    ...apps.filter((a) => a.unread).map((a) => `${a.label}: ${a.unread} unread`),
+  ];
+
+  return (
+    <div className="h-page">
+      <PageHead title="Today" sub="Your agent, and everything it is keeping an eye on. Read straight from this computer every few seconds — Halo only reports what it can actually see." />
+
+      <section className="h-stats">
+        <h2 className="h-stats__head">Halo</h2>
+        <StatusRow
+          tone={busy ? 'live' : 'quiet'}
+          name="Your agent"
+          state={busy ? (phase?.phase ?? 'Working') : 'Idle'}
+          line={busy ? agent.task : agent?.lastTask ? `Last job: ${agent.lastTask} — ${agent.lastOk ? 'done' : 'did not finish'}` : 'Ask it for something in Chat, or hold the voice chord.'} />
+      </section>
+
+      <section className="h-stats">
+        <h2 className="h-stats__head">Needs you</h2>
+        {needsYou.length
+          ? needsYou.map((t) => <StatusRow key={t} tone="warn" name={t} />)
+          : <div className="h-stats__none">{status ? 'Nothing is waiting on you.' : 'Looking…'}</div>}
+      </section>
+
+      <section className="h-stats">
+        <h2 className="h-stats__head">Claude Code</h2>
+        {cc && !cc.available && <div className="h-stats__none">Claude Code has not been used on this computer.</div>}
+        {cc?.available && !cc.sessions.length && <div className="h-stats__none">No session in the last 6 hours.</div>}
+        {cc?.sessions.map((s, i) => (
+          <StatusRow key={i} tone={CC_STATE[s.state].tone} name={s.project} state={CC_STATE[s.state].label}
+            line={s.state === 'working' ? (s.latest || s.asked) : s.latest || s.asked} meta={ago(Date.now() - s.age)} />
+        ))}
+      </section>
+
+      <section className="h-stats">
+        <h2 className="h-stats__head">Apps</h2>
+        {status && !status.sawWindows && <div className="h-stats__none">Could not read the open apps just now.</div>}
+        {status?.sawWindows && !apps.length && <div className="h-stats__none">None of the apps Halo watches are open.</div>}
+        {apps.map((a) => (
+          <StatusRow key={a.id} tone={a.unread ? 'warn' : 'live'} name={a.label}
+            state={a.unread ? `${a.unread} unread` : 'Running'}
+            line={a.unread != null ? null : 'Open. It shows no unread count Halo can see.'}
+            meta={a.via} />
+        ))}
+      </section>
+
+      <div className="h-page__foot">
+        <button type="button" className="h-pill h-pill--sm" onClick={() => bridge.send('refreshStatus')}>Refresh now</button>
+        <button type="button" className="h-pill h-pill--sm" onClick={() => go('chat')}>Ask Halo about it</button>
+      </div>
+    </div>
+  );
+}
+
 function ActivityView() {
   const timeline = useStore(sel.timeline);
   const host = useRef(null);
@@ -779,11 +888,30 @@ function App({ demo, conn }) {
   const memory = useStore(sel.memory);
   const routines = useStore(sel.routines);
   const decision = useDecision(null);
+  const monitor = useStore(sel.desktopMonitor);
+  const [modeBusy, setModeBusy] = useState(false);
+  const [modeError, setModeError] = useState('');
 
   const go = useCallback((id) => {
     setSection(id);
     history.replaceState(null, '', id === 'chat' ? location.pathname : `#${id}`);
   }, []);
+  const changeMode = async (next) => {
+    if (modeBusy) return;
+    if (demo) { go(next === 'desktop' ? 'workspace' : 'chat'); return; }
+    setModeBusy(true); setModeError('');
+    try {
+      const response = await fetch('/desktop-monitor/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next === 'desktop' }) });
+      const state = await response.json();
+      if (!response.ok) throw new Error(state.error || 'Could not switch modes.');
+      store.set({ desktopMonitor: state }, { type: 'desktopMonitor' });
+      go(next === 'desktop' ? 'workspace' : 'chat');
+    } catch (err) { setModeError(err.message); }
+    finally { setModeBusy(false); }
+  };
+  useEffect(() => {
+    if (monitor?.enabled) go('workspace');
+  }, [monitor?.enabled, go]);
   useEffect(() => {
     const onHash = () => setSection(sectionFromHash());
     addEventListener('hashchange', onHash);
@@ -809,13 +937,7 @@ function App({ demo, conn }) {
     if (settings.onboarded === false) setOnboarding(true);
   }, [settings.onboarded]);
 
-  /* Closing this window leaves you with the island, which is the half of
-     Halo that is reached by keyboard — so the chords go with you. */
-  useEffect(() => {
-    const onLeave = () => { if (!demo) bridge.send('setShell', { show: true, keys: true }); };
-    addEventListener('pagehide', onLeave);
-    return () => removeEventListener('pagehide', onLeave);
-  }, [demo]);
+  // Leaving the app window must not expand the island or replay the tour.
 
   /* Quit from Settings: the bridge is going on purpose, so this window says
      so and goes too, rather than sitting there "reconnecting" to nothing. */
@@ -840,9 +962,12 @@ function App({ demo, conn }) {
         <div className="h-side__brand">
           <Presence px={28} />
           <span className="h-side__name">{petName}</span>
-          <span className="h-side__conn" data-conn={conn}>{demo ? 'Preview' : conn === 'connected' ? '' : conn}</span>
+          <span className="h-side__conn" data-conn={monitor?.enabled ? 'local' : conn}>{demo ? 'Preview' : monitor?.enabled ? monitor.paused ? 'Paused' : 'Local' : conn === 'connected' ? '' : conn}</span>
         </div>
 
+        <ModeSwitch mode={monitor?.enabled ? 'desktop' : 'agent'} onChange={changeMode} disabled={modeBusy} />
+        {modeError && <p className="h-mode-error" role="alert">{modeError}</p>}
+        {!monitor?.enabled ? <>
         <MetalButton hero className="h-newchat" onClick={() => { chats.newChat(); go('chat'); }}>
           <Icon name="plus" size={15} /> New chat
         </MetalButton>
@@ -850,6 +975,7 @@ function App({ demo, conn }) {
         <IslandToggle demo={demo} />
 
         <ChatList onOpen={(id) => { chats.open(id); go('chat'); }} />
+        </> : <div className="h-companion-note"><Icon name="monitor" size={17} /><div><b>Your desktop companion</b><span>Useful changes, at your pace.</span></div></div>}
 
         <nav className="h-nav">
           {SECTIONS.map((s) => (
@@ -863,9 +989,17 @@ function App({ demo, conn }) {
         </nav>
 
         <UpdateButton demo={demo} />
+        <AppearanceControl />
+        <button type="button" className="h-nav__item" disabled={demo}
+          onClick={() => { fetch('/quit', { method: 'POST' }).catch(() => {}); }}>
+          <Icon name="x" size={15} /><span>Quit Halo</span>
+        </button>
       </aside>
 
       <main className="h-main">
+        <StopBar />
+        {section === 'workspace' && <WorkspaceView demo={demo} />}
+        {section === 'today' && <TodayView go={go} />}
         {section === 'chat' && <ChatView petName={petName} />}
         {section === 'shortcuts' && <ShortcutsView />}
         {section === 'memory' && <MemoryView />}

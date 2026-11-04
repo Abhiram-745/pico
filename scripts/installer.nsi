@@ -43,6 +43,8 @@ SetCompressor /SOLID lzma
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Start Halo.cmd"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch Halo now"
 !define MUI_FINISHPAGE_RUN_WORKINGDIR "$INSTDIR"
+!define MUI_FINISHPAGE_RUN_NOTCHECKED
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchHalo
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -54,6 +56,11 @@ SetCompressor /SOLID lzma
 
 !insertmacro MUI_LANGUAGE "English"
 
+Function LaunchHalo
+  ; Launching is an explicit finish-page choice, and needs no console window.
+  ExecShell "open" "$SYSDIR\wscript.exe" '//B //Nologo "$INSTDIR\Start Halo.vbs" --app' SW_HIDE
+FunctionEnd
+
 Section "Install" SEC_INSTALL
   SetOutPath "$INSTDIR"
   File /r "${STAGEDIR}\*.*"
@@ -62,14 +69,20 @@ Section "Install" SEC_INSTALL
   WriteRegStr HKCU "Software\Halo" "InstallDir" "$INSTDIR"
 
   CreateDirectory "$SMPROGRAMS\Halo"
-  CreateShortCut "$SMPROGRAMS\Halo\Halo.lnk" "$INSTDIR\Start Halo.cmd" "--app" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
   CreateShortCut "$SMPROGRAMS\Halo\Uninstall Halo.lnk" "$INSTDIR\Uninstall.exe"
-  CreateShortCut "$DESKTOP\Halo.lnk" "$INSTDIR\Start Halo.cmd" "--app" "$INSTDIR\phone\icons\icon-192.png" 0 SW_SHOWMINIMIZED
+  ; Complete dependency setup and generate the hidden launcher/shortcuts.
+  ; The chosen directory is passed through, including custom install paths.
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\install.ps1" -NoLaunch -InstallRoot "$INSTDIR"'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP "Halo setup could not finish. Check that Node.js is installed, then run setup again."
+    Abort
+  ${EndIf}
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "DisplayName" "Halo"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "DisplayIcon" "$INSTDIR\phone\icons\icon-192.png"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "DisplayIcon" "$INSTDIR\scripts\pico.ico"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "Publisher" "Halo"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Halo" "NoRepair" 1
@@ -78,6 +91,7 @@ Section "Install" SEC_INSTALL
   ; up front rather than after they think setup finished successfully.
   nsExec::ExecToStack 'node --version'
   Pop $0
+  Pop $1
   ${If} $0 != 0
     MessageBox MB_ICONEXCLAMATION|MB_YESNO "Halo also needs Node.js, which wasn't found on this computer.$\r$\n$\r$\nOpen the Node.js download page now?" IDNO +2
     ExecShell "open" "https://nodejs.org"
@@ -85,6 +99,7 @@ Section "Install" SEC_INSTALL
 SectionEnd
 
 Section "Uninstall"
+  Delete "$SMPROGRAMS\Halo.lnk"
   Delete "$SMPROGRAMS\Halo\Halo.lnk"
   Delete "$SMPROGRAMS\Halo\Halo App.lnk"
   Delete "$SMPROGRAMS\Halo\Uninstall Halo.lnk"

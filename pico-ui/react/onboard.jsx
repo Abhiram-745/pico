@@ -229,6 +229,7 @@ export function Onboard({ onDone }) {
 
   return (
     <div className="h-onboard" role="dialog" aria-modal="true" aria-label="Getting started with Halo">
+      <button type="button" className="h-onboard__skip" onClick={() => { bridge.send('onboarded', {}); onDone?.(); }}>Skip tour</button>
       <div className="h-onboard__sheet">
         <div className="h-onboard__say">
           <div className="h-onboard__count">
