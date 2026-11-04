@@ -108,3 +108,74 @@ assert.equal(smart.snapshot().summary.source, 'openai', 'keep the matching AI su
 smart.stop();
 assert.ok(publishes > 0);
 console.log('Desktop monitor: lifecycle parsing, stale signals, redaction, selection, deduplication, pause and cancellation passed.');
+
+// The real screenshot cases: window-only discovery is quiet, identical
+// terminal sessions collapse, and local excerpts survive through the feed.
+const resultSessions = [1, 2, 3].map(n => ({ appId: 'codex', sessionId: String(n), project: 'Halo', state: 'completed',
+  asked: 'Fix navigation', latest: 'Fixed Back navigation. All 12 checks passed.', detail: 'Turn finished', confidence: 'high', lastActivity: now - n }));
+let openWindows = [{ process: 'codex', title: 'Halo · Codex', hwnd: '123' }];
+const focused = [];
+const results = new DesktopMonitor({ now: () => now,
+  sense: { focus: async hwnd => { focused.push(hwnd); return { ok: true }; } },
+  readWindows: async () => ({ available: true, windows: [...openWindows, { process: 'grok', title: 'Grok', hwnd: '456' }] }),
+  readSessions: async () => resultSessions,
+});
+results.configure({ enabled: true, selectedApps: ['codex', 'grok'], quiet: false });
+await results.refresh();
+let snapshot = results.snapshot();
+assert.equal(snapshot.apps.filter(app => app.state === 'completed').length, 1, 'three mirrored results become one card');
+assert.equal(snapshot.events.length, 1, 'window discovery never creates a feed update, even with quiet off');
+assert.equal(snapshot.events[0].detail, 'Fixed Back navigation. All 12 checks passed.');
+assert.equal(snapshot.events[0].asked, 'Fix navigation');
+assert.match(snapshot.summary.text, /Fixed Back navigation/);
+assert.equal(snapshot.summary.source, 'local', 'useful with AI off');
+const result = snapshot.events[0].id;
+assert.equal(await results.openResult(result), true);
+assert.deepEqual(focused, ['123'], 'only an explicit open gesture focuses a matched window');
+openWindows.push({ process: 'codex', title: 'Halo · Codex', hwnd: '124' });
+assert.equal(await results.openResult(result), false, 'ambiguous windows must not be guessed');
+assert.equal(results.dismiss(result), true);
+await results.refresh();
+assert.equal(results.snapshot().events.length, 0, 'dismiss survives polling');
+assert.equal(results.snapshot().apps.find(app => app.state === 'completed').dismissed, true);
+resultSessions.push({ ...resultSessions[0], sessionId: 'other', asked: 'Update settings', latest: 'Added settings. Tests passed.' });
+await results.refresh();
+assert.equal(results.snapshot().events.length, 1, 'a distinct result in the same project remains visible');
+assert.equal(results.snapshot().apps.filter(app => app.state === 'completed').length, 2);
+assert.equal(results.dismiss('unknown'), false);
+results.stop();
+
+const newTurn = parseCodexSession(lines(meta, codex('agent_message', { message: 'Old result' }), codex('task_complete'), codex('user_message', { message: 'Next task' }), codex('task_started')), now, now);
+assert.equal(newTurn.latest, '', 'new work cannot inherit a previous result excerpt');
+const toolTurn = parseCodexSession(lines(meta, codex('task_started'), { ...commentary, payload: { type: 'function_call', name: 'apply_patch' } }), now, now);
+assert.equal(toolTurn.detail, 'Using apply_patch');
+
+// Refreshing the local island must not wait up to 20 seconds for an AI briefing.
+let finishBriefing;
+const slowBriefing = new DesktopMonitor({ now: () => now, readWindows: async () => [], readSessions: async () => resultSessions,
+  summarize: () => new Promise(resolve => { finishBriefing = resolve; }),
+});
+slowBriefing.configure({ enabled: true, selectedApps: ['codex'], aiSummaries: true });
+await slowBriefing.refresh();
+assert.equal(slowBriefing.snapshot().summary.source, 'local');
+slowBriefing.configure({ aiSummaries: false });
+finishBriefing('Outdated AI summary');
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(slowBriefing.snapshot().summary.source, 'local', 'disabled AI cannot publish a late briefing');
+slowBriefing.stop();
+console.log('Island result scenarios: quiet discovery, content deduplication, excerpts, dismiss, explicit open and nonblocking AI passed.');
+
+let completeOldBriefing, currentReply = 'Original reply';
+const changing = new DesktopMonitor({ now: () => now, readWindows: async () => [],
+  readSessions: async () => [{ ...resultSessions[0], latest: currentReply }],
+  summarize: () => new Promise(resolve => { completeOldBriefing = resolve; }),
+});
+changing.configure({ enabled: true, selectedApps: ['codex'], aiSummaries: true });
+await changing.refresh();
+currentReply = 'New reply: fixed the focus bug';
+await changing.refresh();
+completeOldBriefing('Original reply summary');
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(changing.snapshot().summary.source, 'local');
+assert.match(changing.snapshot().summary.text, /fixed the focus bug/, 'an old briefing cannot replace newer result evidence');
+changing.stop();
