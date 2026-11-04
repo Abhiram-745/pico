@@ -611,7 +611,7 @@ function Island({ onMeasure }) {
               <section className="h-run" data-finished={plan.finished ? 'true' : 'false'}>
                 <header className="h-run__head">
                   <span className="h-run__title">
-                    {plan.finished ? (plan.succeeded ? 'Finished' : 'Stopped') : running ? `Working · ${doneCount} of ${total}` : 'Plan'}
+                    {plan.finished ? (plan.succeeded ? 'Finished' : plan.recovery ? 'Ready to continue' : 'Stopped') : running ? `Working · ${doneCount} of ${total}` : 'Plan'}
                   </span>
                   <div className="h-run__meter"><i style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }} /></div>
                 </header>
