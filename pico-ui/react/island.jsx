@@ -343,15 +343,18 @@ function Island({ onMeasure }) {
     showFlash(ok ? 'done' : 'fail', s.summary, 6500);
   });
   useStoreEvent(['error'], (s) => { if (s.error && !s.error.quiet) showFlash('fail', s.error.message, 6000); });
-  const latestDesktopEvent = useRef(null);
+  const desktopEventsSeen = useRef(null);
   useStoreEvent(['desktopMonitor'], (s) => {
     const m = s.desktopMonitor;
-    const latest = m?.events?.[0];
-    if (!m?.enabled || m.paused || !latest) return;
-    const previous = latestDesktopEvent.current;
-    latestDesktopEvent.current = latest.id;
-    if (!previous || previous === latest.id || m.settings?.quiet) return;
-    if (['waiting', 'completed', 'failed'].includes(latest.state)) showFlash('reply', `${latest.label}: ${latest.title || latest.detail}`, 6000);
+    if (!m?.enabled) return;
+    const events = m.events || [];
+    const seen = desktopEventsSeen.current;
+    const latest = seen && events.find(event => !seen.has(event.id));
+    desktopEventsSeen.current = new Set([...events.map(event => event.id), ...(seen || [])].slice(0, 200));
+    // Dismissal must not resurface an older card as a new notification.
+    // Initial discovery of historical sessions is available on expansion only.
+    if (!latest || m.paused || m.settings?.quiet || Date.now() - latest.at > 60_000) return;
+    if (['waiting', 'completed', 'failed'].includes(latest.state)) showFlash('reply', `${latest.label}${latest.project ? ` · ${latest.project}` : ''}: ${latest.latest || latest.detail || latest.title}`, 8000);
   });
   useStoreEvent(['message'], (s, meta) => {
     const m = meta.message;
@@ -455,7 +458,7 @@ function Island({ onMeasure }) {
     const needsYou = monitor.apps?.filter(a => ['waiting', 'failed'].includes(a.state)).length || 0;
     const working = monitor.apps?.filter(a => a.state === 'working').length || 0;
     const desktopLine = monitor.paused ? 'Paused' : needsYou ? `${needsYou} need you` : working ? `${working} working` : 'Watching';
-    head = view === 'compact' ? <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{desktopLine}</> : 'Your workspace';
+    head = view === 'compact' ? <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{desktopLine}</> : 'Your desktop';
     line = monitor.paused ? 'Monitoring paused' : flash?.text || `${desktopLine} · Desktop mode`;
     mark = needsYou ? 'attention' : 'dot';
   }
@@ -596,10 +599,12 @@ function Island({ onMeasure }) {
           </div>
         )}
 
+        {desktopMode && view !== 'compact' && <div className="h-island__panel"><DesktopPeek monitor={monitor} /></div>}
+
         {/* --- open and card: everything --------------------------------- */}
-        {(view === 'open' || view === 'card') && (
+        {!desktopMode && (view === 'open' || view === 'card') && (
           <div className="h-island__panel">
-            {desktopMode ? <DesktopPeek monitor={monitor} /> : <>
+            <>
             <Thread className="h-island__thread" />
 
             {plan && (
@@ -670,7 +675,7 @@ function Island({ onMeasure }) {
               </div>
             )}
 
-            </>}
+            </>
           </div>
         )}
         <div className="h-island__composer" hidden={desktopMode || !(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
