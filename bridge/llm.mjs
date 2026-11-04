@@ -374,7 +374,14 @@ export const HEAVY_IMAGE_WIDTH = 1024;
 export const reasons = (model) => /^(?:free\/)?(?:gpt-[56]|od)/.test(String(model));
 
 /** A lower effort to try when a model refuses the one asked for. */
-const EFFORT_FALLBACK = { max: 'high', xhigh: 'high', high: 'medium', medium: 'low', low: 'minimal', minimal: 'none', none: null };
+const EFFORT_FALLBACK = { max: 'high', xhigh: 'high', high: 'medium', medium: 'low', none: 'minimal', minimal: 'low', low: null };
+
+export function supportedEffort(model, effort = 'none') {
+  if (effort !== 'none') return effort;
+  if (/^(?:free\/)?gpt-5(?:-(?:mini|nano))?$/.test(model)) return 'minimal';
+  if (/^(?:free\/)?(?:gpt-6(?:[.-].*)?astra|gpt-6\.1(?:[.-].*)?sol)/i.test(model)) return 'low';
+  return 'none';
+}
 
 /** Minimal .env parser — no dependency for something this small. */
 export async function loadEnv() {
@@ -490,6 +497,7 @@ export class LLM {
     this.onDowngrade = null;
     this._noReasoningEffort = false;
     this._responses = PROVIDERS[provider]?.responses !== false;
+    this._chatEffort = new Map(); // tool-call compatibility, independently of streaming chat
     this._effort = new Map();      // model -> the effort it last accepted
     this._noOriginal = new Set();  // models that refuse full-detail pictures
     this.singleModel = new Set(Object.values(tiers)).size === 1;
@@ -693,19 +701,16 @@ export class LLM {
     if (tools) {
       body.tools = tools;
       body.tool_choice = 'required';
-      body.parallel_tool_calls = false;   // one action per turn, then look again
+      body.parallel_tool_calls = false;   // one function call carrying an ordered action batch
     }
     if (/^(?:free\/)?gpt-[56]/.test(model)) {
       body.max_completion_tokens = maxTokens;
-      // Chatting and planning need no thinking budget, and asking for one is
-      // most of the latency on a reasoning-capable model. Driving the desktop
-      // is the exception: deciding whether a task is finished is a judgement,
-      // and with no budget at all the model just repeats its last action.
-      // The accepted values differ by model, so `_noReasoningEffort` drops
-      // the parameter entirely if one rejects it.
+      // Keep action calls at the requested lowest effort. Compatibility is
+      // cached per model for tools, independently of ordinary streaming chat.
       /* gpt-5, -mini and -nano have no "none": the lowest they take is "minimal".
          Refused, the parameter was dropped and they spent the whole reply thinking. */
-      if (!this._noReasoningEffort) body.reasoning_effort = effort === 'none' && /^(?:free\/)?gpt-5(?:-(?:mini|nano))?$/.test(model) ? 'minimal' : effort;
+      const asked = tools && this._chatEffort.has(model) ? this._chatEffort.get(model) : supportedEffort(model, effort);
+      if (asked !== null && (tools || !this._noReasoningEffort)) body.reasoning_effort = asked;
     } else {
       body.max_tokens = maxTokens;
       // Choosing an action wants the likeliest answer; talking can vary.
@@ -911,8 +916,10 @@ export class LLM {
     try { body = JSON.parse(raw); } catch { /* non-JSON error body */ }
 
     if (!res.ok) {
-      if (this._rejectsReasoningEffort(res.status, body)) {
-        this._noReasoningEffort = true;
+      if (res.status === 400 && /reasoning_effort/i.test(body?.error?.message || '') && this._chatEffort.get(useModel) !== null) {
+        const attempted = this._chatEffort.has(useModel) ? this._chatEffort.get(useModel) : supportedEffort(useModel, effort);
+        const unsupported = /(?:unknown|unsupported|unrecognized) parameter/i.test(body?.error?.message || '');
+        this._chatEffort.set(useModel, unsupported ? null : EFFORT_FALLBACK[attempted] ?? null);
         return this.toolCall(messages, { model: useModel, tools, maxTokens, signal, effort });
       }
       throw this._error(res.status, body, res);
@@ -1052,10 +1059,10 @@ export class LLM {
       max_output_tokens: maxTokens,
       store: false,
     };
-    if (asked) body.reasoning = { effort: asked === 'none' && /^gpt-5(?:-(?:mini|nano))?$/.test(useModel) ? 'minimal' : asked };
+    if (asked) body.reasoning = { effort: supportedEffort(useModel, asked) };
     /* A model with no reasoning is choosing one action from a screen: the
        most likely answer is the one wanted, every time. */
-    else body.temperature = 0;
+    else if (!reasons(useModel)) body.temperature = 0;
 
     let res;
     try {

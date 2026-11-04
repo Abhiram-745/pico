@@ -428,7 +428,7 @@ export function parseOpen(text) {
   // A whole sentence is not the name of an app ("open the report from last
   // week", "open my downloads folder"): those are jobs for the planner.
   if (!name || name.split(' ').length > 4) return null;
-  if (/\b(?:folder|file(?! explorer)|files from|document|tab|window|email|message|chat with|conversation|settings for|photo|picture|video of|song|playlist|link|report|invoice|spreadsheet)\b/.test(name)) return null;
+  if (/\b(?:folder|file(?! explorer)|files from|document|tab|window|email|message|locked chats?|chats?|channels?|conversations?|threads?|settings for|photo|picture|video of|song|playlist|link|report|invoice|spreadsheet)\b/.test(name)) return null;
 
   return { name, rest, said };
 }

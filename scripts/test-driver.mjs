@@ -143,6 +143,7 @@ function scripted(script) {
       calls.push({
         tool,
         model: req.model,
+        effort: req.effort,
         text: req.content?.find((c) => c.type === 'text')?.text ?? '',
         history: (req.history ?? []).map((m) => ({
           role: m.role,
@@ -176,13 +177,13 @@ const act = (args) => ({ name: 'act', args: { why: 'doing the step', ...args } }
    carries one. Scripts whose run stops for another reason never reach it. */
 const finish = { name: 'step_done' };
 
-function run({ computer, llm, task = 'type hello there', hooks = {}, context = {} }) {
+function run({ computer, llm, task = 'type hello there', hooks = {}, context = {}, maxTurns = 30 }) {
   const events = { phases: [], summaries: [], plans: [], errors: [], audits: [] };
   const done = runTask({
     task,
     computer,
     llm,
-    maxTurns: 30,
+    maxTurns,
     context,
     hooks: {
       onPhase: (p) => events.phases.push(p),
@@ -1232,6 +1233,113 @@ console.log('Back, before and after the page changed');
   check('on the start page, Back is refused', stayed.backs === 0 && stayed.refused, JSON.stringify(stayed));
   const left = await run1(true);
   check('once the page has changed, Back is allowed', left.backs === 1 && !left.refused, JSON.stringify(left));
+}
+
+console.log('same-screen model batch uses one look, with executed outcomes');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  let clicked = 0, captures = 0;
+  const controls = () => [
+    { type: 'CheckBox', name: 'Alpha', rect: [10, 30, 70, 30], operable: true, enabled: true, checked: clicked >= 1 },
+    { type: 'CheckBox', name: 'Beta', rect: [110, 30, 70, 30], operable: true, enabled: true, checked: clicked >= 2 },
+  ];
+  page(computer, controls);
+  const capture = computer.capture;
+  computer.capture = async () => { captures++; return capture(); };
+  computer.click = async () => { clicked++; computer.state.screen++; };
+  const llm = scripted([act({ action: 'click', mark: 1, why: 'I think I should plan the next click', then: [
+    { action: 'click', mark: 2, why: 'I need to consider the next step' },
+    { action: 'key', keys: ['enter'] },
+  ] })]);
+  llm.evaluate = async (facts, questions) => questions.met ? { met: { probability: clicked === 2 ? 1 : 0 } } : null;
+  const { done, events } = run({ computer, llm, task: 'Complete the review controls', context: { milestonePlanning: true } });
+  const result = await done;
+  check('two clicks and Enter use a single act call', clicked === 2 && actTurns(llm) === 1, `${clicked} clicks, ${actTurns(llm)} calls, ${JSON.stringify(events.errors)}`);
+  check('batch starts with no intermediate full screenshots', captures === 1, `${captures} captures`);
+  check('act turns request no reasoning effort', llm.calls.filter(c => c.tool === 'act').every(c => c.effort === 'none'));
+  check('the goal is completed after the batch', result?.succeeded && events.phases.at(-1) === 'Completed', JSON.stringify(events.summaries));
+  const activities = events.plans.flatMap(p => p.activity || []).map(a => a.text);
+  check('activity records outcomes without model thinking', activities.some(text => /^Clicked/i.test(text)) && activities.every(text => !/I think|I need|consider|plan the next/.test(text)), JSON.stringify(activities));
+}
+
+console.log('a vanished batch target cancels the remaining actions');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  let clicked = 0;
+  const controls = () => [
+    { type: 'CheckBox', name: 'Alpha', rect: [10, 30, 70, 30], operable: true, checked: clicked > 0 },
+    ...(clicked ? [] : [{ type: 'CheckBox', name: 'Beta', rect: [110, 30, 70, 30], operable: true, checked: false }]),
+  ];
+  page(computer, controls);
+  computer.click = async () => { clicked++; computer.state.screen++; };
+  let keys = 0;
+  computer.keypress = async () => { keys++; };
+  const llm = scripted([act({ action: 'click', mark: 1, then: [{ action: 'click', mark: 2 }, { action: 'key', keys: ['enter'] }] }),
+    finish, { name: 'report', args: { succeeded: true, summary: 'Reviewed the remaining control.' } }]);
+  const { done } = run({ computer, llm, task: 'Review visible controls' });
+  await done;
+  check('no stale second click or trailing Enter', clicked === 1 && keys === 0, `${clicked} clicks, ${keys} keys`);
+  check('a new decision follows the missing target', actTurns(llm) === 2, `${actTurns(llm)} decisions`);
+}
+
+console.log('recovery retains the original action budget');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clicksChange = false;
+  const llm = scripted([
+    act({ action: 'click', x: 10, y: 5, target: 'View menu' }),
+    act({ action: 'click', x: 12, y: 5, target: 'View menu' }),
+    ...Array.from('ABCDEFGH', text => act({ action: 'type', text })),
+    finish,
+  ]);
+  const { done } = run({ computer, llm, task: 'type ABCDEFGH', maxTurns: 14 });
+  const result = await done;
+  check('a recoverable miss does not cut the job short', computer.state.value === 'ABCDEFGH' && result?.succeeded, computer.state.value);
+}
+
+console.log('a genuinely blocked run asks once and uses the answer');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  computer.state.clicksChange = false;
+  let questions = 0;
+  const llm = scripted([
+    ...Array.from({ length: 8 }, (_, n) => act({ action: 'click', x: 10 + n, y: 5, target: 'View menu' })),
+    ({ req }) => {
+      check('the clarification reaches the next decision', req.content[0].text.includes('Use the keyboard instead'), req.content[0].text);
+      return act({ action: 'type', text: 'recovered' });
+    }, finish,
+  ]);
+  const { done } = run({ computer, llm, task: 'type recovered', hooks: {
+    onQuestion: async () => { questions++; return 'Use the keyboard instead'; },
+  } });
+  const result = await done;
+  check('one blocker question resumes and completes the goal', questions === 1 && result?.succeeded && computer.state.value === 'recovered', `${questions} questions, ${computer.state.value}`);
+}
+
+console.log('unverified incomplete task offers explicit continuation');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([act({ action: 'click', x: 12, y: 12, target: 'View menu' }),
+    { name: 'report', args: { succeeded: false, summary: 'The chat is not open yet.' } }]);
+  const { done, events } = run({ computer, llm, task: 'Open Locked chats and open a chat', maxTurns: 1 });
+  await done;
+  check('incomplete is recoverable rather than cancelled', events.phases.at(-1) === 'Failed' && events.plans.at(-1)?.recovery?.task === 'Open Locked chats and open a chat', JSON.stringify(events.plans.at(-1)));
+}
+
+console.log('premature completion is verified and recovered before ending');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const llm = scripted([
+    act({ action: 'click', x: 10, y: 10, target: 'Locked chats' }), finish,
+    { name: 'report', args: { succeeded: false, summary: 'The requested chat is not open yet.' } },
+    act({ action: 'click', x: 20, y: 20, target: 'Mira' }), finish,
+    { name: 'report', args: { succeeded: true, summary: 'Opened Mira.' } },
+  ]);
+  const { done, events } = run({ computer, llm, task: 'Open chat Mira', context: { milestonePlanning: true } });
+  const result = await done;
+  check('a negative final check resumes the original task', result?.succeeded && events.audits.some(e => e.e === 'completion_recovered'), JSON.stringify(events.errors));
+  check('recovery does not emit a dead stopped phase', !events.phases.includes('Stopped') && events.phases.at(-1) === 'Completed', events.phases.join(' > '));
+  check('the final verifier result is reused', llm.calls.filter(c => c.tool === 'report').length === 2, JSON.stringify(llm.calls));
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');
