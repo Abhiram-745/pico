@@ -95,5 +95,25 @@ console.log('settle');
   check('a link keeps the point on its text', near(p.x, 130) && near(p.y, 112));
 }
 
+{
+  const r = await settle(fake({ at: el('Pane', '', [0, 0, 800, 600]), controls: [
+    { ...el('Button', 'Save', [100, 100, 60, 30]), distance: 4 },
+    { ...el('Button', 'Save', [100, 140, 60, 30]), distance: 5 },
+  ] }), { x: 98, y: 135 }, { target: 'Save' });
+  check('equally named nearby candidates stay ambiguous', r.how === 'model');
+}
+// A conflicting label must never attract a near miss, even within eight pixels.
+{
+  const r = await settle(fake({ at: el('Pane', '', [0, 0, 800, 600]),
+    controls: [{ ...el('Button', 'Delete', [100, 100, 60, 30]), distance: 3 }],
+  }), { x: 98, y: 110 }, { target: 'Save' });
+  check('nearby conflicting label is not snapped to', r.how === 'model');
+}
+for (const control of [el('Button', 'Save', [100, 100, 60, 30], { offscreen: true }),
+  el('Button', 'Save', [100, 100, -60, 30]), el('Button', 'Save', [100, 100, NaN, 30])]) {
+  const r = await settle(fake({ layers: [control], controls: [] }), { x: 110, y: 110 }, { target: 'Save' });
+  check('invalid or offscreen layer is ignored', r.how === 'model');
+}
+
 console.log(failed ? `\n${failed} failed` : '\nall passed');
 process.exit(failed ? 1 : 0);

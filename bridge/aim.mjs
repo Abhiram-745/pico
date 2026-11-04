@@ -57,6 +57,8 @@ export function fit(description, name) {
   return shared / nt.length;
 }
 
+const validRect = (r) => Array.isArray(r) && r.length === 4 && r.every(Number.isFinite) && r[2] > 0 && r[3] > 0;
+
 const inside = (r, p) => r && p.x >= r[0] && p.x <= r[0] + r[2] && p.y >= r[1] && p.y <= r[1] + r[3];
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -108,7 +110,7 @@ export async function settle(sense, point, { target = '' } = {}) {
   // described and a larger one around it is — the close button inside the
   // tab that was meant — the larger one is the target.
   const layers = (Array.isArray(hit.layers) ? hit.layers : [])
-    .filter((l) => l && Array.isArray(l.rect) && l.enabled !== false && inside(l.rect, point));
+    .filter((l) => l && validRect(l.rect) && !l.offscreen && l.enabled !== false && inside(l.rect, point));
   if (layers.length) {
     let chosen = layers[0];
     if (target && fit(target, chosen.name) < 0.5) {
@@ -130,10 +132,10 @@ export async function settle(sense, point, { target = '' } = {}) {
   if (surface.has(hit.at?.type)) return { ...plain, landed: landedAt, window };
 
   const near = await sense.near(point.x, point.y, NEAR_ENOUGH + 8);
-  const controls = (near?.controls ?? []).filter((c) => c && Array.isArray(c.rect)
+  const controls = (near?.controls ?? []).filter((c) => c && validRect(c.rect)
     && c.enabled !== false && !c.offscreen && c.distance <= NEAR_ENOUGH
     && c.rect[2] * c.rect[3] < 600 * 300
-    && (fit(target, c.name) >= 0.5 || c.distance <= 8));
+    && (fit(target, c.name) >= 0.5 || (!tokens(target).length && c.distance <= 8)));
   if (controls.length) {
     const scored = controls
       .map((c) => ({ c, score: fit(target, c.name) - (c.distance / NEAR_ENOUGH) * 0.6 }))
@@ -141,7 +143,7 @@ export async function settle(sense, point, { target = '' } = {}) {
     // With nothing to go on but distance, only an unambiguous neighbour.
     const top = scored[0];
     const second = scored[1];
-    const decisive = fit(target, top.c.name) >= 0.5 || !second || top.score - second.score > 0.25;
+    const decisive = !second || top.score - second.score > 0.25;
     if (decisive) {
       const edge = {
         x: clamp(point.x, top.c.rect[0], top.c.rect[0] + top.c.rect[2]),

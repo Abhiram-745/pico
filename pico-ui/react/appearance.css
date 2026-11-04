@@ -163,3 +163,8 @@ html:has(#island), body:has(#island) { background: transparent; }
   .h-appearance { padding-inline: 4px; }
   .h-appearance label { gap: 5px; }
 }
+
+[data-theme="light"] .h-island { background: radial-gradient(ellipse at 18% 0%, #fff, transparent 70%), linear-gradient(165deg, #f8fafdef, #e8edf4fa); }
+[data-theme="light"] .h-island[data-mode="agent"] { --island-tint: #365b9b; }
+[data-theme="light"] .h-island[data-mode="desktop"] { --island-tint: #246d58; }
+[data-theme="light"] .h-mode-switch__selection { background: linear-gradient(#fff, #f3f6fa); box-shadow: inset 0 1px 0 #fff, 0 1px 4px #23354f20; }

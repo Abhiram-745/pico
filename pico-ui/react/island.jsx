@@ -242,6 +242,7 @@ function Island({ onMeasure }) {
   const connected = useConnected();
 
   const shell = useStore(sel.shell);
+  const [switchingMode, setSwitchingMode] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [flash, setFlash] = useState(null);          // { kind, text } — a passing notice
   const [keys, setKeys] = useState(false);           // the chords, on arriving from the app
@@ -494,7 +495,7 @@ function Island({ onMeasure }) {
 
   return (
     <Beam active={running && view !== 'compact'} size="md" color="colorful" radius={view === 'compact' ? 16 : 22} className="h-island-beam">
-      <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'}>
+      <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-mode={desktopMode ? 'desktop' : 'agent'} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'}>
         {/* --- the bar ---------------------------------------------------- */}
         <div className="h-island__bar" onClick={onBarClick}
           onPointerDown={onGrab} onPointerMove={onDrag} onPointerUp={onDrop} onPointerCancel={onDrop}>
@@ -506,11 +507,6 @@ function Island({ onMeasure }) {
           </div>
 
           <div className="h-island__trail">
-            <IconButton icon={desktopMode ? 'chat' : 'monitor'} label={desktopMode ? 'Switch to Agent mode' : 'Switch to Desktop mode'} size={13} onClick={async e => {
-              e.stopPropagation();
-              try { await setDesktopMode(!desktopMode); open(); }
-              catch (err) { showFlash('fail', err.message, 6000); }
-            }} />
             <IconButton icon="x" label="Quit Halo" onClick={(e) => {
               e.stopPropagation();
               fetch('/quit', { method: 'POST' }).catch(() => {});
@@ -538,6 +534,26 @@ function Island({ onMeasure }) {
               </>
             )}
           </div>
+        </div>
+
+        <div className="h-mode-switch" role="group" aria-label="Halo mode" aria-busy={switchingMode}>
+          <span className="h-mode-switch__selection" data-desktop={desktopMode} aria-hidden="true" />
+          {[false, true].map(desktop => <button key={String(desktop)} type="button"
+            aria-pressed={desktopMode === desktop} disabled={switchingMode || !connected}
+            title={desktop ? 'Watch selected apps · stops the action agent' : 'Act on your tasks with approval controls'}
+            onClick={async () => {
+              if (desktop === desktopMode || switchingMode) return;
+              setSwitchingMode(true);
+              try { await setDesktopMode(desktop); }
+              catch (err) { showFlash('fail', err.message, 6000); }
+              finally { setSwitchingMode(false); }
+            }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {desktop ? <><rect x="3" y="4" width="18" height="13" rx="3" /><path d="M8 21h8m-4-4v4M7 11c3-4 7-4 10 0-3 4-7 4-10 0Z" /><circle cx="12" cy="11" r="1" /></>
+                : <><path d="m5 3 14 9-7 1-3 7-4-17Z" /><path d="m15 4 1-2m4 5 2-1M3 22l2-2" /></>}
+            </svg>
+            {desktop ? 'Desktop' : 'Agent'}
+          </button>)}
         </div>
 
         {/* --- live: progress, and what just finished ---------------------- */}

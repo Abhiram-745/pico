@@ -1,9 +1,11 @@
 # Desktop companion
 
-Halo has two modes, selected in the sidebar or from the monitor/chat button in the floating island.
+Halo has two modes, selected in the sidebar or from the labeled Agent | Desktop toggle in the floating island.
 
 - **Agent** uses the existing OpenAI desktop agent and its approval, pause, and stop controls.
 - **Desktop** watches selected apps and gathers progress in Workspace. Switching to it stops the action agent. New tasks, saved shortcuts, and resume commands cannot start actions in this mode.
+
+The island keeps the active mode highlighted, with a sensing light in Desktop and action activity in Agent. Mode changes wait for the bridge to confirm and remain synchronized with the sidebar. Motion follows the system’s reduced-motion preference.
 
 Open **Workspace → Start watching**. Choose Claude, Codex, Chrome, Lovable, Grok, or add another app by name. Pause preserves the last observations and stops new reads. Quit stops Halo completely. Quiet updates stay in Workspace; disabling quiet allows short floating updates for completed replies, errors, and requests for input.
 
