@@ -26,7 +26,7 @@
    morphs, but can be covered by other windows and keeps its frame.
    ========================================================================== */
 
-import { spawn } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,7 +39,10 @@ const require = createRequire(import.meta.url);
 export const NOTCH_TITLE = 'Halo Notch';
 
 /** Chrome on Windows 11 at 125%, measured. Replaced by the page's own report. */
-const DEFAULT_FRAME = { side: 7, top: 30, bottom: 7 };
+const IS_LINUX = process.platform === 'linux';
+// On Linux an --app window has no Windows-style invisible border; the page
+// reports its real frame, and until then none is assumed.
+const DEFAULT_FRAME = IS_LINUX ? { side: 0, top: 0, bottom: 0 } : { side: 7, top: 30, bottom: 7 };
 // The island at rest, before the page has measured itself: WIDTHS.compact in
 // island.jsx by the compact bar's 36px (island.css).
 const COMPACT = { width: 236, height: 36 };
@@ -50,10 +53,110 @@ const CANDIDATES = [
   `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
   `${process.env['ProgramFiles(x86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
   `${process.env.ProgramFiles}\\Microsoft\\Edge\\Application\\msedge.exe`,
+  // Linux (this box / Debian)
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/opt/ungoogled-chromium/chrome',
 ];
 
 export function findBrowser() {
   return CANDIDATES.find((p) => p && !p.startsWith('undefined') && existsSync(p)) ?? null;
+}
+
+
+/* --------------------------------------------------------------------------
+   Linux (X11) window control.
+
+   libnut-win32 is Windows-only, so on Linux the island window is found,
+   placed and pinned with xdotool and wmctrl when they are installed. Both are
+   optional: without them the window still opens where the browser puts it,
+   and every call here is a quiet no-op. Wayland-only sessions (no DISPLAY)
+   are treated the same way.
+   -------------------------------------------------------------------------- */
+const toolCache = new Map();
+function haveTool(name) {
+  if (!IS_LINUX || !process.env.DISPLAY) return false;
+  if (!toolCache.has(name)) {
+    let ok = false;
+    try { execFileSync('which', [name], { stdio: 'ignore' }); ok = true; } catch { /* missing */ }
+    toolCache.set(name, ok);
+  }
+  return toolCache.get(name);
+}
+
+function xRun(cmd, args) {
+  return new Promise((resolve) => {
+    try {
+      execFile(cmd, args, { timeout: 3000 }, (err, stdout) => resolve(err ? null : String(stdout)));
+    } catch { resolve(null); }
+  });
+}
+
+function xSync(cmd, args) {
+  try { return String(execFileSync(cmd, args, { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
+}
+
+const linuxX = {
+  get ok() { return haveTool('xdotool') || haveTool('wmctrl'); },
+  screen() {
+    if (!haveTool('xdotool')) return null;
+    const out = xSync('xdotool', ['getdisplaygeometry']);
+    const m = out && out.trim().match(/^(\d+)\s+(\d+)$/);
+    return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+  },
+  find(title) {
+    if (!haveTool('xdotool')) return null;
+    const out = xSync('xdotool', ['search', '--name', title]);
+    const id = out?.split('\n').map((l) => l.trim()).find(Boolean);
+    return id || null;
+  },
+  pin(id) {
+    if (haveTool('wmctrl')) {
+      xRun('wmctrl', ['-i', '-r', String(id), '-b', 'add,above,sticky,skip_taskbar,skip_pager']);
+    }
+    // Ask the window manager for no decorations, where it listens to Motif hints.
+    if (haveTool('xprop')) {
+      xRun('xprop', ['-id', String(id), '-f', '_MOTIF_WM_HINTS', '32c', '-set', '_MOTIF_WM_HINTS', '2, 0, 0, 0, 0']);
+    }
+    return true;
+  },
+  raise(id) {
+    if (haveTool('wmctrl')) { xRun('wmctrl', ['-i', '-a', String(id)]); return true; }
+    if (haveTool('xdotool')) { xRun('xdotool', ['windowraise', String(id)]); return true; }
+    return false;
+  },
+  mouse() {
+    if (!haveTool('xdotool')) return Promise.resolve(null);
+    return xRun('xdotool', ['getmouselocation', '--shell']).then((out) => {
+      const x = out?.match(/X=(-?\d+)/); const y = out?.match(/Y=(-?\d+)/);
+      return x && y ? { x: Number(x[1]), y: Number(y[1]) } : null;
+    });
+  },
+};
+
+/** One move+resize at a time; while one runs, only the newest request waits. */
+class XPlacer {
+  constructor() { this.busy = false; this.next = null; }
+  place(id, r) {
+    if (!haveTool('xdotool')) return false;
+    this.next = { id, r };
+    if (!this.busy) this.pump();
+    return true;
+  }
+  async pump() {
+    this.busy = true;
+    while (this.next) {
+      const { id, r } = this.next;
+      this.next = null;
+      await xRun('xdotool', [
+        'windowmove', String(id), String(Math.round(r.x)), String(Math.round(r.y)),
+        'windowsize', String(id), String(Math.round(r.width)), String(Math.round(r.height)),
+      ]);
+    }
+    this.busy = false;
+  }
 }
 
 let nut = null;
@@ -136,6 +239,7 @@ export class NotchWindow {
     this.mode = 'island';
     this.hidden = false;
     this.cardAt = null;         // { x, y } once it has been moved
+    this.xplacer = IS_LINUX ? new XPlacer() : null;
   }
 
   /**
@@ -168,6 +272,7 @@ export class NotchWindow {
    * the island sat off to one side until the bridge was restarted.
    */
   get width() {
+    if (IS_LINUX) { const sc = linuxX.screen(); if (sc && sc.width > 320) return sc.width; }
     try {
       const w = nut?.getScreenSize?.().width;
       if (Number.isFinite(w) && w > 320) return w;
@@ -208,6 +313,7 @@ export class NotchWindow {
 
   /** How tall the screen is, asked each time, for the same reason as width. */
   get screenHeight() {
+    if (IS_LINUX) { const sc = linuxX.screen(); if (sc && sc.height > 240) return sc.height; }
     try {
       const h = nut?.getScreenSize?.().height;
       if (Number.isFinite(h) && h > 240) return h;
@@ -285,8 +391,7 @@ export class NotchWindow {
     const existing = this.findWindow();
     if (existing && this.isOpen) {
       this.hwnd = existing;
-      this.host?.pin(existing);
-      this.host?.trim(existing);
+      this.pinWindow(existing);
       this.apply(this.rectFor(this.size));
       return { ok: true, already: true };
     }
@@ -326,8 +431,7 @@ export class NotchWindow {
     for (let attempt = 0; attempt < 2; attempt++) {
       const found = await this.spawnWindow(browser);
       if (found) {
-        this.host?.pin(found);
-        this.host?.trim(found);
+        this.pinWindow(found);
         this.apply(this.rectFor(this.size));
         return { ok: true, placed: true };
       }
@@ -336,6 +440,13 @@ export class NotchWindow {
       for (let i = 0; i < 20 && this.findWindow(); i++) await sleep(100);
     }
     return { ok: true, placed: false };
+  }
+
+  /** Keep it on top and strip it: the helper on Windows, wmctrl on Linux. */
+  pinWindow(h) {
+    if (IS_LINUX) { linuxX.pin(h); return; }
+    this.host?.pin(h);
+    this.host?.trim(h);
   }
 
   /** One launch. Resolves to the window handle, or null if it never showed. */
@@ -356,6 +467,8 @@ export class NotchWindow {
       '--force-dark-mode',
       `--window-position=${r.x},0`,
       `--window-size=${r.width},${r.height}`,
+      // Chrome refuses to start as root (containers) without this.
+      ...(IS_LINUX && process.getuid?.() === 0 ? ['--no-sandbox'] : []),
     ], { detached: true, stdio: 'ignore' });
 
     this.proc.on('exit', () => { this.proc = null; this.hwnd = null; this.placed = null; });
@@ -400,6 +513,7 @@ export class NotchWindow {
   }
 
   findWindow() {
+    if (IS_LINUX) return linuxX.find(NOTCH_TITLE);
     if (!nut) return null;
     try {
       for (const h of nut.getWindows()) {
@@ -442,6 +556,12 @@ export class NotchWindow {
       // edge, the way a notch should sit — and lets the card round every
       // corner, since it floats free rather than hanging off the top.
       const sent = this.host.place(h, rect, { side: this.frame.side, top: this.frame.top, squareTop: this.mode !== 'card' });
+      if (sent) this.placed = key;
+      return sent;
+    }
+
+    if (IS_LINUX) {
+      const sent = this.xplacer.place(h, rect);
       if (sent) this.placed = key;
       return sent;
     }
@@ -515,6 +635,7 @@ export class NotchWindow {
      ---------------------------------------------------------------------- */
   watchHover(onChange) {
     this.unwatchHover();
+    if (IS_LINUX) { this.watchHoverLinux(onChange); return; }
     if (!nut) return;
 
     this.hoverTimer = setInterval(() => {
@@ -538,6 +659,28 @@ export class NotchWindow {
     this.hoverTimer.unref?.();
   }
 
+  /** Same test as above, with the pointer read through xdotool (async, throttled). */
+  watchHoverLinux(onChange) {
+    if (!haveTool('xdotool')) return;
+    let busy = false;
+    this.hoverTimer = setInterval(async () => {
+      if (busy || (!this.hwnd && !this.findWindow())) return;
+      busy = true;
+      const p = await linuxX.mouse();
+      busy = false;
+      if (!p) return;
+      const r = this.rectFor(this.size);
+      const m = this.over ? 3 : 0;
+      const top = Math.max(0, r.y);
+      const now = p.x >= r.x - m && p.x < r.x + r.width + m
+        && p.y >= top - m && p.y < r.y + r.height + m;
+      if (now === this.over) return;
+      this.over = now;
+      onChange(now, `p=${p.x},${p.y} rect=${r.x},${r.y} ${r.width}x${r.height}`);
+    }, 60);
+    this.hoverTimer.unref?.();
+  }
+
   unwatchHover() {
     clearInterval(this.hoverTimer);
     this.hoverTimer = null;
@@ -557,6 +700,7 @@ export class NotchWindow {
     this.wantDeaf = wantDeaf;
     clearTimeout(this.listenRetry);
     if (this.deaf === wantDeaf) return;
+    if (IS_LINUX) return;       // no click-through on X11 here; nothing to retry
     const h = this.hwnd ?? this.findWindow();
     // Without a window to tell, or a host that can hear the request, this
     // cannot actually happen — and marking `deaf` as done anyway was the
@@ -584,6 +728,7 @@ export class NotchWindow {
     const h = this.hwnd ?? this.findWindow();
     if (!h) return false;
     this.hwnd = h;
+    if (IS_LINUX) return linuxX.raise(h);
     if (this.host?.ready) { this.host.pin(h); return true; }
     if (!nut) return false;
     try { nut.focusWindow(h); return true; } catch { return false; }
@@ -597,6 +742,17 @@ export class NotchWindow {
     this.hwnd = null;
     this.placed = null;
     this.size = { ...COMPACT };
+
+    if (IS_LINUX) {
+      // Same idea as below: only processes carrying the island's own profile.
+      await new Promise((resolve) => {
+        try {
+          const p = spawn('pkill', ['-f', '--', `--user-data-dir=${this.profile}`], { stdio: 'ignore' });
+          p.once('exit', resolve); p.once('error', resolve);
+        } catch { resolve(); }
+      });
+      return;
+    }
 
     // The browser may have handed the window to a process this one did not
     // start (a window left from an earlier run, or Chrome's own relaunch).

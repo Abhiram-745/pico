@@ -10,7 +10,8 @@
    phone.
    ========================================================================== */
 
-import { Mascot } from './mascot.js';
+import { mountBot } from '../react/bot.jsx';
+import { isWindows } from './platform.js';
 
 const el = (t, c, x) => {
   const n = document.createElement(t);
@@ -19,13 +20,18 @@ const el = (t, c, x) => {
   return n;
 };
 
-/** @returns {Promise<boolean>} true once a provider is configured. */
+const SKIP_KEY = 'halo.setup.skipped';
+const skipped = () => { try { return localStorage.getItem(SKIP_KEY) === '1'; } catch { return false; } };
+const rememberSkip = () => { try { localStorage.setItem(SKIP_KEY, '1'); } catch { /* skipped for this load only */ } };
+
+/** @returns {Promise<boolean>} true while the welcome gate should show. */
 export async function needsSetup() {
+  if (skipped()) return false;           // chose to continue without a key
   try {
     const res = await fetch('/setup/state');
     if (!res.ok) return false;            // not served by the bridge; skip setup
     const s = await res.json();
-    return !s.hasKey && s.local;
+    return !s.hasKey && s.local && !s.geminiSelected;
   } catch {
     return false;                          // offline or standalone: don't block
   }
@@ -37,12 +43,14 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
   const card = el('div', 'setup__card');
 
   const pet = el('div', 'setup__pet');
-  pet.append(new Mascot({ size: 108 }).el);
+  const bot = mountBot(pet, { size: 108, state: 'idle' });
 
   const title = el('h1', 'setup__title', `Hello, I'm ${petName}`);
-  const lede = el('p', 'setup__lede',
-    'I work your Windows desktop for you — reading the screen, clicking, typing — ' +
-    'and I stop to ask before anything I cannot undo.');
+  const lede = el('p', 'setup__lede', isWindows
+    ? 'I work your Windows desktop for you — reading the screen, clicking, typing — ' +
+      'and I stop to ask before anything I cannot undo.'
+    : 'I am here to help with your desktop — chat any time, and I stop to ask ' +
+      'before anything I cannot undo. Mouse and keyboard control needs Windows.');
 
   // --- step ---------------------------------------------------------------
   const step = el('div', 'setup__step');
@@ -81,7 +89,11 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
   link.target = '_blank';
   link.rel = 'noreferrer';
 
-  step.append(row, error, go, link);
+  const skip = el('button', 'setup__link setup__skip', 'Skip for now — continue without a key');
+  skip.type = 'button';
+  skip.title = 'Chat, the island and Desktop view work; Agent tasks stay off until a model is set up.';
+
+  step.append(row, error, go, link, skip);
 
   const foot = el('p', 'setup__foot',
     'During a task Halo sends screenshots of your desktop to OpenAI. ' +
@@ -100,6 +112,11 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
     if (e.key === 'Enter' && !go.disabled) { e.preventDefault(); submit(); }
   });
   go.addEventListener('click', submit);
+  skip.addEventListener('click', () => {
+    rememberSkip();
+    root.classList.add('is-done');
+    setTimeout(() => { root.remove(); onDone?.(); }, 420);
+  });
 
   async function submit() {
     const key = input.value.trim();
@@ -124,6 +141,7 @@ export function mountSetup(host, { onDone, petName = 'Halo' } = {}) {
       }
 
       input.value = '';
+      bot.set('success');
       root.classList.add('is-done');
       setTimeout(() => { root.remove(); onDone?.(); }, 420);
     } catch (err) {

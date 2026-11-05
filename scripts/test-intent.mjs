@@ -18,6 +18,10 @@ import { localRoute } from '../bridge/intent.mjs';
 
 /** [message, expected] — 'ask' means the rules should defer to the model. */
 const CASES = [
+  ['what is example.com?', 'chat'],
+  ['why is github.com down?', 'chat'],
+  ['open example.com', 'agent'],
+  ['can you open example.com?', 'agent'],
   // --- greetings and small talk ---
   ['hello', 'chat'],
   ['hi', 'chat'],

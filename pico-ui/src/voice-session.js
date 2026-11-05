@@ -42,7 +42,7 @@ export function endVoice() {
   const sessionOwner = store.state.voice.owner;
   if (!sessionOwner && !store.state.voice.active) { stopVoice(); return; }
   apply(idle());
-  bridge.send('voiceSession', { action: 'end', owner: sessionOwner });
+  bridge.send('voiceSession', { action: 'end', owner: sessionOwner || voiceOwner });
   notify({ type: 'stop' });
   stopVoice();
 }
@@ -58,7 +58,9 @@ export function releaseVoice() {
 
 /** One emergency action for the task and voice, including speech playback. */
 export function stopEverything() {
-  if (isActive(store.state.phase)) bridge.send('stop');
+  // Always told to stop, even when the phase looks idle: Stop also clears a
+  // stale voice banner on the bridge, so it works from any stuck state.
+  bridge.send('stop');
   endVoice();
 }
 

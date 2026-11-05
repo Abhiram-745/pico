@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { bridge } from '../src/bridge.js';
+import { StepLine, LinkLabel } from './watch.jsx';
 import { desktopExcerpt, desktopRequest, DesktopResultActions } from './desktop-results.jsx';
 
 export const setDesktopMode = enabled => desktopRequest('/settings', { enabled });
-const labels = { working: 'Working', waiting: 'Needs you', completed: 'Finished', failed: 'Check this', open: 'No signal yet', idle: 'Idle', unknown: 'Unknown', unavailable: 'Not detected' };
-const choices = [['claude', 'Claude'], ['codex', 'Codex'], ['chrome', 'Chrome'], ['lovable', 'Lovable'], ['grok', 'Grok'], ['cursor', 'Cursor'], ['vscode', 'VS Code'], ['chatgpt', 'ChatGPT']];
+const labels = { working: 'Working', waiting: 'Needs you', completed: 'Finished', failed: 'Check this', open: 'No signal yet', idle: 'Idle', unknown: 'Unknown', unavailable: 'Unavailable' };
+const choices = [['gemini', 'Gemini (web/PWA signals; no API key)'], ['claude', 'Claude'], ['codex', 'Codex'], ['chrome', 'Chrome'], ['lovable', 'Lovable'], ['grok', 'Grok'], ['cursor', 'Cursor'], ['vscode', 'VS Code'], ['chatgpt', 'ChatGPT'], ['whatsapp', 'WhatsApp (title badge only)']];
 
 export function DesktopPeek({ monitor }) {
   const [error, setError] = useState('');
@@ -17,8 +18,7 @@ export function DesktopPeek({ monitor }) {
     if (monitor.paused) { setRefreshing(false); return; }
     const controller = new AbortController();
     setRefreshing(true);
-    const reveal = new Promise(resolve => setTimeout(resolve, 260));
-    Promise.all([desktopRequest('/refresh', {}, controller.signal), reveal]).catch(err => {
+    desktopRequest('/refresh', {}, controller.signal).catch(err => {
       if (!controller.signal.aborted) setError(err.message);
     }).finally(() => { if (!controller.signal.aborted) setRefreshing(false); });
     return () => controller.abort();
@@ -47,7 +47,7 @@ export function DesktopPeek({ monitor }) {
     <div className="h-desktop-overview" aria-label="Watched app states">{overview.map(app => <span key={app.label} data-state={monitor.paused ? 'idle' : app.state}>
       <i aria-hidden="true" />{app.label} · {monitor.paused ? 'Paused' : labels[app.state] || 'Unknown'}
     </span>)}</div>
-    <p role="status">{monitor.paused ? 'Monitoring is paused. Your last observations are below.' : monitor.summary?.source !== 'openai' && results.length ? `${results.length} ${results.length === 1 ? 'update' : 'updates'} ready to review.` : monitor.summary?.text || 'Waiting for the next local signal.'}</p>
+    <p role="status">{monitor.paused ? 'Monitoring is paused. Your last observations are below.' : monitor.summary?.text || 'Waiting for the next local signal.'}</p>
     {monitor.summary?.source === 'openai' && <small>OpenAI briefing · based on local observations</small>}
     {monitor.error && <small role="status">{monitor.error}</small>}
     {monitor.summaryError && <small role="status">{monitor.summaryError}</small>}
@@ -56,16 +56,16 @@ export function DesktopPeek({ monitor }) {
         <div className="h-desktop-result__heading"><b>{app.label}{app.project ? ` · ${app.project}` : ''}</b><span>{monitor.paused ? 'Last known' : labels[app.state]}</span></div>
         {app.asked && <div className="h-desktop-result__task">{desktopExcerpt(app.asked)}</div>}
         <p>{desktopExcerpt(app.latest) || app.detail || 'Reply finished. No result excerpt was exposed; review it in the app.'}</p>
-        <small>{app.source === 'transcript' ? 'Local session' : 'On-screen signal'} · {app.state === 'completed' ? 'Reply ended · review the result' : app.confidence === 'high' ? 'Direct signal' : 'Inferred signal'}</small>
+        <small>{app.source === 'transcript' ? 'Local session' : app.source === 'composio' ? 'Connected provider sample' : 'Window observation'} · {app.state === 'completed' ? 'Reply ended · review the result' : ['high', 'observed'].includes(app.confidence) ? 'Observed signal' : 'Inferred signal'}</small>
         <DesktopResultActions id={app.resultId} />
       </article>)}
     </div>
-    <details className="h-desktop-apps" open>
+    <details className="h-desktop-apps">
       <summary>Watched apps · {selected.length + (monitor.settings?.customApps?.length || 0)}</summary>
       <div className="h-desktop-peek__apps">
         {[...apps, ...missing, ...customMissing].map(app => <article key={app.id}>
           <span className="h-desktop-peek__dot" data-state={monitor.paused ? 'idle' : app.state} />
-          <div><b>{app.label}{app.project ? ` · ${app.project}` : ''}</b><small>{desktopExcerpt(app.latest) || (app.state === 'open' ? 'Waiting for a progress signal' : app.detail) || 'Open the app to watch for signals'}</small></div>
+          <div><b>{app.label}{app.project ? ` · ${app.project}` : ''}</b><small>{desktopExcerpt(app.latest) || (app.state === 'open' ? 'Waiting for a progress signal' : app.detail) || 'Open the app to watch for signals'}</small><LinkLabel app={app} /><StepLine app={app} /></div>
           <span>{monitor.paused ? 'Paused' : labels[app.state] || 'Unknown'}</span>
         </article>)}
       </div>

@@ -190,3 +190,9 @@
 @media (max-width: 1000px) { .w-columns { grid-template-columns: 1fr; gap: 34px; } .w-head { margin-bottom: 22px; gap: 16px; } .w-head__actions { gap: 6px; } .w-statline { margin-bottom: 30px; } .w-feedempty { padding: 29px 20px; } .w-head h1 { font-size: 34px; } }
 @media (max-width: 520px) { .w-workspace { padding: 22px 16px; } .w-head { align-items: flex-start; } .w-head__actions { width: 100%; } .w-head__actions > .w-button:last-child { margin-left: auto; } .w-brief { padding: 16px; border-radius: 12px; } .w-brief__content { grid-template-columns: minmax(0, 1fr); } .w-signal { display: none; } .w-statline { gap: 18px; } .w-statline > div { flex-direction: column; gap: 5px; } .w-statline strong { font-size: 24px; } .w-preferences { padding: 16px; } .w-approw { gap: 10px; } .w-approw__top { gap: 6px; } .w-foot { text-align: left; } }
 @media (prefers-reduced-motion: reduce) { .w-workspace, .w-workspace *, .w-mode * { animation: none !important; transition: none !important; } }
+
+/* A shared hairline sheen on companion surfaces. */
+.w-brief, .w-preferences { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--w-ink) 5%, transparent), 0 8px 24px -20px #0006; }
+.w-appmark { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--w-ink) 7%, transparent); }
+.w-mode button:focus-visible { outline-offset: -2px; }
+.w-mode__pill { background-image: linear-gradient(160deg, color-mix(in srgb, var(--w-ink) 5%, transparent), transparent); }

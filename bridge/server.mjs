@@ -32,7 +32,7 @@ import { attachmentEcho, prepareSubmitTask } from './attachments.mjs';
 import { encode, toTerminal, toSVG } from './qr.mjs';
 import { HostAgent } from './agent.mjs';
 import { loadComputer } from './computer.mjs';
-import { LLM, PROVIDERS } from './llm.mjs';
+import { LLM, PROVIDERS, loadEnv } from './llm.mjs';
 import { handleVoice } from './voice.mjs';
 import { NotchWindow } from './notch-window.mjs';
 /* The one list of chords, shared with the pages that teach and show them.
@@ -47,16 +47,20 @@ import { chatArchive } from './chats.mjs';
 import { Guide } from './guide.mjs';
 import { memory } from './memory.mjs';
 import * as hostStatus from './status.mjs';
+import { HaloComposio, watchOpenUrl } from './composio.mjs';
+import { handleComposioRoutes } from './composio-routes.mjs';
 import { DesktopMonitor } from './desktop-monitor.mjs';
 import { summarizeDesktop } from './desktop-summary.mjs';
 import { handleDesktopRoutes } from './desktop-routes.mjs';
+import { loadGeminiKey, saveGeminiKey } from './gemini-secret.mjs';
+import { ModelProviderSettings, handleModelProviderRoutes } from './model-provider.mjs';
 import { appearancePreference, handleAppearance } from './appearance.mjs';
 import { routines } from './routines.mjs';
 import { runbook } from './runbook.mjs';
 import { migrateFromPico, readJson, writeJson } from './home.mjs';
 import { logToDisk } from './log.mjs';
 import { findBrowser } from './notch-window.mjs';
-import { warmInstalled } from './apps.mjs';
+import { warmInstalled, openUrl } from './apps.mjs';
 import { buildUI } from '../scripts/build-ui.mjs';
 
 /* The HALO_ names are the ones to use now; the PICO_ ones still work, so
@@ -265,10 +269,10 @@ class Bridge {
     };
 
     this.agent = new HostAgent(this.transport, { memory, routines });
-    /* What the model is told about the machine whenever it answers: read
-       fresh if the last look is more than a few seconds old. */
+    /* Chat uses the latest snapshot; OS scans refresh in the background so
+       a slow process/window query never holds up the first reply token. */
     this.agent.statusFacts = async () => {
-      if (Date.now() - (this.status?.at ?? 0) > 15_000) await this.refreshStatus();
+      if (Date.now() - (this.status?.at ?? 0) > 15_000) void this.refreshStatus();
       return hostStatus.describe(this.status, this.agentInfo());
     };
     this.status = null;
@@ -297,9 +301,16 @@ class Bridge {
    * planner runs server-side and the phone receives nothing but the resulting
    * steps.
    */
-  attachLLM(llm) {
+  attachLLM(llm, selection = {}) {
+    clearTimeout(this._fallbackTimer);
     this.llm = llm;
+    if (!llm) {
+      this.agent.attachLLM(null);
+      this.agent.settings = { ...this.agent.settings, model: selection.provider === 'gemini' ? selection.model : 'not configured', hasApiKey: false, provider: selection.provider === 'gemini' ? 'Google Gemini selected; API key missing' : 'Selected provider key is missing' };
+      this.emitSettings(); this.publishCapability(); return;
+    }
     llm.onDowngrade = (from, to) => {
+      if (this.llm !== llm) return;
       console.warn(`[bridge] ${from} unavailable, using ${to} for this request`);
     };
     this.agent.attachLLM(llm);
@@ -322,12 +333,14 @@ class Bridge {
     if (llm.fallback) {
       llm._logFallback ??= llm.onFallback;
       llm.onFallback = (name, to, forMs, status, quota) => {
+        if (this.llm !== llm) return;
         llm._logFallback?.(name, to, forMs, status, quota);
         const why = quota ? 'is out of credits' : status === 429 ? 'is rate limited' : 'is not answering';
         this.agent.settings = { ...this.agent.settings, provider: `${to} for now — ${label} ${why}` };
         this.emitSettings();
         clearTimeout(this._fallbackTimer);
         this._fallbackTimer = setTimeout(() => {
+          if (this.llm !== llm) return;
           this.agent.settings = { ...this.agent.settings, provider: usual };
           this.emitSettings();
         }, forMs);
@@ -548,6 +561,7 @@ class Bridge {
         /* Straight to the agent, not via a page: this has to work when no
            window is focused and none is even open. */
         this._hostHandler?.({ command: 'stop', payload: {} });
+        this.resetVoice();
         this.setShell({ show: true });
         break;
       case 'toggleVoice':
@@ -578,6 +592,14 @@ class Bridge {
       console.warn(`[bridge] pairing locked out for ${ip} (60s)`);
     }
     this.pairAttempts.set(ip, rec);
+  }
+
+  /** Voice back to rest, for everyone: used by Stop and New chat so neither
+      can leave a stale listening/error banner on the island. */
+  resetVoice() {
+    this.voiceOwnerClient = null;
+    this.snapshot.voiceSession = { active: false, phase: 'idle', level: 0, message: '', transcript: '', owner: null };
+    this.broadcast({ type: 'voiceSession', payload: this.snapshot.voiceSession });
   }
 
   handleMessage(client, raw) {
@@ -631,6 +653,7 @@ class Bridge {
       console.warn(`[bridge] rejected command "${command}" from ${client.ip}`);
       return;
     }
+    if (command === 'stop' || command === 'newChat') this.resetVoice();
 
     // The app and notch have separate Chrome profiles. The bridge owns the
     // single microphone session and relays its state across both windows.
@@ -661,7 +684,10 @@ class Bridge {
 
     if (command === 'refreshStatus') { this.refreshStatus(); return; }
 
-    if (['submitTask', 'routineRun', 'resume'].includes(command) && this.desktopMonitor?.snapshot().enabled) {
+    // Typed chat is always welcome. Watching only stops Halo from *acting*:
+    // a message that turns out to be a job is declined by the agent itself
+    // (see Agent.work), so chat replies are never blocked by it.
+    if (['routineRun', 'resume'].includes(command) && this.desktopMonitor?.snapshot().enabled) {
       client.conn.sendJSON({ type: 'error', payload: { title: 'Desktop mode is watching', message: 'Switch to Agent mode to ask Halo to do a task.', recoverable: true } });
       return;
     }
@@ -869,6 +895,7 @@ class Bridge {
         console.warn(`[bridge] stale ${command} from ${client.ip}`);
         return;
       }
+      if (command === 'deny') this.resetVoice();
     }
     if (command === 'takeoverDone') {
       const pending = this.snapshot.takeover;
@@ -990,13 +1017,29 @@ try {
   console.warn(`[bridge] the interface could not be rebuilt (${String(err.message).split('\n')[0]}); serving the last build`);
 }
 const bridge = new Bridge();
+const modelProviders = new ModelProviderSettings({
+  loadGeminiKey, saveGeminiKey,
+  loadEnvironment: async () => ({ ...await loadEnv(), ...process.env }),
+  preferences: readJson('model-provider.json', {}),
+  persist: preferences => writeJson('model-provider.json', preferences),
+  onChange: (llm, selection) => bridge.attachLLM(llm, selection),
+  canChange: () => !bridge.agent._routeAbort && ['Idle', 'Stopped', 'Completed', 'Failed'].includes(bridge.agent.phase)
+    && !bridge.messages.some(message => message.from === 'pico' && !message.done)
+    && !bridge.snapshot.voiceSession?.active && !bridge.snapshot.approval && !bridge.snapshot.question,
+});
+const composio = new HaloComposio({ config: readJson('composio.json', {}), guardian: proposal => bridge.agent.integrationGuardian(proposal) });
+bridge.agent.attachComposio(composio);
 const desktopMonitor = new DesktopMonitor({
+  watchSignals: () => composio.pollSignals(),
+  watchCadence: () => composio.watchCadence(),
+  openWatch: async app => { const url = watchOpenUrl(app); if (!url || !composio.state().enabled) return false; await openUrl(url); return true; },
   onUpdate: (state) => bridge.broadcast({ type: 'desktopMonitor', payload: state }),
   summarize: summarizeDesktop,
 });
 bridge.desktopMonitor = desktopMonitor;
 const desktopSettings = readJson('desktop-monitor.json', {});
 desktopMonitor.configure(desktopSettings);
+bridge.agent.isWatching = () => Boolean(desktopMonitor.enabled && !desktopMonitor.paused);
 
 const server = createServer(async (req, res) => {
   const ip = req.socket.remoteAddress || '';
@@ -1006,6 +1049,8 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (await handleModelProviderRoutes(req, res, url.pathname, modelProviders)) return;
+  if (await handleComposioRoutes(req, res, url.pathname, { composio, persist: config => writeJson('composio.json', config), onWatchChange: state => desktopMonitor.syncWatchSources(state) })) return;
   if (url.pathname === '/appearance') {
     await handleAppearance(req, res, (event) => bridge.broadcast(event));
     return;
@@ -1080,7 +1125,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const fresh = await LLM.fromEnv();
+    modelProviders.invalidateEnvironment();
+    const fresh = await modelProviders.createLLM();
     if (fresh) {
       await fresh.check();      // also picks the best models this key can use
       bridge.attachLLM(fresh);
@@ -1094,6 +1140,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({
       hasKey: Boolean(bridge.llm),
+      geminiSelected: (await modelProviders.state()).geminiSelected,
       provider: bridge.llm?.provider ?? null,
       local: /^(127\.0\.0\.1|::1)$/.test(ip.replace(/^::ffff:/, '')),
     }));
@@ -1232,6 +1279,10 @@ const server = createServer(async (req, res) => {
     if (bridge.notch) {
       bridge.notch.learnFrame({ iw: n('iw'), ih: n('ih'), ow: n('ow'), oh: n('oh') });
       if (Number.isFinite(n('w')) && Number.isFinite(n('h'))) {
+        // A reloaded page reports a window shorter than it asked for while
+        // the bridge still believes it placed that size; forget the cached
+        // placement so the next apply really resizes.
+        if (n('ih') > 0 && (n('ih') < n('h') - 2 || n('iw') < n('w') - 2)) bridge.notch.placed = null;
         bridge.notch.morph({ width: n('w'), height: n('h') });
       }
     }
@@ -1596,12 +1647,14 @@ bridge.onNotchCommand = async (command) => {
 // need no key at all. So attach straight away, and let the probe only pick
 // the best models on offer. A probe that fails is retried; it never unplugs
 // the provider.
-const llm = await LLM.fromEnv();
+const llm = await modelProviders.createLLM();
 if (llm) {
   bridge.attachLLM(llm);
   const label = PROVIDERS[llm.provider]?.label ?? llm.provider;
   const probe = async (attempt = 1) => {
+    if (bridge.llm !== llm) return;
     const status = await llm.check();
+    if (bridge.llm !== llm) return;
     if (status.ok) {
       bridge.attachLLM(llm);   // re-publish the tiers the probe settled on
       console.log(`[bridge] ${label}: plans with ${llm.tiers.plan}, works with ${llm.tiers.see}, chats with ${llm.tiers.fast}`);
@@ -1614,6 +1667,8 @@ if (llm) {
   };
   probe();
 } else {
+  const selected = await modelProviders.state();
+  if (selected.geminiSelected) bridge.attachLLM(null, { provider: 'gemini', model: selected.geminiModel });
   console.log('[bridge] no model provider configured; running scripted scenarios');
 }
 

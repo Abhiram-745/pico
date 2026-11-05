@@ -267,11 +267,12 @@ export function localRoute(text, { attachments = [], installed = null } = {}) {
       : { mode: 'chat', why: 'a single word, not an instruction', certain: true };
   }
 
-  // A destination beats everything else: "google.com" is never small talk.
-  if (LOOKS_LIKE_URL.test(t)) return { mode: 'agent', why: 'names a site to open', certain: true };
-
   const verb = hasImperative(t);
   const question = ASKS_FOR_AN_ANSWER.some((re) => re.test(t));
+  if (question && !verb) return { mode: 'chat', why: 'a question, with nothing to act on', certain: true };
+
+  // A destination beats everything else: "google.com" is never small talk.
+  if (LOOKS_LIKE_URL.test(t)) return { mode: 'agent', why: 'names a site to open', certain: true };
 
   // "can you open Chrome" is phrased as a question but is plainly a job, so a
   // question only wins when nothing is actually being asked for on screen.
@@ -348,7 +349,7 @@ const CLASSIFY_SYSTEM =
  * @param {Function} [opts.installed]        name -> installed app or null (see localRoute)
  * @returns {Promise<{mode:'chat'|'agent', why:string, source:string}>}
  */
-export async function route(text, { hint = 'auto', llm = null, attachments = [], installed = null } = {}) {
+export async function route(text, { hint = 'auto', llm = null, attachments = [], installed = null, signal } = {}) {
   if (hint === 'chat' || hint === 'agent') {
     return { mode: hint, why: 'you chose it', source: 'user' };
   }
@@ -360,7 +361,7 @@ export async function route(text, { hint = 'auto', llm = null, attachments = [],
     ? { ...local, source: 'rules' }
     : { mode: 'chat', why: 'not clearly an instruction', source: 'rules' };
 
-  if (!llm) return fallback;
+  if (!llm || signal?.aborted) return fallback;
 
   // Said once, folded into both prompts below, so a model asked to settle
   // an otherwise-ambiguous message also knows there is something attached —
@@ -384,7 +385,7 @@ export async function route(text, { hint = 'auto', llm = null, attachments = [],
      is unsure of is worse than the local rules, which at least know what
      "open" means. Anything missing, slow or unconvincing falls through to
      the chat model below, exactly as before. */
-  const answers = await llm.evaluate?.(
+  const answers = llm.provider === 'openai' ? null : await llm.evaluate?.(
     `The person typed this to a desktop assistant: "${clean(text).slice(0, 500)}"${attachmentNote}`,
     {
       kind: {
@@ -398,10 +399,11 @@ export async function route(text, { hint = 'auto', llm = null, attachments = [],
         },
       },
     },
-    { timeout: 4000 },
+    { timeout: 1000 },
   ).catch(() => null);
+  if (signal?.aborted) return fallback;
   const pick = answers?.kind;
-  if (pick?.choice && (pick.probabilities?.[pick.choice] ?? 0) >= 0.7) {
+  if (['agent', 'chat'].includes(pick?.choice) && (pick.probabilities?.[pick.choice] ?? 0) >= 0.7) {
     return {
       mode: pick.choice === 'agent' ? 'agent' : 'chat',
       why: pick.choice === 'agent' ? 'reads as an instruction' : 'reads as conversation',
@@ -409,18 +411,25 @@ export async function route(text, { hint = 'auto', llm = null, attachments = [],
     };
   }
 
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  const deadline = setTimeout(cancel, 2500);
   try {
     const answer = await llm.chat(
       [
         { role: 'system', content: CLASSIFY_SYSTEM },
         { role: 'user', content: `${clean(text).slice(0, 500)}${attachmentNote}` },
       ],
-      { model: llm.tiers.fast, maxTokens: 8, signal: AbortSignal.timeout(6000) },
+      { model: llm.tiers.fast, maxTokens: 8, signal: controller.signal },
     );
-    if (/agent/i.test(answer)) return { mode: 'agent', why: 'reads as an instruction', source: 'model' };
-    if (/chat/i.test(answer)) return { mode: 'chat', why: 'reads as conversation', source: 'model' };
+    if (/^\s*agent[.!]?\s*$/i.test(answer)) return { mode: 'agent', why: 'reads as an instruction', source: 'model' };
+    if (/^\s*chat[.!]?\s*$/i.test(answer)) return { mode: 'chat', why: 'reads as conversation', source: 'model' };
   } catch {
     /* the provider is down or slow — the local guess still stands */
+  } finally {
+    clearTimeout(deadline);
+    signal?.removeEventListener('abort', cancel);
   }
 
   return fallback;

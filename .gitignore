@@ -38,3 +38,6 @@ pico-ui/build/
 
 # Working copies made for helper agents (git worktree), never part of the repo.
 .claude/worktrees/
+
+# Halo's runtime data folder (bridge.log, chats.json, shell.json), created by the bridge
+Halo/

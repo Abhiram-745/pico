@@ -31,6 +31,7 @@ const OUT = join(UI, 'build');
 const ENTRIES = {
   island: join(UI, 'react', 'island.jsx'),
   app: join(UI, 'react', 'app.jsx'),
+  watch: join(UI, 'react', 'watch.css'),
 };
 
 /** The newest modification time among the files a bundle is built from. */
@@ -41,7 +42,7 @@ function newestSource() {
       const full = join(dir, name);
       const st = statSync(full);
       if (st.isDirectory()) walk(full);
-      else if (/\.(?:jsx?|mjs|css)$/.test(name)) newest = Math.max(newest, st.mtimeMs);
+      else if (/\.(?:jsx?|mjs|css|png)$/.test(name)) newest = Math.max(newest, st.mtimeMs);
     }
   };
   walk(join(UI, 'react'));
@@ -52,7 +53,7 @@ function newestSource() {
 function oldestBundle() {
   let oldest = Infinity;
   for (const name of Object.keys(ENTRIES)) {
-    const file = join(OUT, `${name}.js`);
+    const file = join(OUT, `${name}.${name === 'watch' ? 'css' : 'js'}`);
     if (!existsSync(file)) return 0;
     oldest = Math.min(oldest, statSync(file).mtimeMs);
   }
@@ -67,7 +68,8 @@ function options() {
     format: 'esm',
     target: ['chrome110', 'edge110'],
     jsx: 'automatic',
-    loader: { '.js': 'jsx' },
+    loader: { '.js': 'jsx', '.png': 'file' },
+    assetNames: 'assets/[name]-[hash]',
     minify: true,
     sourcemap: 'linked',
     legalComments: 'linked',        // the libraries' MIT notices travel with the bundle

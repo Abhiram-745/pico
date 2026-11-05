@@ -201,6 +201,31 @@ const NOTEPAD = { hwnd: '100', title: 'Untitled - Notepad', process: 'Notepad' }
 const SHEET = { hwnd: '200', title: 'Q3 figures.xlsx - Excel', process: 'excel' };
 
 
+console.log('initial accessibility overlaps the first screenshot');
+for (const broken of [false, true]) {
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const capture = computer.capture;
+  let release;
+  let read = false;
+  computer.capture = async () => {
+    await new Promise(resolve => { release = resolve; });
+    return capture();
+  };
+  computer.sense.look = async () => {
+    read = true;
+    if (broken) throw new Error('helper unavailable');
+    return { elements: [] };
+  };
+  const { done } = run({ computer, llm: scripted([act({ action: 'type', text: 'hello there' }), finish]), maxTurns: 2 });
+  // Let foreground/read microtasks run while capture remains unresolved.
+  await new Promise(resolve => setImmediate(resolve));
+  check(`accessibility starts before capture resolves (helper failure: ${broken})`, read);
+  computer.capture = capture;
+  release();
+  await done;
+  check('an empty or failed initial read still permits visual actions', computer.state.typed.length === 1);
+}
+
 /* --- 1. focus taken once: brought back, and the text still goes in --------- */
 console.log('focus taken once');
 {
@@ -528,6 +553,9 @@ console.log('opening from the words of the task');
   /* The "browser" is node itself, which exits on an address it cannot run:
      the launch succeeds on any machine and no real tab opens — on CI there
      is no explorer.exe, and on a desktop a test should not open a page. */
+  const waits = [];
+  const wait = computer.wait;
+  computer.wait = ms => { waits.push(ms); return wait(ms); };
   const { done, events } = run({ computer, llm, task: 'open reports.example.com and search ssuazo', context: { browser: { exe: process.execPath } } });
   await done;
 
@@ -540,6 +568,7 @@ console.log('opening from the words of the task');
        can replace the list after the address has already been opened. */
     events.plans.some((p) => (p?.steps ?? []).some((st) => /reports\.example\.com/i.test(st.do))),
     JSON.stringify(events.plans.map((p) => p?.steps)));
+  check('window readiness is followed by observation without a fixed 600ms wait', !waits.includes(600));
   check('and the search happened after it',
     computer.state.typed.some((t) => t.text === 'ssuazo'), JSON.stringify(computer.state.typed));
 }
@@ -1282,6 +1311,25 @@ console.log('a vanished batch target cancels the remaining actions');
   check('a new decision follows the missing target', actTurns(llm) === 2, `${actTurns(llm)} decisions`);
 }
 
+console.log('skip discards the rest of an in-flight batch');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  let clicked = 0, keys = 0;
+  const pending = [];
+  page(computer, () => [
+    { type: 'CheckBox', name: 'Alpha', rect: [10, 30, 70, 30], operable: true, checked: clicked > 0 },
+    { type: 'CheckBox', name: 'Beta', rect: [110, 30, 70, 30], operable: true, checked: false },
+  ]);
+  computer.click = async () => { clicked++; computer.state.screen++; pending.push({ type: 'skip' }); };
+  computer.keypress = async () => { keys++; };
+  const llm = scripted([act({ action: 'click', mark: 1, then: [{ action: 'click', mark: 2 }, { action: 'key', keys: ['enter'] }] }),
+    finish, { name: 'report', args: { succeeded: true, summary: 'Reviewed the remaining control.' } }]);
+  const { done } = run({ computer, llm, task: 'Review visible controls', hooks: { steer: () => pending.splice(0) } });
+  await done;
+  check('skip prevents the queued click and Enter', clicked === 1 && keys === 0, `${clicked} clicks, ${keys} keys`);
+  check('skip requests a fresh decision', actTurns(llm) === 2, `${actTurns(llm)} decisions`);
+}
+
 console.log('recovery retains the original action budget');
 {
   const computer = desktop({ windows: [NOTEPAD], front: '100' });
@@ -1340,6 +1388,75 @@ console.log('premature completion is verified and recovered before ending');
   check('a negative final check resumes the original task', result?.succeeded && events.audits.some(e => e.e === 'completion_recovered'), JSON.stringify(events.errors));
   check('recovery does not emit a dead stopped phase', !events.phases.includes('Stopped') && events.phases.at(-1) === 'Completed', events.phases.join(' > '));
   check('the final verifier result is reused', llm.calls.filter(c => c.tool === 'report').length === 2, JSON.stringify(llm.calls));
+}
+
+console.log('skip during pointer refinement');
+{
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const pending = [];
+  let clicks = 0;
+  let refined = false;
+  computer.click = async () => { clicks++; };
+  const llm = scripted([act({ action: 'click', x: 20, y: 20, target: 'button' }), finish]);
+  const respond = llm.respond;
+  llm.respond = async req => {
+    if (req.tools?.[0]?.function?.name === 'point') {
+      refined = true;
+      pending.push({ type: 'skip' });
+      return { call: null, text: '' };
+    }
+    return respond(req);
+  };
+  const { done } = run({ computer, llm, hooks: { steer: () => pending.splice(0) } });
+  await done;
+  check('refinement ran and skip prevented the pending click', refined && clicks === 0, `${refined}, ${clicks} clicks`);
+}
+
+console.log('helper model cancellation scope');
+{
+  const { cancellableModel } = await import('../bridge/driver-cancellation.mjs');
+  for (const method of ['respond', 'chat', 'evaluate', 'toolCall', 'stream', 'plan']) {
+    const controller = new AbortController();
+    const deadline = AbortSignal.timeout(10_000);
+    let received;
+    const scoped = cancellableModel({ [method]: async (...args) => {
+      received = args[method === 'respond' ? 0 : method === 'evaluate' ? 2 : 1].signal;
+      await new Promise(resolve => {
+        received.addEventListener('abort', resolve, { once: true });
+        setTimeout(() => controller.abort(), 1);
+      });
+      return 'late result';
+    } }, controller.signal);
+    let rejected = false;
+    try {
+      if (method === 'respond') await scoped[method]({ signal: deadline });
+      else if (method === 'evaluate') await scoped[method]({}, {}, { signal: deadline });
+      else await scoped[method]([], { signal: deadline });
+    } catch (err) { rejected = err.name === 'AbortError'; }
+    check(`${method} combines its deadline with run abort and rejects late results`, received?.aborted && !deadline.aborted && rejected);
+  }
+}
+
+console.log('abort during driver model calls');
+for (const ignoresAbort of [false, true]) {
+  const computer = desktop({ windows: [NOTEPAD], front: '100' });
+  const controller = new AbortController();
+  let sawSignal = false;
+  const llm = scripted([]);
+  llm.respond = async ({ signal }) => {
+    sawSignal = signal instanceof AbortSignal;
+    await new Promise(resolve => {
+      signal.addEventListener('abort', resolve, { once: true });
+      setTimeout(() => controller.abort(), 5);
+    });
+    if (!ignoresAbort) signal.throwIfAborted();
+    return { call: act({ action: 'type', text: 'stale' }) };
+  };
+  const { done, events } = run({ computer, llm, context: { signal: controller.signal } });
+  await done;
+  check(`model receives cancellation (ignores=${ignoresAbort})`, sawSignal);
+  check('late action is never applied', computer.state.typed.length === 0);
+  check('abort emits no failure or completion', !events.errors.length && !events.phases.some(p => ['Failed', 'Completed'].includes(p)));
 }
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

@@ -1,0 +1,21 @@
+/* Preserve the metallic PNGs; lift their midtones against dark chrome. */
+.h-action-icon {
+  object-fit: contain;
+  user-select: none;
+  filter: brightness(1.18) contrast(1.12) drop-shadow(0 1px 1px #0008);
+}
+/* Optical size inside existing hit targets; no button or row reflow. */
+.h-composer .h-action-icon { width: 19px; height: 19px; }
+.h-composer .h-send .h-action-icon {
+  width: 20px; height: 20px;
+  filter: contrast(1.2) drop-shadow(0 1px 0 #ffffff40);
+}
+button:disabled .h-action-icon, [aria-disabled="true"] .h-action-icon { filter: grayscale(1); }
+/* Individual scale composes with existing transform-based chevron rotations. */
+@media (prefers-reduced-motion: no-preference) {
+  button:enabled:not([aria-disabled="true"]) .h-action-icon {
+    transition: scale 140ms ease-out;
+  }
+  button:enabled:not([aria-disabled="true"]):hover .h-action-icon { scale: 1.06; }
+  button:enabled:not([aria-disabled="true"]):active .h-action-icon { scale: .96; }
+}

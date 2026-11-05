@@ -1,0 +1,191 @@
+/* Settings: what Halo watches, and the live step line on cards */
+.h-watch__list { display: grid; gap: 6px; margin-top: 14px; }
+.h-watch__row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--h-line); border-radius: 13px; background: var(--h-well); cursor: pointer; transition: border-color .18s, background .18s; }
+.h-watch__row:hover { border-color: var(--h-line-hi); }
+.h-watch__row[data-on="true"] { border-color: color-mix(in srgb, var(--h-good, #5ad19a) 38%, var(--h-line)); }
+.h-watch__row input { position: absolute; opacity: 0; pointer-events: none; }
+.h-watch__tick { width: 18px; height: 18px; border-radius: 6px; border: 1.5px solid var(--h-line-hi); display: grid; place-items: center; transition: background .18s, border-color .18s; }
+.h-watch__row[data-on="true"] .h-watch__tick { background: var(--h-good, #5ad19a); border-color: transparent; }
+.h-watch__row[data-on="true"] .h-watch__tick::after { content: ""; width: 5px; height: 9px; border: solid #0b1a12; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
+.h-watch__row input:focus-visible + .h-watch__tick { outline: 2px solid var(--h-line-hi); outline-offset: 2px; }
+.h-watch__body { display: grid; gap: 2px; min-width: 0; }
+.h-watch__body strong { font-size: 13px; font-weight: 550; color: var(--h-ink); }
+.h-watch__body small { font-size: 11.5px; color: var(--h-dim); overflow-wrap: anywhere; }
+.h-watch__dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+.h-watch__row[data-tone="working"] .h-watch__dot { background: var(--h-good, #5ad19a); animation: h-watch-pulse 1.6s ease-in-out infinite; }
+.h-watch__row[data-tone="waiting"] .h-watch__dot { background: #f0b24a; }
+.h-watch__row[data-tone="idle"] .h-watch__dot { background: var(--h-dim); opacity: .6; }
+.h-watch__row[data-tone="none"][data-on="true"] .h-watch__dot { border: 1.5px dashed var(--h-dim); }
+.h-watch__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--h-dim); }
+@keyframes h-watch-pulse { 50% { transform: scale(1.5); opacity: .55; } }
+
+.h-step { display: grid; gap: 5px; margin-top: 7px; }
+.h-step__text { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--h-ink); opacity: .9; min-width: 0; overflow-wrap: anywhere; }
+.h-step__text i { width: 6px; height: 6px; border-radius: 50%; background: var(--h-dim); flex: none; }
+.h-step[data-live="true"] .h-step__text i { background: var(--h-good, #5ad19a); animation: h-watch-pulse 1.6s ease-in-out infinite; }
+.h-step__plan { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 8px; }
+.h-step__plan small { font-size: 10.5px; color: var(--h-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-step__bar { height: 4px; border-radius: 4px; background: var(--h-line); overflow: hidden; }
+.h-step__bar b { display: block; height: 100%; border-radius: 4px; background: var(--h-good, #5ad19a); transition: width .4s ease; }
+@media (prefers-reduced-motion: reduce) { .h-watch__dot, .h-step__text i { animation: none !important; } }
+
+/* Which session a card is linked to */
+.h-link { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-size: 11px; color: var(--h-dim); min-width: 0; }
+.h-link__kind { flex: none; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--h-line); font-size: 10px; letter-spacing: .02em; }
+.h-link__kind[data-linked="true"] { color: var(--h-good, #5ad19a); border-color: color-mix(in srgb, var(--h-good, #5ad19a) 40%, var(--h-line)); }
+.h-link__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-link__text code { margin-left: 6px; font: 10.5px/1 var(--h-mono, ui-monospace, monospace); opacity: .7; }
+
+/* Motion: cards settle in, working ones breathe, a changed state flashes once */
+.w-approw, .h-desktop-result, .h-desktop-peek__apps article, .w-event { animation: h-card-in .38s cubic-bezier(.2, .8, .2, 1) both; }
+.w-approw[data-tone="working"] { position: relative; }
+.w-approw[data-tone="working"]::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--h-good, #5ad19a) 45%, transparent); animation: h-card-breathe 2.8s ease-in-out infinite; }
+.h-desktop-peek__dot[data-state="working"] { animation: h-watch-pulse 1.6s ease-in-out infinite; }
+@keyframes h-card-in { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes h-card-breathe { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .w-approw, .h-desktop-result, .h-desktop-peek__apps article, .w-event { animation: none !important; }
+  .w-approw[data-tone="working"]::after, .h-desktop-peek__dot { animation: none !important; }
+  .h-step__bar b { transition: none; }
+}
+
+/* The Watching switch */
+.h-switch { --on: var(--h-good, #5ad19a); display: inline-flex; align-items: center; gap: 9px; padding: 0; border: 0; background: none; color: var(--h-dim); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.h-switch:disabled { cursor: default; opacity: .6; }
+.h-switch__track { position: relative; width: 44px; height: 26px; border-radius: 999px; background: var(--h-line); box-shadow: inset 0 1px 3px #0005, inset 0 0 0 1px var(--h-line-hi); transition: background .3s ease, box-shadow .3s ease; }
+.h-switch__knob { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: linear-gradient(180deg, #fff, #dfe5e2); box-shadow: 0 2px 5px #0006, inset 0 -1px 2px #0002; transition: transform .5s linear(0, .38 9%, .86 18%, 1.07 28%, 1.1 34%, 1.03 47%, .99 58%, 1 75%, 1); }
+.h-switch[data-on="true"] .h-switch__track { background: color-mix(in srgb, var(--on) 78%, #0b1a12); box-shadow: inset 0 1px 3px #0004, 0 0 0 1px color-mix(in srgb, var(--on) 60%, transparent), 0 0 16px color-mix(in srgb, var(--on) 42%, transparent); }
+.h-switch[data-on="true"] .h-switch__knob { transform: translateX(18px); }
+.h-switch:active:not(:disabled) .h-switch__knob { width: 24px; }
+.h-switch[data-on="true"]:active:not(:disabled) .h-switch__knob { transform: translateX(14px); }
+.h-switch__word { min-width: 22px; text-align: left; transition: color .25s; }
+.h-switch[data-on="true"] .h-switch__word { color: var(--on); }
+.h-switch[data-busy="true"] .h-switch__knob { opacity: .8; }
+.h-switch:focus-visible .h-switch__track { outline: 2px solid var(--h-line-hi); outline-offset: 3px; }
+
+/* The segmented Agent | Desktop switches: a pill that springs, and a glow when Desktop is on */
+.w-mode { position: relative; isolation: isolate; }
+.w-mode__pill { position: absolute; z-index: -1; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 5px); border-radius: 8px; background: var(--w-selected); box-shadow: inset 0 1px var(--w-well), 0 2px 6px var(--w-input); transition: transform .5s linear(0, .38 9%, .86 18%, 1.07 28%, 1.1 34%, 1.03 47%, .99 58%, 1 75%, 1), box-shadow .3s; }
+.w-mode[data-desktop="true"] .w-mode__pill { transform: translateX(calc(100% + 3px)); box-shadow: inset 0 1px var(--w-well), 0 2px 6px var(--w-input), 0 0 14px var(--w-accent-line); }
+.w-mode button[aria-pressed="true"] { background: transparent; box-shadow: none; }
+.h-mode-switch__selection { transition: transform .5s linear(0, .38 9%, .86 18%, 1.07 28%, 1.1 34%, 1.03 47%, .99 58%, 1 75%, 1), box-shadow .3s !important; }
+.h-mode-switch__selection[data-desktop="true"] { box-shadow: inset 0 1px 0 #ffffff26, 0 2px 5px #00000030, 0 0 14px #9adbc855; }
+@media (prefers-reduced-motion: reduce) {
+  .h-switch__knob, .h-switch__track, .w-mode__pill, .h-mode-switch__selection { transition: none !important; }
+}
+
+/* Premium polish: result cards get a faint top sheen and a soft lift on hover */
+.h-desktop-result { position: relative; background-image: linear-gradient(180deg, #ffffff0a, #ffffff00 42%); box-shadow: inset 0 1px 0 #ffffff12, 0 6px 16px -10px #000000a0; transition: transform .22s cubic-bezier(.2, .8, .2, 1), box-shadow .22s, border-color .22s; }
+.h-desktop-result:hover { transform: translateY(-1px); border-color: #ffffff26; box-shadow: inset 0 1px 0 #ffffff1c, 0 10px 22px -12px #000000c0; }
+.h-desktop-result__heading span { letter-spacing: .02em; }
+@media (prefers-reduced-motion: reduce) { .h-desktop-result { transition: none; } .h-desktop-result:hover { transform: none; } }
+
+/* --- pythe-v2 polish: gradient rim, glow, stroked tick ---------------------- */
+.h-watch__row { position: relative; background-image: linear-gradient(135deg, color-mix(in srgb, var(--h-ink, #fff) 5%, transparent), transparent 55%); }
+.h-watch__row[data-on="true"] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--h-good, #5ad19a) 14%, transparent), 0 6px 22px -10px color-mix(in srgb, var(--h-good, #5ad19a) 45%, transparent); background-image: linear-gradient(135deg, color-mix(in srgb, var(--h-good, #5ad19a) 10%, transparent), transparent 60%); }
+.h-watch__tick { border-radius: 7px; }
+.h-watch__row[data-tone="working"] .h-watch__dot { box-shadow: 0 0 10px var(--h-good, #5ad19a); }
+.h-watch__row[data-tone="waiting"] .h-watch__dot { box-shadow: 0 0 10px #f0b24a; }
+
+/* Halo polish: app signatures, a quiet gradient rim, and restrained light. */
+.h-watch__row {
+  grid-template-columns: 18px 36px minmax(0, 1fr) 8px;
+  gap: 10px;
+  isolation: isolate;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--h-ink) 4%, transparent);
+}
+.h-watch__row::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(125deg, color-mix(in srgb, var(--h-ink) 18%, transparent), transparent 44%, color-mix(in srgb, var(--h-good) 16%, transparent));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.h-watch__row:hover { background-color: color-mix(in srgb, var(--h-ink) 3%, var(--h-well)); }
+.h-watch__row:focus-within { border-color: var(--h-line-hi); }
+/* PNG URLs stay in CSS so esbuild rebases them relative to each emitted stylesheet.
+   Unknown sources use Codex; known aliases share the same app artwork. */
+.h-watch__icon {
+  display: block;
+  width: 36px;
+  height: 36px;
+  background-image: var(--h-watch-image, url("./icons/3d/codex.png"));
+  background-image: var(--h-watch-image-set, image-set(url("./icons/3d/codex.png") 1x, url("./icons/3d/codex@2x.png") 2x));
+  background-position: center;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+.h-watch__row[data-src="claude"] .h-watch__icon,
+.h-watch__row[data-src="claude-code"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/claude.png");
+  --h-watch-image-set: image-set(url("./icons/3d/claude.png") 1x, url("./icons/3d/claude@2x.png") 2x);
+}
+.h-watch__row[data-src="codex"] .h-watch__icon,
+.h-watch__row[data-src="openai-codex"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/codex.png");
+  --h-watch-image-set: image-set(url("./icons/3d/codex.png") 1x, url("./icons/3d/codex@2x.png") 2x);
+}
+.h-watch__row[data-src="chrome"] .h-watch__icon,
+.h-watch__row[data-src="google-chrome"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/chrome.png");
+  --h-watch-image-set: image-set(url("./icons/3d/chrome.png") 1x, url("./icons/3d/chrome@2x.png") 2x);
+}
+.h-watch__row[data-src="lovable"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/lovable.png");
+  --h-watch-image-set: image-set(url("./icons/3d/lovable.png") 1x, url("./icons/3d/lovable@2x.png") 2x);
+}
+.h-watch__row[data-src="grok"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/grok.png");
+  --h-watch-image-set: image-set(url("./icons/3d/grok.png") 1x, url("./icons/3d/grok@2x.png") 2x);
+}
+.h-watch__row[data-src="cursor"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/cursor.png");
+  --h-watch-image-set: image-set(url("./icons/3d/cursor.png") 1x, url("./icons/3d/cursor@2x.png") 2x);
+}
+.h-watch__row[data-src="vscode"] .h-watch__icon,
+.h-watch__row[data-src="code"] .h-watch__icon,
+.h-watch__row[data-src="vs-code"] .h-watch__icon,
+.h-watch__row[data-src="visual-studio-code"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/vscode.png");
+  --h-watch-image-set: image-set(url("./icons/3d/vscode.png") 1x, url("./icons/3d/vscode@2x.png") 2x);
+}
+.h-watch__row[data-src="chatgpt"] .h-watch__icon,
+.h-watch__row[data-src="chat-gpt"] .h-watch__icon {
+  --h-watch-image: url("./icons/3d/chatgpt.png");
+  --h-watch-image-set: image-set(url("./icons/3d/chatgpt.png") 1x, url("./icons/3d/chatgpt@2x.png") 2x);
+}
+.h-watch__row[data-on="true"] .h-watch__icon { animation: h-watch-icon-jump .72s ease-out both; }
+.h-watch__row[data-on="true"][data-tone="working"] .h-watch__icon { animation: h-watch-icon-working 3.2s ease-in-out infinite; }
+@keyframes h-watch-icon-jump {
+  0%, 100% { transform: translateY(0) scale(1); }
+  18% { transform: translateY(1px) scale(1.03, .96); }
+  42% { transform: translateY(-5px) scale(.98, 1.03); }
+  67% { transform: translateY(0) scale(1.03, .97); }
+  82% { transform: translateY(-1px) scale(1); }
+}
+@keyframes h-watch-icon-working {
+  0%, 28%, 100% { transform: translateY(0) scale(1); }
+  5% { transform: translateY(1px) scale(1.03, .96); }
+  12% { transform: translateY(-4px) scale(.98, 1.03); }
+  20% { transform: translateY(0) scale(1.03, .97); }
+  24% { transform: translateY(-1px) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .h-watch__row, .h-watch__icon, .h-watch__tick { transition: none; }
+  .h-watch__row .h-watch__icon { animation: none !important; transform: none; }
+}
+
+/* Focus follows the whole choice; surface light stays quiet at rest. */
+.h-watch__row:has(input:focus-visible) { outline: 2px solid var(--h-good, #9adbc8); outline-offset: 3px; }
+.h-watch__row { min-height: 54px; box-sizing: border-box; }
+.h-watch__body small { line-height: 1.45; }
+.h-watch__row[data-on="true"] { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--h-good) 10%, transparent), 0 4px 16px -12px color-mix(in srgb, var(--h-good) 30%, transparent); }
+.h-switch[data-on="true"] .h-switch__track { box-shadow: inset 0 1px 3px #0004, 0 0 0 1px color-mix(in srgb, var(--on) 45%, transparent), 0 0 12px color-mix(in srgb, var(--on) 18%, transparent); }
+.h-mode-switch__selection[data-desktop="true"] { box-shadow: inset 0 1px 0 #ffffff26, 0 2px 5px #00000030, 0 0 10px #9adbc828; }
+@media (prefers-reduced-motion: reduce) { .h-switch, .h-switch *, .h-desktop-result, .h-step * { transition: none !important; } }

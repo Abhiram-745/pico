@@ -14,11 +14,11 @@
    replayed, no flicker.
    ========================================================================== */
 
+import { Bot, useMascotState } from './bot.jsx';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { store, isActive } from '../src/store.js';
 import { bridge } from '../src/bridge.js';
-import { Mascot } from '../src/mascot.js';
 import { Beam, MetalButton, Orb, orbStateFor } from './fx.jsx';
 import { useStore, useStoreEvent, sel } from './hooks.js';
 import { speak, stopVoice, setVoiceEnabled } from '../src/voice.js';
@@ -31,7 +31,7 @@ import {
 } from '../src/attachments.js';
 
 /* --------------------------------------------------------------------------
-   Icons — Lucide-style paths on a 24 unit grid, 2px round stroke.
+   Icons — titanium PNG actions, with the original paths as a safe fallback.
    -------------------------------------------------------------------------- */
 const PATHS = {
   send: 'M12 19V5 M5 12l7-7 7 7',
@@ -66,7 +66,24 @@ const PATHS = {
   file: 'M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z M14 2v6h6',
 };
 
+import { actionIcons } from './icons/actions/index.js';
+
+function actionIconUrl(path) {
+  // esbuild emits paths relative to the JS bundle; <img src> would otherwise
+  // resolve against the HTML document and 404 under /pico-ui/assets/.
+  try { return new URL(path, import.meta.url).href; } catch { return path; }
+}
+
 export function Icon({ name, size = 16, className = '' }) {
+  const asset = Object.hasOwn(actionIcons, name) ? actionIcons[name] : null;
+  const [failedAsset, setFailedAsset] = useState(null);
+  if (asset && Number(size) >= 12 && failedAsset !== asset) {
+    const src = actionIconUrl(asset[0]);
+    const src2 = actionIconUrl(asset[1]);
+    return <img key={name} className={`h-icon h-action-icon ${className}`} width={size} height={size}
+      src={src} srcSet={`${src} 1x, ${src2} 2x`} alt="" aria-hidden="true"
+      draggable={false} onError={() => setFailedAsset(asset)} />;
+  }
   return (
     <svg className={`h-icon ${className}`} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"
       fill={name === 'stop' || name === 'play' ? 'currentColor' : 'none'} stroke="currentColor"
@@ -87,16 +104,9 @@ export function IconButton({ icon, label, onClick, className = '', size = 15, ..
 /* --------------------------------------------------------------------------
    The mascot — the existing rig, hosted in a React node.
    -------------------------------------------------------------------------- */
-export function MascotView({ phase = 'Idle', size = 26 }) {
-  const host = useRef(null);
-  const rig = useRef(null);
-  useLayoutEffect(() => {
-    rig.current = new Mascot({ size });
-    host.current.replaceChildren(rig.current.el);
-    return () => host.current?.replaceChildren();
-  }, [size]);
-  useEffect(() => { rig.current?.setPhase(phase); }, [phase]);
-  return <span className="h-mascot" ref={host} style={{ width: size, height: size }} />;
+export function MascotView({ phase = 'Idle', size = 26, state, watching = false, streaming = false }) {
+  const mood = useMascotState(state ?? { phase, watching, streaming });
+  return <span className="h-mascot" style={{ width: size, height: size }}><Bot state={mood} size={size} paused={phase === 'Paused'} /></span>;
 }
 
 /**
@@ -108,6 +118,8 @@ export function Presence({ px = 26 }) {
   const phase = useStore(sel.phase);
   const plan = useStore(sel.plan);
   const messages = useStore(sel.messages);
+  const monitor = useStore(sel.desktopMonitor);
+  const watching = Boolean(monitor?.enabled && !monitor?.paused);
   const last = messages[messages.length - 1];
   const streaming = Boolean(last && last.from === 'pico' && !last.done);
   const waiting = streaming && !last.text;
@@ -116,7 +128,7 @@ export function Presence({ px = 26 }) {
   const orb = orbStateFor({ phase, streaming, waiting, replanning });
   return (
     <span className="h-presence" data-busy={orb ? 'true' : 'false'} style={{ width: px, height: px }}>
-      <span className="h-presence__rest"><MascotView phase={phase} size={px} /></span>
+      <span className="h-presence__rest"><MascotView phase={phase} size={px} watching={watching} streaming={streaming} /></span>
       <span className="h-presence__busy">
         {orb && <Orb state={orb} px={px} paused={phase === 'Paused'} />}
       </span>
@@ -806,6 +818,8 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
   const conversation = useRef(false);
   const voiceBusy = useRef(false);
   const resumeTimer = useRef(null);
+  const quietTimer = useRef(null);       // lets go of voice after a device error
+  const endRef = useRef(null);
   const oneShot = useRef(false);           // push-to-talk: one utterance, then done
   const spokeOnce = useRef(null);          // the reply preference to restore after it
   const repliesBefore = useRef(false);
@@ -815,6 +829,13 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     onState: state => {
       setMicState(state);
       if (conversation.current) updateVoice({ phase: state.phase, message: state.message });
+      /* No microphone (or no permission): say so for a moment, then let go.
+         Nothing is left listening, the error does not stay, and the island
+         returns to what it was doing — Ready or Watching. */
+      clearTimeout(quietTimer.current);
+      if (state.phase === 'error' && state.code === 'device' && conversation.current) {
+        quietTimer.current = setTimeout(() => { endRef.current?.(); setMicState({ phase: 'idle', message: '' }); }, 1800);
+      }
     },
     onLevel: level => { if (conversation.current) updateVoice({ level }); },
     onTranscript: value => transcriptHandler.current?.(value),
@@ -832,8 +853,11 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
       if (['newChat', 'openChat', 'stop'].includes(command)) {
         conversation.current = false;
         clearTimeout(resumeTimer.current);
+        clearTimeout(quietTimer.current);
         microphone.cancel();
-        if (store.state.voice.active) endVoice();
+        setMicState({ phase: 'idle', message: '' });
+        setVoiceEnabled(false);
+        endVoice();
       } else if (['submitTask', 'steer'].includes(command)) {
         microphone.cancel();
         resumeListening();
@@ -1064,7 +1088,9 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     resumeListening();
   };
 
-  const placeholder = steering
+  const watching = Boolean(useStore(sel.desktopMonitor)?.enabled);
+  const placeholder = watching && !steering && !blocked ? `Chat with ${petName} — it keeps watching…`
+    : steering
     ? `Tell ${petName} something — "no, the other one"…`
     : blocked ? `${petName} is working…`
     : mode === 'chat' ? `Talk to ${petName}…`
@@ -1080,6 +1106,7 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     microphone.start();
   };
   const endConversation = () => {
+    clearTimeout(quietTimer.current);
     spokeOnce.current = null;
     oneShot.current = false;
     conversation.current = false;
@@ -1090,8 +1117,11 @@ export function Composer({ petName = 'Halo', autoFocus = false, inputRef = null,
     setVoiceOn(false);
     endVoice();
   };
-  useStoreEvent(['voiceToggle'], () => {
+  endRef.current = endConversation;
+  useStoreEvent(['voiceToggle'], (s) => {
     if (!acceptShortcut) return;
+    // Only a chord pressed just now starts voice: never an old or replayed one.
+    if (Date.now() - (s.voiceToggleAt || 0) > 3000) return;
     if (store.state.voice.active) {
       if (store.state.voice.owner === voiceOwner) endConversation();
       else endVoice();

@@ -20,6 +20,7 @@
    ========================================================================== */
 
 import { memo, useEffect, useState } from 'react';
+import { isWindows, superKey } from '../src/platform.js';
 
 /* --------------------------------------------------------------------------
    The layout
@@ -88,7 +89,7 @@ export const ROWS = [
   [
     K('Ctrl', { w: 1.5, label: 'Ctrl' }),
     K('Fn', { w: 1.2, label: 'Fn' }),
-    K('Win', { w: 1.2, glyph: 'win' }),
+    K('Win', isWindows ? { w: 1.2, glyph: 'win' } : { w: 1.2, label: superKey }),
     K('Alt', { w: 1.35, label: 'Alt' }),
     K('Space', { w: 6.2, label: '' }),
     K('AltRight', { w: 1.35, label: 'Alt' }),

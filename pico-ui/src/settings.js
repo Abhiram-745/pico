@@ -14,9 +14,9 @@
 import { store } from './store.js';
 import { bridge } from './bridge.js';
 
-/* Free-text: the host accepts any safe model ID. Driving the desktop needs a
-   model with the Responses API computer tool; planning does not. */
-const KNOWN_MODELS = ['gpt-4.1-mini'];
+// Fast chat choices first; screenshots use the bridge's separate see tier.
+const KNOWN_MODELS = ['gpt-4o-mini', 'gpt-5.4-nano', 'gpt-4.1-mini', 'gpt-4.1-nano',
+  'gpt-5.4-mini', 'gpt-5-mini', 'gpt-5-nano', 'o3-mini', 'o4-mini'];
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -36,6 +36,7 @@ function field(label, help, control) {
 
 export function renderSettings(state) {
   const s = state.settings;
+  const usingGemini = /gemini/i.test(s.provider || '');
   const root = el('div', 'settings panel-in');
 
   const head = el('div', 'settings__head');
@@ -56,7 +57,7 @@ export function renderSettings(state) {
 
   const datalist = el('datalist');
   datalist.id = 'pico-models';
-  for (const m of KNOWN_MODELS) {
+  for (const m of (usingGemini ? ['gemini-3.5-flash-lite', 'gemini-3.8-flash'] : KNOWN_MODELS)) {
     const o = document.createElement('option');
     o.value = m;
     datalist.append(o);
@@ -65,7 +66,7 @@ export function renderSettings(state) {
 
   root.append(field(
     'Model',
-    'Must support Computer use in the Responses API. Text-only models cannot drive the desktop loop.',
+    usingGemini ? 'Gemini API provider: Flash-Lite is the cheap/fast default; choose its model in installed Settings.' : 'Choose a mini or nano model. Default: gpt-4o-mini for fast replies.',
     modelWrap,
   ));
 
@@ -138,15 +139,15 @@ export function renderSettings(state) {
 
   root.append(field(
     'API key',
-    'Set OPENAI_API_KEY in the .env file next to Start Halo.cmd. It stays on this machine and is never sent to your phone or embedded in a page.',
+    'The bridge reads configured environment keys. Optional Gemini replies/actions require GEMINI_API_KEY and explicit provider selection in installed Settings. Watching the existing Gemini web/PWA window needs no API key. Keys stay server-side.',
     keyWrap,
   ));
 
   // --- privacy note -------------------------------------------------------
   const note = el('div', 'settings__note');
-  note.append(el('strong', null, 'During a task, Halo sends full-desktop screenshots to OpenAI.'));
+  note.append(el('strong', null, 'During a task, Halo sends screenshots to the selected model provider.'));
   note.append(el('span', null,
-    ' Responses API state may be retained per your organisation’s data controls. Screenshots are never written to the local audit log.'));
+    ' Provider data controls apply. Watching uses local signals; optional desktop AI briefings remain direct OpenAI. Screenshots are never written to the local audit log.'));
   root.append(note);
 
   // --- save ---------------------------------------------------------------

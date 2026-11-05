@@ -204,3 +204,9 @@ export const ACTION_PHASE = {
   select_option: 'Click',
   set_value: 'Click',
 };
+
+/** Integration tools are separate from pixel actions and cannot inherit auto approval. */
+export function assessComposio(name) {
+  if (!['search_mail', 'list_unread', 'draft_reply_do_not_send'].includes(name)) return { decision: 'Deny', reason: 'Integration tool is not allowed.' };
+  return { decision: 'RequireConfirmation', level: 'High', categories: name === 'draft_reply_do_not_send' ? 'RemoteDraft' : 'PrivateMail', reason: name === 'draft_reply_do_not_send' ? 'Create a remote Gmail draft without sending.' : 'Read private mail from the selected Gmail connection.' };
+}

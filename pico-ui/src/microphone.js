@@ -8,7 +8,7 @@ export function createMicrophone({
   maxMs = 60_000, silenceMs = 850,
 } = {}) {
   let current = null;
-  const state = (phase, message = '') => onState({ phase, message });
+  const state = (phase, message = '', code = '') => onState({ phase, message, code });
   const release = (session) => {
     clearTimeout(session.timer);
     clearInterval(session.voiceTimer);
@@ -35,7 +35,7 @@ export function createMicrophone({
   const start = async () => {
     cancel();
     if (!mediaDevices?.getUserMedia || !Recorder) {
-      state('error', 'Microphone recording requires the local Halo app in Chrome or Edge.');
+      state('error', 'Microphone recording requires the local Halo app in Chrome or Edge.', 'device');
       return;
     }
     stopPlayback();
@@ -122,7 +122,9 @@ export function createMicrophone({
         NotFoundError: 'No microphone was found. Connect a microphone and try again.',
         NotReadableError: 'The microphone is busy or unavailable. Check Windows microphone permissions and close other recording apps.',
       };
-      state('error', errors[error.name] || 'Could not start the microphone. Please try again.');
+      // A missing, blocked or busy microphone is a fact about this machine,
+      // not something to keep showing: `device` lets the composer let go quietly.
+      state('error', errors[error.name] || 'Could not start the microphone. Please try again.', 'device');
     }
   };
   return { start, finish, cancel };

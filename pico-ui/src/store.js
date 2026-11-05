@@ -121,7 +121,7 @@ const initial = () => ({
 
   guardian: { ready: false },
   settings: {
-    model: 'gpt-4.1-mini',
+    model: 'gpt-4o-mini',
     pauseOnPhysicalInput: true,
     maximumComputerTurns: 100,
     hasApiKey: false,

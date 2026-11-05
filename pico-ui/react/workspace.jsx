@@ -1,26 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './parts.jsx';
 import { useStore } from './hooks.js';
-import { store } from '../src/store.js';
+import { monitorRequest } from '../src/monitor-client.js';
 import { DesktopResultActions } from './desktop-results.jsx';
 import { SignalOrbit } from './signal-orbit.jsx';
+import { StepLine, LinkLabel, WatchSwitch } from './watch.jsx';
+
+export const workspaceRequest = (path, body, signal) => monitorRequest(path, { body, signal });
 
 const selectMonitor = (s) => s.desktopMonitor;
 const DEFAULT_APPS = [
+  { id: 'gemini', label: 'Gemini', mark: 'G', note: 'Detect Google Gemini app or gemini.google.com; no API key, no chat history scrape. Plain window = Open' },
   { id: 'claude', label: 'Claude', mark: 'C', note: 'Desktop + Code' },
   { id: 'codex', label: 'Codex', mark: '↗', note: 'Local agent sessions' },
   { id: 'chrome', label: 'Chrome', mark: '◉', note: 'Visible browser titles' },
   { id: 'lovable', label: 'Lovable', mark: 'L', note: 'Browser workspace' },
   { id: 'grok', label: 'Grok', mark: 'G', note: 'App or browser' },
+  { id: 'whatsapp', label: 'WhatsApp', mark: 'W', note: 'Opt-in title unread badge only' },
 ];
-const DEFAULT_SETTINGS = { selectedApps: DEFAULT_APPS.map((a) => a.id), customApps: [], intervalSeconds: 15, aiSummaries: false, quiet: true };
+const DEFAULT_SETTINGS = { selectedApps: DEFAULT_APPS.filter(a => !['whatsapp', 'gemini'].includes(a.id)).map((a) => a.id), customApps: [], intervalSeconds: 15, aiSummaries: false, quiet: true };
 const STATUS = {
   working: { label: 'Working', tone: 'working' }, running: { label: 'Working', tone: 'working' }, busy: { label: 'Working', tone: 'working' },
   waiting: { label: 'Your turn', tone: 'attention' }, attention: { label: 'Needs you', tone: 'attention' }, needs_attention: { label: 'Needs you', tone: 'attention' },
   completed: { label: 'Finished', tone: 'complete' }, complete: { label: 'Finished', tone: 'complete' },
   failed: { label: 'Check this', tone: 'error' }, error: { label: 'Check this', tone: 'error' },
   idle: { label: 'Idle', tone: 'idle' }, open: { label: 'Open', tone: 'idle' },
-  unknown: { label: 'Status unknown', tone: 'unknown' }, unavailable: { label: 'Not detected', tone: 'unknown' },
+  unknown: { label: 'Status unknown', tone: 'unknown' }, unavailable: { label: 'Unavailable', tone: 'unknown' },
   offline: { label: 'Not detected', tone: 'unknown' }, closed: { label: 'Not detected', tone: 'unknown' }, not_running: { label: 'Not detected', tone: 'unknown' },
   stale: { label: 'Last known', tone: 'unknown' },
 };
@@ -71,7 +76,8 @@ function previewSnapshot() {
 }
 
 export function ModeSwitch({ mode = 'agent', onChange, disabled = false }) {
-  return <div className="w-mode" role="group" aria-label="Workspace mode">
+  return <div className="w-mode" role="group" aria-label="Workspace mode" data-desktop={mode === 'desktop'}>
+    <span className="w-mode__pill" aria-hidden="true" />
     <button type="button" aria-pressed={mode === 'agent'} disabled={disabled} onClick={() => onChange('agent')}>
       <Icon name="bolt" size={14} /><span>Agent</span>
     </button>
@@ -103,7 +109,8 @@ function Toggle({ checked, disabled, onChange, title, description }) {
 
 export function WorkspaceView({ demo = false }) {
   const shared = useStore(selectMonitor);
-  const [data, setData] = useState(() => demo ? previewSnapshot() : shared || null);
+  const [demoData, setData] = useState(() => demo ? previewSnapshot() : null);
+  const data = demo ? demoData : shared;
   const [loading, setLoading] = useState(!demo && !shared);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -113,30 +120,17 @@ export function WorkspaceView({ demo = false }) {
   const [now, setNow] = useState(Date.now());
   const settings = { ...DEFAULT_SETTINGS, ...(data?.settings || {}) };
 
-  const request = useCallback(async (path, body, signal) => {
-    const response = await fetch(path, {
-      signal: signal || AbortSignal.timeout(30000), ...(body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-    });
-    if (!response.ok) {
-      let message;
-      try { message = (await response.json()).error; } catch { /* status below is safe to display */ }
-      throw new Error(message || `Could not update the desktop companion (${response.status}).`);
-    }
-    const next = await response.json();
-    if (!next || typeof next !== 'object' || !Array.isArray(next.apps)) throw new Error('The desktop companion returned an incomplete update.');
-    store.set({ desktopMonitor: next }, { type: 'desktopMonitor' });
-    return next;
-  }, []);
+  const request = useCallback(workspaceRequest, []);
 
-  useEffect(() => { if (!demo && shared) { setData(shared); setLoading(false); } }, [demo, shared]);
+  useEffect(() => { if (!demo && shared) setLoading(false); }, [demo, shared]);
   useEffect(() => {
     if (demo) return undefined;
     const controller = new AbortController();
     let active = true;
     const read = async () => {
       try {
-        const next = await request('/desktop-monitor', undefined, controller.signal);
-        if (active) { setData(next); setError(''); }
+        await request('/desktop-monitor', undefined, controller.signal);
+        if (active) setError('');
       } catch (e) { if (active && e.name !== 'AbortError') setError(e.message); }
       finally { if (active) setLoading(false); }
     };
@@ -151,7 +145,7 @@ export function WorkspaceView({ demo = false }) {
     setBusy(label); setError('');
     try {
       if (demo) setData((previous) => ({ ...previous, ...body, settings: { ...previous.settings, ...body }, updatedAt: Date.now() }));
-      else setData(await request(path, body));
+      else await request(path, body);
     } catch (e) { setError(e.message); }
     finally { setBusy(''); }
   };
@@ -191,9 +185,7 @@ export function WorkspaceView({ demo = false }) {
       <div className="w-head__actions">
         {demo && <span className="w-preview">Preview · sample activity</span>}
         <button className="w-button w-button--icon" type="button" aria-label="Desktop preferences" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}><Icon name="gear" size={17} /></button>
-        <button className="w-button" type="button" disabled={Boolean(busy) || loading} onClick={() => save(enabled ? { paused: !paused } : { enabled: true, paused: false })}>
-          <Icon name={!enabled || paused ? 'play' : 'pause'} size={13} />{!enabled ? 'Start watching' : paused ? 'Resume' : 'Pause'}
-        </button>
+        <WatchSwitch on={enabled && !paused} busy={Boolean(busy)} disabled={loading} onChange={(next) => save(next ? { enabled: true, paused: false } : { paused: true })} />
       </div>
     </header>
 
@@ -216,7 +208,7 @@ export function WorkspaceView({ demo = false }) {
     </section>}
 
     <section className="w-brief" data-paused={stopped || stale} aria-label="Workspace briefing">
-      <div className="w-brief__top"><span className="w-live"><i aria-hidden="true" />{loading ? 'Connecting' : !enabled ? 'Watching is off' : paused ? 'Watching paused' : stale ? 'Waiting for a fresh signal' : 'Desktop companion'}</span><span className="w-brief__time">{demo ? 'Sample briefing' : age(data?.updatedAt, now)}</span></div>
+      <div className="w-brief__top"><span className="w-live"><i aria-hidden="true" />{loading ? 'Connecting' : !enabled ? 'Watching is off' : paused ? 'Watching paused' : stale ? 'Waiting for a fresh signal' : 'Desktop companion'}</span><span className="w-brief__time" title={data?.cadence ? `Local checks: ${data.cadence.intervalMs / 1000}s. Remote samples use a separate 15–300s adaptive gate; refresh cannot bypass it.` : undefined}>{demo ? 'Sample briefing' : age(data?.updatedAt, now)}</span></div>
       <div className="w-brief__content"><div><h2>{loading ? 'Finding your workspace…' : !enabled ? 'Your work. A wider view.' : paused ? 'A little quiet, on purpose.' : attention.length ? `${attention.length === 1 ? 'One thing needs' : `${attention.length} things need`} a moment of your time.` : working.length ? 'Things are moving along.' : 'Room to focus.'}</h2>
         <p>{loading ? 'Connecting to the local desktop companion.' : !enabled ? 'Start watching to bring progress from your selected apps into one place.' : paused ? 'No new app observations are being collected. Your last updates stay here until you resume.' : stale ? 'The last observation is older than expected. Refresh to check the connection.' : summary || 'Keep your attention here. Useful changes from the apps you choose will appear below.'}</p>
         <span className="w-brief__source">{settings.aiSummaries && summary ? sourceName(summarySource || 'openai') : 'Local signals'}<span aria-hidden="true"> · </span>Read-only</span>
@@ -236,7 +228,9 @@ export function WorkspaceView({ demo = false }) {
           <AppMark app={app} /><div className="w-approw__body"><div className="w-approw__top"><h3>{app.label || 'App'}</h3><StateBadge app={app} paused={stopped} stale={stale} /></div>
             {(app.project || app.windowTitle || app.title) && <div className="w-approw__title" title={app.windowTitle || app.title || app.project}>{app.project || app.windowTitle || app.title}</div>}
             <p title={app.detail || undefined}>{readableExcerpt(app.latest) ? <><span className="w-reported">Latest · </span>{readableExcerpt(app.latest)}</> : app.detail || (stateOf(app).tone === 'unknown' ? 'No readable progress signal is available for this app yet.' : 'Waiting for a new progress signal.')}</p>
-            <div className="w-evidence"><span title={app.source || ''}>{sourceName(app.source)}</span>{app.confidence && <span title="Confidence in the observed status">{typeof app.confidence === 'number' ? (app.confidence >= .8 ? 'Direct signal' : 'Limited signal') : /high|exact|direct/.test(String(app.confidence)) ? 'Direct signal' : app.confidence === 'inferred' ? 'Inferred activity' : 'Limited signal'}</span>}<time>{age(app.lastActivity || app.updatedAt, now)}</time></div>
+            <LinkLabel app={app} />
+            <StepLine app={app} />
+            <div className="w-evidence"><span title={app.source || ''}>{sourceName(app.source)}</span>{app.confidence && <span title="Confidence in the observed status">{typeof app.confidence === 'number' ? (app.confidence >= .8 ? 'Direct signal' : 'Limited signal') : /high|exact|direct/.test(String(app.confidence)) ? 'Direct signal' : app.confidence === 'inferred' ? 'Inferred activity' : 'Limited signal'}</span>}<time title={app.observedAt != null ? `Last observed ${age(app.observedAt, now)}; displayed age tracks evidence change.` : undefined}>{age(app.lastActivity ?? app.updatedAt, now)}</time></div>
           </div>
         </article>)}</div> : <div className="w-empty"><span className="w-empty__icon"><Icon name="monitor" size={22} /></span><h3>{enabled ? 'No app signals yet' : 'Bring your work into view'}</h3><p>{enabled ? 'Open a selected app or add a window name in preferences. Background browser tabs may not expose their progress.' : 'Choose the apps you care about, then start watching. Halo will keep track without taking over.'}</p><button className="w-button" type="button" onClick={() => setSettingsOpen(true)}>Choose apps<Icon name="plus" size={13} /></button></div>}
       </section>

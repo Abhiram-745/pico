@@ -1,3 +1,4 @@
+import { workspaceStatus, workspaceCompactStatus, workspaceNotice, islandFlashActive } from '../src/workspace-status.js';
 /* ==========================================================================
    Halo — the island
 
@@ -43,6 +44,10 @@ import {
 
 /** Content width for each size. Height is whatever the content needs. */
 export const WIDTHS = { compact: 236, peek: 300, live: 380, voice: 440, open: 480, card: 380 };
+/** Corner radius for each size — the same numbers as --r in island.css, so
+    the Beam's light runs round the island's own corner at every size rather
+    than a 22px curve drawn round a 16 or 20px one. */
+const RADII = { compact: 16, peek: 18, live: 20, voice: 21, open: 22, card: 22 };
 
 const SHORT = {
   Idle: 'Ready',
@@ -185,7 +190,8 @@ function useMeasure(rootRef, view, onMeasure) {
     const size = { view, width: WIDTHS[view], height };
     want.current = size;
 
-    const fits = () => !(innerWidth > 0 && innerHeight > 0) || (innerWidth >= size.width - 2 && innerHeight >= size.height - 2);
+    // A pending fit check must use the latest request if the view changes.
+    const fits = () => !(innerWidth > 0 && innerHeight > 0) || (innerWidth >= want.current.width - 2 && innerHeight >= want.current.height - 2);
     if (fits()) { clearTimeout(fit.current); fit.current = null; setCapped(false); } else if (!fit.current) {
       fit.current = setTimeout(() => { fit.current = null; if (!fits()) setCapped(true); }, 500);
     }
@@ -206,6 +212,11 @@ function useMeasure(rootRef, view, onMeasure) {
       }
     }, 560);
   }, [rootRef, view, onMeasure]);
+
+  useEffect(() => () => {
+    clearTimeout(fit.current);
+    clearTimeout(heal.current.timer);
+  }, []);
 
   useLayoutEffect(() => { post(); });
   useEffect(() => {
@@ -251,7 +262,15 @@ function Island({ onMeasure }) {
   const [level, setLevel] = useState(permissions.level);
   const rootRef = useRef(null);
   const inputRef = useRef(null);
+  const focusFrame = useRef(null);
   const flashTimer = useRef(null);
+  const [beatOver, setBeatOver] = useState(false);   // reply shown in the subtitle only for a short beat
+  useEffect(() => {
+    setBeatOver(false);
+    if (!flash) return undefined;
+    const t = setTimeout(() => setBeatOver(true), 3000);
+    return () => clearTimeout(t);
+  }, [flash]);
   const keysTimer = useRef(null);
   const hoverRef = useRef(false);
 
@@ -260,6 +279,23 @@ function Island({ onMeasure }) {
   const last = messages[messages.length - 1];
   const streaming = Boolean(last && last.from === 'pico' && !last.done);
   const waitingOnPerson = Boolean(decision);
+
+  useEffect(() => {
+    if (!running && !streaming) return;
+    clearTimeout(flashTimer.current);
+    setFlash(null);
+  }, [running, streaming]);
+  useEffect(() => () => {
+    clearTimeout(flashTimer.current);
+    clearTimeout(keysTimer.current);
+    cancelAnimationFrame(focusFrame.current);
+  }, []);
+
+  useEffect(() => {
+    if (!flash?.workspaceId || monitor.apps?.some(app => app.resultId === flash.workspaceId && !app.dismissed)) return;
+    clearTimeout(flashTimer.current);
+    setFlash(null);
+  }, [monitor, flash]);
 
   useEffect(() => permissions.subscribe(setLevel), []);
   useEffect(() => { hoverRef.current = hover; }, [hover]);
@@ -272,9 +308,9 @@ function Island({ onMeasure }) {
      opening" was: the island changing shape on its own at the one moment a
      hand is on it. So while the pointer is on the island the notice simply
      stays, and it goes when the pointer does. */
-  const showFlash = useCallback((kind, text, ms) => {
+  const showFlash = useCallback((kind, text, ms, workspaceId = null) => {
     clearTimeout(flashTimer.current);
-    setFlash({ kind, text });
+    setFlash({ kind, text, workspaceId });
     const done = () => {
       if (hoverRef.current) { flashTimer.current = setTimeout(done, 400); return; }
       setFlash(null);
@@ -327,7 +363,7 @@ function Island({ onMeasure }) {
   });
   useStoreEvent(['question'], (s) => { if (s.question) { setDismissed(null); setPinned(true); } });
   // Sent as a job: get out of the way of the screen Halo is about to use.
-  useStoreEvent(['routed'], (s) => { if (s.routed?.mode === 'agent') setPinned(false); });
+  useStoreEvent(['routed'], (s) => { if (s.routed?.mode === 'agent') { setPinned(false); clearTimeout(flashTimer.current); setFlash(null); } });
   /* A run that did not work does not get a tick.
 
      Every summary used to flash as 'done', mark and all, so "the latest
@@ -344,21 +380,24 @@ function Island({ onMeasure }) {
   });
   useStoreEvent(['error'], (s) => { if (s.error && !s.error.quiet) showFlash('fail', s.error.message, 6000); });
   const desktopEventsSeen = useRef(null);
-  useStoreEvent(['desktopMonitor'], (s) => {
-    const m = s.desktopMonitor;
-    if (!m?.enabled) return;
-    const events = m.events || [];
+  useEffect(() => {
+    const events = monitor?.events || [];
+    // Seed only initial history. Thereafter consume only the notice displayed,
+    // so simultaneous providers remain eligible when the current flash clears.
+    if (!desktopEventsSeen.current) {
+      if (monitor?.enabled) desktopEventsSeen.current = new Set(events.map(event => event.id));
+      return;
+    }
+    if (flash) return;
     const seen = desktopEventsSeen.current;
-    const latest = seen && events.find(event => !seen.has(event.id));
-    desktopEventsSeen.current = new Set([...events.map(event => event.id), ...(seen || [])].slice(0, 200));
-    // Dismissal must not resurface an older card as a new notification.
-    // Initial discovery of historical sessions is available on expansion only.
-    if (!latest || m.paused || m.settings?.quiet || Date.now() - latest.at > 60_000) return;
-    if (['waiting', 'completed', 'failed'].includes(latest.state)) showFlash('reply', `${latest.label}${latest.project ? ` · ${latest.project}` : ''}: ${latest.latest || latest.detail || latest.title}`, 8000);
-  });
+    const latest = workspaceNotice(monitor, seen, Date.now(), running || streaming || waitingOnPerson || voice.active || pinned);
+    if (!latest) return;
+    desktopEventsSeen.current = new Set([latest.id, ...seen].slice(0, 200));
+    showFlash('reply', `${latest.label}${latest.project ? ` · ${latest.project}` : ''}: ${latest.latest || latest.detail || latest.title}`, 8000, latest.id);
+  }, [monitor, flash, running, streaming, waitingOnPerson, voice.active, pinned, showFlash]);
   useStoreEvent(['message'], (s, meta) => {
     const m = meta.message;
-    if (m?.from === 'pico' && m.done && !meta.restored) showFlash('reply', m.text, 6000);
+    if (m?.from === 'pico' && m.done && !meta.restored && !m.remove && s.messages?.at(-1)?.id === m.id && !isActive(s.phase) && !s.approval && !s.question && !s.voice?.active) showFlash('reply', m.text, 6000);
   });
 
   /* --- gestures ----------------------------------------------------------- */
@@ -370,9 +409,14 @@ function Island({ onMeasure }) {
     clearTimeout(flashTimer.current);
     setFlash(null);
     setPinned(true);
-    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() => {
+      const target = rootRef.current?.querySelector('.h-decision--question input') ?? inputRef.current;
+      target?.focus({ preventScroll: true });
+    });
   }, []);
   const collapse = useCallback(() => {
+    cancelAnimationFrame(focusFrame.current);
     setPinned(false);
     // Putting the island away is allowed to mean it, even with a question
     // still open: it stays pending, and answering it still works.
@@ -385,7 +429,10 @@ function Island({ onMeasure }) {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
-      if (isActive(store.state.phase) || store.state.voice.active) stopEverything(); else collapse();
+      e.preventDefault();
+      const s = store.state;
+      const reply = s.messages.at(-1);
+      if (isActive(s.phase) || s.approval || s.question || s.takeover || s.voice.active || (reply?.from === 'pico' && !reply.done)) stopEverything(); else collapse();
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
@@ -394,14 +441,18 @@ function Island({ onMeasure }) {
   // Clicking anywhere else on the desktop tucks it away — unless it is
   // holding a decision that still needs an answer.
   useEffect(() => {
-    const onBlur = () => setTimeout(() => {
+    let timer;
+    const onBlur = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
       if (document.hasFocus()) return;
       const s = store.state;
       if (s.approval || s.takeover) return;
       setPinned(false);
-    }, 180);
+      }, 180);
+    };
     addEventListener('blur', onBlur);
-    return () => removeEventListener('blur', onBlur);
+    return () => { clearTimeout(timer); removeEventListener('blur', onBlur); };
   }, []);
 
   const onBarClick = (e) => {
@@ -417,13 +468,17 @@ function Island({ onMeasure }) {
   const doing = phase === 'Acting' && action?.detail ? action.detail : null;
 
   let head = petName;
-  let line = SHORT[phase] || 'Ready';
+  // A stopped run that nobody is working on any more is just Halo, ready.
+  // The word Stopped is for the moment it stops, not a label that lingers.
+  let line = (['Completed', 'Stopped'].includes(phase) && !running ? 'Ready' : SHORT[phase]) || 'Ready';
   let mark = running ? 'busy' : 'dot';
   if (view === 'peek') {
-    line = guardian.canAct === false ? 'Chat only' : 'Click to type · Esc to hide';
+    line = 'Click to chat';
   } else if (view === 'live') {
     if (running) {
-      head = step?.do || doing || PHASE_COPY[phase]?.title || SHORT[phase];
+      head = waitingOnPerson || phase === 'Paused'
+        ? PHASE_COPY[phase]?.title || SHORT[phase]
+        : doing || step?.do || PHASE_COPY[phase]?.title || SHORT[phase];
       // The list runner keeps its own line of what it is doing right now —
       // "Prompt 7 of 20 · waiting for it to finish · 34s" — which says more
       // than the generic step counter below it and is already current to
@@ -436,7 +491,7 @@ function Island({ onMeasure }) {
       head = last.text || 'Thinking…';
       line = petName;
       mark = 'busy';
-    } else if (flash) {
+    } else if (islandFlashActive(flash, beatOver)) {
       /* A run's summary opens with "Done — " (driver.mjs), and the line
          under it already says Done: once is enough. */
       head = flash.kind === 'done'
@@ -444,27 +499,32 @@ function Island({ onMeasure }) {
         : flash.text;
       line = flash.kind === 'done' ? 'Done' : flash.kind === 'fail' ? SHORT.Failed : petName;
       mark = flash.kind === 'done' ? 'tick' : flash.kind === 'fail' ? 'cross' : 'dot';
+    } else {
+      // Keep the current frame under the pointer, but let the notice rest.
+      line = 'Ready';
     }
   } else if (view === 'compact') {
     // One line, because there is only room for one: "Halo · Ready".
-    head = <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{guardian.canAct === false ? 'Chat only' : line}</>;
+    head = <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{line}</>;
   } else if (view === 'open' || view === 'card') {
     line = running
       ? [total > 1 && step ? `Step ${plan.index + 1} of ${total}` : null, doing || SHORT[phase]].filter(Boolean).join(' · ')
-      : guardian.canAct === false ? 'Chat only' : 'Ready';
+      : 'Ready';
   }
+  let workspaceTitle;
   if (waitingOnPerson) mark = 'attention';
-  if (desktopMode) {
-    const needsYou = monitor.apps?.filter(a => ['waiting', 'failed'].includes(a.state)).length || 0;
-    const working = monitor.apps?.filter(a => a.state === 'working').length || 0;
-    const desktopLine = monitor.paused ? 'Paused' : needsYou ? `${needsYou} need you` : working ? `${working} working` : 'Watching';
-    head = view === 'compact' ? <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{desktopLine}</> : 'Your desktop';
-    line = monitor.paused ? 'Monitoring paused' : flash?.text || `${desktopLine} · Desktop mode`;
+  if (desktopMode && !running && !streaming && !waitingOnPerson && !voice.active && !islandFlashActive(flash, beatOver)) {
+    const needsYou = monitor.apps?.filter(a => ['waiting', 'failed'].includes(a.state) && !a.dismissed).length || 0;
+    const desktopLine = workspaceStatus(monitor);
+    workspaceTitle = desktopLine;
+    head = view === 'compact' ? <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>{workspaceCompactStatus(monitor)}</> : 'Your desktop';
+    line = monitor.paused ? 'Monitoring paused' : desktopLine;
     mark = needsYou ? 'attention' : 'dot';
   }
   /* Nothing is coming back from the bridge, so nothing else on the bar is
      worth believing. Said in the one place that is always visible. */
   if (!connected) {
+    workspaceTitle = undefined;
     line = 'Reconnecting';
     mark = 'dot';
     if (view === 'compact') head = <><span className="h-island__name">{petName}</span><span className="h-island__dot"> · </span>Reconnecting</>;
@@ -495,27 +555,42 @@ function Island({ onMeasure }) {
   const recent = useMemo(() => chatState.list.filter((c) => c.id !== chatState.current).slice(0, 4), [chatState]);
   const showEmpty = !messages.length && !decision && !plan;
   const lvl = LEVELS[level];
+  /* At rest the island is one 36px line, as the notch it sits in: the mode
+     switch and Quit arrive with the pointer (peek) or the panel (open, card),
+     and stay out of a passing notice. Quit is also kept away from a running
+     task, where it would sit beside Stop and do something far bigger. */
+  const expanded = view === 'peek' || view === 'open' || view === 'card';
+  const showQuit = expanded && !running;
+  // In the open panel "Ready" is already said in words; the light is for the
+  // sizes too small to say it, and for anything that is not plain "ready".
+  const showMark = view === 'compact' || (!running && (view !== 'open' && view !== 'card' || mark !== 'dot'));
 
   return (
-    <Beam active={running && view !== 'compact'} size="md" color="colorful" radius={view === 'compact' ? 16 : 22} className="h-island-beam">
+    <Beam active={running && view !== 'compact'} size="md" color="colorful" radius={RADII[view]} className="h-island-beam">
       <div ref={rootRef} className={`h-island${capped ? ' is-capped' : ''}`} data-view={view} data-mode={desktopMode ? 'desktop' : 'agent'} data-phase={phase} data-attention={waitingOnPerson ? 'true' : 'false'}>
         {/* --- the bar ---------------------------------------------------- */}
-        <div className="h-island__bar" onClick={onBarClick}
+        <div className="h-island__bar" onClick={onBarClick} tabIndex={0}
+          aria-label={view === 'card' ? 'Focus Halo message' : view === 'open' ? 'Collapse Halo' : 'Open Halo'}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget || !['Enter', ' '].includes(e.key)) return;
+            e.preventDefault();
+            onBarClick(e);
+          }}
           onPointerDown={onGrab} onPointerMove={onDrag} onPointerUp={onDrop} onPointerCancel={onDrop}>
           <span className="h-island__lead"><Presence px={view === 'compact' ? 22 : view === 'peek' ? 38 : 30} /></span>
 
           <div className="h-island__text">
-            <div className="h-island__title">{head}</div>
+            <div className="h-island__title" title={workspaceTitle || (typeof head === 'string' ? head : undefined)}>{head}</div>
             <div className="h-island__sub">{line}</div>
           </div>
 
           <div className="h-island__trail">
-            <IconButton icon="x" label="Quit Halo" onClick={(e) => {
+            {showQuit && <IconButton icon="power" label="Quit Halo" className="h-island__quit" onClick={(e) => {
               e.stopPropagation();
               fetch('/quit', { method: 'POST' }).catch(() => {});
-            }} />
+            }} />}
             {view !== 'compact' && running && <RunControls size={14} />}
-            {(view === 'compact' || !running) && (
+            {showMark && (
               <span className="h-glyph" data-mark={mark}>
                 {mark === 'tick' && <Icon name="check" size={11} />}
                 {mark === 'cross' && <Icon name="x" size={11} />}
@@ -539,7 +614,7 @@ function Island({ onMeasure }) {
           </div>
         </div>
 
-        <div className="h-mode-switch" role="group" aria-label="Halo mode" aria-busy={switchingMode}>
+        {expanded && <div className="h-mode-switch" role="group" aria-label="Halo mode" aria-busy={switchingMode}>
           <span className="h-mode-switch__selection" data-desktop={desktopMode} aria-hidden="true" />
           {[false, true].map(desktop => <button key={String(desktop)} type="button"
             aria-pressed={desktopMode === desktop} disabled={switchingMode || !connected}
@@ -557,7 +632,7 @@ function Island({ onMeasure }) {
             </svg>
             {desktop ? 'Desktop' : 'Agent'}
           </button>)}
-        </div>
+        </div>}
 
         {/* --- live: progress, and what just finished ---------------------- */}
         {view === 'live' && running && total > 1 && (
@@ -599,6 +674,7 @@ function Island({ onMeasure }) {
           </div>
         )}
 
+        {desktopMode && (view === 'open' || view === 'card') && messages.length > 0 && <div className="h-island__panel h-island__panel--chat"><Thread className="h-island__thread" /></div>}
         {desktopMode && view !== 'compact' && <div className="h-island__panel"><DesktopPeek monitor={monitor} /></div>}
 
         {/* --- open and card: everything --------------------------------- */}
@@ -627,6 +703,7 @@ function Island({ onMeasure }) {
 
             {showEmpty && (
               <div className="h-empty">
+                <div className="h-empty__face"><Presence px={44} /></div>
                 <div className="h-empty__hello">
                   {guardian.canAct === false && guardian.reason ? guardian.reason : `What should ${petName} do?`}
                 </div>
@@ -662,7 +739,11 @@ function Island({ onMeasure }) {
                       {recent.map((c) => (
                         <div key={c.id} className="h-history__item" role="button" tabIndex={0}
                           onClick={() => chats.open(c.id)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') chats.open(c.id); }}>
+                          onKeyDown={(e) => {
+                            if (e.target !== e.currentTarget || !['Enter', ' '].includes(e.key)) return;
+                            e.preventDefault();
+                            chats.open(c.id);
+                          }}>
                           <span className="h-history__title">{c.title}</span>
                           <span className="h-history__when">{ago(c.updated)}</span>
                           <IconButton icon="x" label="Delete this chat" size={12} className="h-history__del"
@@ -678,7 +759,7 @@ function Island({ onMeasure }) {
             </>
           </div>
         )}
-        <div className="h-island__composer" hidden={desktopMode || !(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
+        <div className="h-island__composer" hidden={!(view === 'open' || view === 'card' || view === 'voice') || decision?.kind === 'question'}>
           <Composer petName={petName} inputRef={inputRef} acceptShortcut taskStopShown={view !== 'compact' && running} />
         </div>
       </div>
