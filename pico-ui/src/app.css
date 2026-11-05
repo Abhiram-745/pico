@@ -800,3 +800,12 @@
 .buildchip[data-state="preview"] { color: var(--text-dim); }
 
 @media (max-width: 780px) { .demo { margin-inline: 20px; } }
+
+.setup__skip {
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+}

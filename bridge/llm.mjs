@@ -1,3 +1,4 @@
+import { loadGeminiKey as loadStoredGeminiKey } from './gemini-secret.mjs';
 /* ==========================================================================
    Model provider.
 
@@ -21,6 +22,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const ENV_PATH = fileURLToPath(new URL('../.env', import.meta.url));
 
@@ -57,7 +59,16 @@ export const GATEWAY = {
   evaluator: 'typesafe-ai/jev',
 };
 
+export const GEMINI_MODELS = Object.freeze(['gemini-3.5-flash-lite', 'gemini-3.8-flash']);
+export const geminiAllowed = model => GEMINI_MODELS.includes(model);
 export const PROVIDERS = {
+  gemini: {
+    label: 'Google Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    envKey: 'GEMINI_API_KEY', responses: false,
+    tiers: Object.fromEntries(['fast', 'text', 'hard', 'see', 'plan'].map(tier => [tier, GEMINI_MODELS[0]])),
+    prefer: {},
+  },
   /* APINEX — the person's pick (2026-09-25): GPT-6 Luna, free.
 
      Its free models are named "free/<model>", and that slash is its own,
@@ -135,84 +146,31 @@ export const PROVIDERS = {
     // see   operating the desktop: reading the screen, choosing and aiming
     // plan  the stronger head, for a turn that has already gone wrong twice
     // hard  writing
-    /* Only models on the free daily allowance (250k tokens a day): gpt-5.4,
-       gpt-5.2, gpt-5.1, gpt-5, gpt-4.1, gpt-4o, o1, o3. The -mini and -nano
-       builds are not on it and are billed, which is why none are named here.
-       gpt-5.6-luna and -terra aim better still and are also billed; put one
-       in PICO_MODEL_SEE if you would rather pay for the last few pixels.
+    /* The user's paid mini/nano allowlist (2.5M tokens/day). Nothing larger
+       may ever be selected on this path: tiers, prefer, env overrides and
+       adopt() are all held to OPENAI_ALLOWED below.
 
-       Measured here twice, on eight labelled controls from this desktop —
-       real rectangles out of the accessibility tree, one frozen screenshot
-       of a 2560x1440 screen sent 1600 wide at full detail, every model
-       scored on identical pixels:
-
-         gpt-5.4        6/8 clicks inside the target, median 46px, 1.5s
-         gpt-5.4-mini   4/8, 35px, 2.0s
-         gpt-5.1        2/8, 65px, 2.9s
-         o4-mini        0/8, 241px, 3.3s
-         gpt-4.1        0/8, 123px, 1.2s
-         gpt-4.1-mini   0/8, 962px, 2.0s
-         gpt-5.4-nano   0/8, 514px, 1.5s
-         gpt-4o         0/8, 214px, 1.7s
-
-       Which settles it, and not in the direction anybody expects: gpt-5.4 is
-       the most accurate AND the quickest. The small models are not a faster
-       way to look at a screen — they are a slower way to miss. Nothing in
-       the mini/nano tier can aim, so nothing in it is used for anything that
-       points at the screen. They remain fine for chat, where there is
-       nothing to point at.
-
-       The way to spend less time looking is not a weaker pair of eyes: it is
-       not looking at all when Windows can say what is there. See
-       fastpath.mjs, which answers most turns without a screenshot. */
-    /* Seeing stays here, because this is where the models that can actually
-       aim are. Text does not: `fast` and `hard` never look at a screenshot,
-       so they go to the free Qwen models on the gateway (the slash in the
-       name is what sends them there) and cost nothing. Measured above:
-       gpt-4o and gpt-4.1 land 0/8 clicks inside the target, so nothing in
-       the 4 series is used for anything that points at the screen. */
-    /* Measured on the gateway, three runs each, one short reply:
-         alibaba/qwen3-max       2.1s median, steady (1.9 / 2.1 / 2.3)
-         alibaba/qwen3.5-flash   6.5s (6.5 / 6.5 / 10.1)
-         alibaba/qwen3.7-flash   9.5s (5.2 / 9.5 / 15.5)
-       The "flash" names are the slow ones here: they think before answering
-       and there is nothing in a chat reply worth thinking about. */
-    /* `text` is its own job: the one call the fast path makes when it has
-       decided to type, which is pure extraction — pull the value out of the
-       goal and hand it back as JSON. It is not chat and it is not judgement,
-       and the model for it should be whichever is quickest at exactly that.
-       Measured, same prompt, three runs each:
-         gpt-4.1-mini      463ms  "grace hopper"      <- correct, quickest
-         gpt-5.4-mini      839ms  "grace hopper"
-         gpt-5.4-nano      935ms  "Grace Hopper"
-         alibaba/qwen3-max 1138ms "grace hopper"      <- what it was using
-         gpt-4.1-nano      604ms  a URL, not the query
-       Seven hundred milliseconds off every typing turn. */
-    /* gpt-4o-mini everywhere, by the user's choice (2026-09-22): no
-       reasoning, so no thinking time on any turn. It still cannot aim by
-       pixels any better than the table above says the 4 series can — which
-       is why it is never asked to. It picks a numbered mark (marks.mjs) and
-       Windows supplies the rectangle; unmarked targets go through a zoomed
-       second look (zoom.mjs). Jev takes every decision that is a choice from
-       a list, so this model is only called when something has to be seen. */
+       Reasoning stays off for the chatty tiers (gpt-4o-mini, gpt-4.1-mini).
+       Looking uses gpt-4.1-mini: gpt-4o-mini bills a screenshot at about
+       37,000 tokens and gpt-4.1-mini at about 1,800. Aiming is by numbered
+       marks (marks.mjs), not pixels, so no model here is asked to click by
+       coordinates. */
     tiers: {
       fast: 'gpt-4o-mini',
-      text: 'gpt-4o-mini',
-      hard: 'gpt-4o-mini',
-      /* Except looking. gpt-4o-mini bills a screenshot at about 37,000
-         tokens and gpt-4.1-mini at about 1,800 — the same picture — and on a
-         200,000-a-minute key the first spent most of every hard task waiting
-         out rate limits. Neither aims by pixels (numbered marks do that), so
-         the cheaper reader of pictures does the reading. Chosen 2026-09-23. */
+      text: 'gpt-4.1-mini',
+      hard: 'gpt-5.4-mini',
       see: 'gpt-4.1-mini',
       plan: 'gpt-4o-mini',
     },
-    /* Only tiers that are served from OpenAI itself: adopt() matches these
-       against OpenAI's own model list, and a gateway name would never be
-       found there — which is right, since the default already is one. */
+    /* Only tiers served from OpenAI itself: adopt() matches these against
+       OpenAI's own model list. Best first; every name is on the allowlist
+       (checked at load, see OPENAI_ALLOWED). */
     prefer: {
       see: ['gpt-4.1-mini'],
-      plan: ['gpt-4o-mini'],
+      text: ['gpt-4.1-mini', 'gpt-4o-mini'],
+      fast: ['gpt-4o-mini', 'gpt-5.4-nano'],
+      plan: ['gpt-4o-mini', 'gpt-5.4-nano'],
+      hard: ['gpt-5.4-mini', 'gpt-4o-mini'],
     },
   },
   /* xkiro — free models, for anyone who has a key for it.
@@ -315,7 +273,7 @@ export async function fetchPatiently(url, init, { tries = 3, maxWaitMs = 6000, g
     if (asked > Math.min(giveUpOverMs, LONGEST_WAIT_MS)) return res;
     const ms = asked ? asked + 150 : Math.min(maxWaitMs, 800 * (2 ** attempt));
     try { await res.body?.cancel(); } catch { /* nothing to drain */ }
-    await new Promise((r) => setTimeout(r, Math.max(250, ms)));
+    await delay(Math.max(250, ms), undefined, { signal: init?.signal });
   }
   return res;
 }
@@ -407,6 +365,19 @@ export async function loadEnv() {
   return out;
 }
 
+/* The user's paid mini/nano allowlist (2.5M tokens/day). Larger models must
+   not be selected on the openai path, by default, by env, or by adopt(). */
+export const OPENAI_ALLOWED = Object.freeze([
+  'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5-mini', 'gpt-5-nano',
+  'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o-mini', 'o3-mini', 'o4-mini',
+]);
+export const openaiAllowed = (m) => OPENAI_ALLOWED.includes(m);
+
+// Fail loudly at load if a default ever names something off the list.
+for (const m of [...Object.values(PROVIDERS.openai.tiers), ...Object.values(PROVIDERS.openai.prefer).flat()]) {
+  if (!openaiAllowed(m)) throw new Error(`openai model ${m} is not on the allowlist`);
+}
+
 /** Explicit provider choices win; otherwise prefer a direct OpenAI key. */
 export function providerOrder(env = {}) {
   const wanted = String(env.PICO_PROVIDER || '').trim().toLowerCase();
@@ -416,7 +387,7 @@ export function providerOrder(env = {}) {
 /** Server-only credentials for optional desktop summaries. Never sent to UI. */
 export async function loadOpenAIConfig() {
   const env = { ...(await loadEnv()), ...process.env };
-  const directModel = (value) => typeof value === 'string' && /^(?:gpt-|o[134](?:-|$))/.test(value) && !value.includes('/');
+  const directModel = (value) => openaiAllowed(value);
   const model = [env.OPENAI_SUMMARY_MODEL, env.PICO_MODEL_TEXT, env.PICO_MODEL]
     .find(directModel) || PROVIDERS.openai.tiers.text;
   return { apiKey: env.OPENAI_API_KEY || '', model };
@@ -482,15 +453,23 @@ export function classify(task) {
   return HARD_SIGNALS.some((re) => re.test(t)) ? 'hard' : 'fast';
 }
 
+// Short function decisions should fail promptly; desktop evidence needs more time.
+export function completionTimeout(content = [], { desktopMs = 90_000, hard = false } = {}) {
+  const desktop = content.some(part => part?.type === 'image' || part?.type === 'image_url'
+    || (Array.isArray(part?.content) && part.content.some(item => item?.type === 'image_url' || item?.type === 'image')));
+  return desktop ? desktopMs : hard ? 45_000 : 20_000;
+}
+
 export class LLM {
   constructor({ apiKey, baseUrl, provider, tiers, pinned = {}, gatewayKey = null }) {
     this.apiKey = apiKey;
     /* The gateway is reached with its own key, alongside whichever provider
        this instance is. Null when nobody has one, and then nothing is routed
        there and evaluate() politely does nothing. */
-    this.gatewayKey = gatewayKey;
+    this.gatewayKey = provider === 'gemini' ? null : gatewayKey;
     this.provider = provider;
-    this.baseUrl = (baseUrl || '').replace(/\/+$/, '');
+    this.baseUrl = (provider === 'gemini' ? PROVIDERS.gemini.baseUrl : (baseUrl || '')).replace(/\/+$/, '');
+    if (provider === 'gemini' && Object.values(tiers).some(model => !geminiAllowed(model))) throw new Error('Choose a supported Gemini Flash or Flash-Lite model.');
     this.tiers = tiers;
     this.pinned = pinned;          // tiers set explicitly in .env, never replaced
     this.model = tiers.fast;
@@ -507,12 +486,13 @@ export class LLM {
     this.evaluator = this.gatewayKey ? GATEWAY.evaluator : 'unavailable';
   }
 
-  static async fromEnv() {
-    const env = { ...(await loadEnv()), ...process.env };
+  static async fromEnv({ env: suppliedEnv, loadGeminiKey = suppliedEnv ? async () => '' : loadStoredGeminiKey } = {}) {
+    const env = { ...(suppliedEnv ?? { ...(await loadEnv()), ...process.env }) };
+    if (String(env.PICO_PROVIDER).toLowerCase() === 'gemini' && !env.GEMINI_API_KEY) env.GEMINI_API_KEY = await loadGeminiKey().catch(() => '');
     /* PICO_MODEL sets every job at once; a PICO_MODEL_<JOB> beside it overrides
        that one job. So "gpt-4o-mini for everything, gpt-4.1-mini to look at
        the screen" is two lines, not five. */
-    const oneModel = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-5-mini', 'gpt-5-nano'].includes(env.PICO_MODEL) ? env.PICO_MODEL : null;
+    const oneModel = openaiAllowed(env.PICO_MODEL) ? env.PICO_MODEL : null;
 
     // Explicit choice wins. Otherwise OpenAI, which is where the models that
     // can actually read a screen are; anything else needs its own key in .env,
@@ -528,24 +508,27 @@ export class LLM {
       const p = PROVIDERS[name];
       const apiKey = env[p.envKey];
       if (!apiKey) continue;
-      const singleModel = name === 'openai' ? oneModel : null;
+      const singleModel = name === 'openai' ? oneModel : name === 'gemini' ? ([env.GEMINI_MODEL, env.PICO_MODEL].find(geminiAllowed) || p.tiers.fast) : null;
+      // On the openai path an env override naming anything off the allowlist
+      // is ignored, never honoured.
+      const ov = (v) => ((name === 'openai' && !openaiAllowed(v)) || (name === 'gemini' && !geminiAllowed(v)) ? undefined : v);
 
       const made = new LLM({
         apiKey,
         baseUrl: env.PICO_BASE_URL || p.baseUrl,
         provider: name,
         tiers: {
-          fast: env.PICO_MODEL_FAST || singleModel || p.tiers.fast,
-          text: env.PICO_MODEL_TEXT || singleModel || p.tiers.text || p.tiers.fast,
-          hard: env.PICO_MODEL_HARD || singleModel || p.tiers.hard,
-          see: env.PICO_MODEL_SEE || singleModel || p.tiers.see,
-          plan: env.PICO_MODEL_PLAN || singleModel || p.tiers.plan,
+          fast: ov(env.PICO_MODEL_FAST) || singleModel || p.tiers.fast,
+          text: ov(env.PICO_MODEL_TEXT) || singleModel || p.tiers.text || p.tiers.fast,
+          hard: ov(env.PICO_MODEL_HARD) || singleModel || p.tiers.hard,
+          see: ov(env.PICO_MODEL_SEE) || singleModel || p.tiers.see,
+          plan: ov(env.PICO_MODEL_PLAN) || singleModel || p.tiers.plan,
         },
         pinned: {
-          fast: Boolean(singleModel || env.PICO_MODEL_FAST),
-          hard: Boolean(singleModel || env.PICO_MODEL_HARD),
-          see: Boolean(singleModel || env.PICO_MODEL_SEE),
-          plan: Boolean(singleModel || env.PICO_MODEL_PLAN),
+          fast: Boolean(singleModel || ov(env.PICO_MODEL_FAST)),
+          hard: Boolean(singleModel || ov(env.PICO_MODEL_HARD)),
+          see: Boolean(singleModel || ov(env.PICO_MODEL_SEE)),
+          plan: Boolean(singleModel || ov(env.PICO_MODEL_PLAN)),
         },
         gatewayKey,
       });
@@ -559,7 +542,7 @@ export class LLM {
          A chain, not a pair: APINEX's five a minute run out inside most
          tasks, so after it comes OpenAI, and after OpenAI xkiro — each one
          whose key is in .env, each on its own default models. */
-      if (!/^(?:0|false|off)$/i.test(env.PICO_FALLBACK ?? '')) {
+      if (name !== 'gemini' && !/^(?:0|false|off)$/i.test(env.PICO_FALLBACK ?? '')) {
         let tail = made;
         for (const next of ['openai', 'xkiro']) {
           const q = PROVIDERS[next];
@@ -595,6 +578,7 @@ export class LLM {
    * most), calls go straight to the other provider.
    */
   useFallback(other) {
+    if (this.provider === 'gemini') throw new Error('Gemini uses only its explicitly selected provider.');
     this.fallback = other;
     this._limitedUntil = 0;
     // Said in the bridge's log once a spell, so a slower step has a reason anyone can see.
@@ -698,10 +682,14 @@ export class LLM {
   /** GPT-5 family renamed the token cap and fixes temperature at 1. */
   _body(model, messages, { maxTokens, stream, tools, effort = 'none' }) {
     const body = { model, messages, stream };
+    if (this.provider === 'gemini') {
+      body.reasoning_effort = 'minimal';
+      body.messages = messages.map(message => ({ ...message, content: Array.isArray(message.content) ? message.content.map(part => part.type === 'image_url' ? { type: 'image_url', image_url: { url: part.image_url.url } } : part) : message.content }));
+    }
     if (tools) {
       body.tools = tools;
       body.tool_choice = 'required';
-      body.parallel_tool_calls = false;   // one function call carrying an ordered action batch
+      if (this.provider !== 'gemini') body.parallel_tool_calls = false;   // one function call carrying an ordered action batch
     }
     if (/^(?:free\/)?gpt-[56]/.test(model)) {
       body.max_completion_tokens = maxTokens;
@@ -728,6 +716,7 @@ export class LLM {
    * provider, which will refuse it plainly rather than silently.
    */
   _where(model) {
+    if (this.provider === 'gemini' && (!this.apiKey || !geminiAllowed(model))) throw new Error('Gemini requires a configured API key and a supported Flash model.');
     if (this.gatewayKey && String(model).includes('/') && !PROVIDERS[this.provider]?.own?.test(model)) {
       return { baseUrl: GATEWAY.baseUrl, apiKey: this.gatewayKey, responses: false };
     }
@@ -747,11 +736,12 @@ export class LLM {
       when they are all spent — a few seconds here is better than the 429
       and the minute-long retry-after that asking anyway earns. */
   async _slot(at, signal) {
+    signal?.throwIfAborted();
     if (!this._rpm || at.baseUrl !== this.baseUrl) return;
     while (this._room() <= 0) {
-      if (signal?.aborted) return;
-      await new Promise((r) => setTimeout(r, Math.max(50, this._sent[0] + 60_050 - Date.now())));
+      await delay(Math.max(50, this._sent[0] + 60_050 - Date.now()), undefined, { signal });
     }
+    signal?.throwIfAborted();
     this._sent.push(Date.now());
   }
 
@@ -765,7 +755,7 @@ export class LLM {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(this._body(model, messages, opts)),
-      signal: opts.signal ?? AbortSignal.timeout(90_000),
+      signal: opts.signal ?? AbortSignal.timeout(completionTimeout(messages, { desktopMs: 45_000, hard: model === this.tiers.hard })),
     }, this._patience());
   }
 
@@ -783,7 +773,7 @@ export class LLM {
 
   _error(status, body, res = null) {
     const msg = body?.error?.message || `HTTP ${status}`;
-    if (status === 401) return new Error('The API key was rejected. Check your key in .env.');
+    if (status === 401) return new Error(this.provider === 'gemini' ? 'Gemini API key was rejected. Check the bridge environment.' : 'The API key was rejected. Check your key in .env.');
     if (status === 402) return new Error('Out of credits with this provider.');
     /* Said with the provider's name and, for a long limit, when it lifts:
        "rate limited, try again in a moment" about an allowance that resets
@@ -813,6 +803,7 @@ export class LLM {
     try {
       res = await this._post(useModel, messages, { maxTokens, stream: true, signal });
     } catch (err) {
+      signal?.throwIfAborted();
       throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
     }
 
@@ -837,25 +828,45 @@ export class LLM {
     const decoder = new TextDecoder();
     let buffer = '';
     let full = '';
+    const cancelRead = () => { void reader.cancel().catch(() => {}); };
+    signal?.addEventListener('abort', cancelRead, { once: true });
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    const accept = (line) => {
+      signal?.throwIfAborted();
+      const t = line.trim();
+      if (!t.startsWith('data:')) return false;
+      const payload = t.slice(5).trim();
+      if (payload === '[DONE]') return true;
+      let frame;
+      try { frame = JSON.parse(payload); } catch { return false; }
+      if (frame.error) throw this._error(502, frame);
+      const piece = frame.choices?.[0]?.delta?.content;
+      if (piece) { full += piece; onDelta?.(piece); }
+      return false;
+    };
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const { done, value } = await reader.read();
+        signal?.throwIfAborted();
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) accept(buffer);
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
 
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';          // keep the partial line for next read
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';          // keep the partial line for next read
 
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith('data:')) continue;
-        const payload = t.slice(5).trim();
-        if (payload === '[DONE]') continue;
-        try {
-          const piece = JSON.parse(payload).choices?.[0]?.delta?.content;
-          if (piece) { full += piece; onDelta?.(piece); }
-        } catch { /* a partial frame; the next read completes it */ }
+        for (const line of lines) {
+          if (accept(line)) return full.trim();
+        }
       }
+    } finally {
+      signal?.removeEventListener('abort', cancelRead);
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
     return full.trim();
   }
@@ -867,10 +878,12 @@ export class LLM {
     try {
       res = await this._post(useModel, messages, { maxTokens, stream: false, signal });
     } catch (err) {
+      signal?.throwIfAborted();
       throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
     }
 
     const raw = await res.text();
+    signal?.throwIfAborted();
     let body = null;
     try { body = JSON.parse(raw); } catch { /* non-JSON */ }
 
@@ -902,16 +915,19 @@ export class LLM {
    *
    * @returns {Promise<{call:{name,args,raw}|null, text:string}>}
    */
-  async toolCall(messages, { model, tools, maxTokens = 1400, signal, effort = 'low' } = {}) {
+  async toolCall(messages, { model, tools, maxTokens, signal, effort = 'low' } = {}) {
     const useModel = model || this.tiers.see || this.model;
+    maxTokens ??= useModel === this.tiers.hard ? 3000 : 1400;
     let res;
     try {
       res = await this._post(useModel, messages, { maxTokens, stream: false, signal, tools, effort });
     } catch (err) {
+      signal?.throwIfAborted();
       throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
     }
 
     const raw = await res.text();
+    signal?.throwIfAborted();
     let body = null;
     try { body = JSON.parse(raw); } catch { /* non-JSON error body */ }
 
@@ -925,8 +941,13 @@ export class LLM {
       throw this._error(res.status, body, res);
     }
 
+    // A long typed payload must be retried intact, never executed as a partial call.
+    if (body?.choices?.[0]?.finish_reason === 'length' && maxTokens < 12000) {
+      return this.toolCall(messages, { model: useModel, tools, maxTokens: Math.min(12000, maxTokens * 2), signal, effort });
+    }
     const message = body?.choices?.[0]?.message ?? {};
     const call = message.tool_calls?.[0];
+    if (this.provider === 'gemini' && message.tool_calls?.length > 1) return { call: null, text: '', why: 'multiple_calls' };
     /* No call, and why, because the caller has to tell the difference.
        `tool_choice: 'required'` asks for an action and nothing else, but a
        model is free to answer with prose anyway — "I'll click the search bar
@@ -943,6 +964,7 @@ export class LLM {
       return { call: null, text: '', why: 'bad_args' };
     }
 
+    if (this.provider === 'gemini' && (!tools?.some(tool => tool.function?.name === call.function?.name) || !args || typeof args !== 'object' || Array.isArray(args))) return { call: null, text: '', why: 'bad_args' };
     return {
       call: { name: call.function?.name, args, raw: call },
       text: (message.content || '').trim(),
@@ -1015,8 +1037,9 @@ export class LLM {
     return { ...out, attempts: MAX_ATTEMPTS, exhausted: true };
   }
 
-  async _respondOnce({ model, system, content, history = [], tools, effort = 'low', maxTokens = 3000, signal }) {
+  async _respondOnce({ model, system, content, history = [], tools, effort = 'low', maxTokens, signal }) {
     const useModel = model || this.tiers.see;
+    maxTokens ??= useModel === this.tiers.hard ? 3000 : 1400;
 
     /* `history` is everything said so far, in Halo's own neutral shape, and
        it is what turns a sequence of unrelated questions into one
@@ -1072,9 +1095,10 @@ export class LLM {
         method: 'POST',
         headers: { Authorization: `Bearer ${at.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: signal ?? AbortSignal.timeout(90_000),
+        signal: signal ?? AbortSignal.timeout(completionTimeout([...content, ...history], { hard: useModel === this.tiers.hard })),
       }, this._patience());
     } catch (err) {
+      signal?.throwIfAborted();
       throw new Error(`Could not reach the model provider: ${this.redact(err.message)}`);
     }
 
@@ -1106,7 +1130,7 @@ export class LLM {
     // Reasoning can use the whole budget and leave nothing for the answer.
     // Once, with more room, rather than failing a step over it.
     if (json?.status === 'incomplete' && json?.incomplete_details?.reason === 'max_output_tokens' && maxTokens < 12000) {
-      return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens: maxTokens * 2, signal });
+      return this._respondOnce({ model: useModel, system, content, history, tools, effort, maxTokens: Math.min(12000, maxTokens * 2), signal });
     }
 
     const output = Array.isArray(json?.output) ? json.output : [];
@@ -1190,11 +1214,10 @@ export class LLM {
       facts,
     ].filter(Boolean).join('\n\n');
 
-    /* And anything else that lets it slip is taken out on the way past: a
-       sentence naming the service, or Halo claiming to be some model, is
-       dropped before it is shown. Whole sentences are held until they end
-       to make that possible — which costs nothing here, where the provider
-       sends the reply in one piece anyway. */
+    /* Alternative providers can inject their own identity, so their sentences
+       are checked before display. Direct OpenAI replies stream immediately;
+       the identity question shortcut and final-text filter still apply. */
+    const direct = this.provider === 'openai' && !this.fallback && !this.tiers.fast.includes('/');
     let held = '';
     let shown = '';
     const pass = (text) => { const kept = withoutProvenance(text); if (kept) { shown += kept; onDelta?.(kept); } };
@@ -1202,9 +1225,10 @@ export class LLM {
       [{ role: 'system', content: system }, ...history],
       {
         model: this.tiers.fast,
-        maxTokens: 500,
+        maxTokens: 384,
         signal,
         onDelta: (piece) => {
+          if (direct) { shown += piece; onDelta?.(piece); return; }
           held += piece;
           const cut = held.search(/[.!?\n](?=\s|$)[^.!?\n]*$/);
           if (cut < 0) return;
@@ -1294,6 +1318,7 @@ export class LLM {
    * should not be left on one that clicks less accurately.
    */
   async check() {
+    if (this.provider === 'gemini' && !this.apiKey) return { ok: false, reason: 'Gemini API key is missing.' };
     try {
       const res = await fetch(`${this.baseUrl}/models`, {
         headers: { Authorization: `Bearer ${this.apiKey}` },
@@ -1326,14 +1351,14 @@ export class LLM {
    * fails, or it takes too long. Every caller has to work without it: this
    * is a shortcut, never the only route.
    */
-  async evaluate(state, questions, { model = GATEWAY.evaluator, timeout = 6000 } = {}) {
+  async evaluate(state, questions, { model = GATEWAY.evaluator, timeout = 6000, signal } = {}) {
     if (!this.gatewayKey || !questions || !Object.keys(questions).length) return null;
     try {
       const res = await fetch(`${GATEWAY.baseUrl}/evaluate`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${this.gatewayKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, state, questions }),
-        signal: AbortSignal.timeout(timeout),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
       });
       if (!res.ok) return null;
       const body = await res.json();
@@ -1349,7 +1374,7 @@ export class LLM {
     const prefer = PROVIDERS[this.provider]?.prefer ?? {};
     for (const [tier, list] of Object.entries(prefer)) {
       if (this.pinned[tier]) continue;
-      const pick = list.find((m) => have.has(m));
+      const pick = list.find((m) => have.has(m) && (this.provider !== 'openai' || openaiAllowed(m)));
       if (pick) this.tiers[tier] = pick;
     }
   }

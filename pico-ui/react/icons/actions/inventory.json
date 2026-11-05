@@ -1,0 +1,66 @@
+{
+  "app.jsx": [
+    "activity",
+    "bolt",
+    "brain",
+    "chat",
+    "check",
+    "gear",
+    "monitor",
+    "paperclip",
+    "pencil",
+    "plus",
+    "power",
+    "search",
+    "trash",
+    "update",
+    "x"
+  ],
+  "appearance.jsx": [
+    "monitor"
+  ],
+  "island.jsx": [
+    "bolt",
+    "check",
+    "chevron",
+    "expand",
+    "plus",
+    "power",
+    "shield",
+    "x"
+  ],
+  "onboard.jsx": [
+    "check"
+  ],
+  "parts.jsx": [
+    "alert",
+    "ask",
+    "bookmark",
+    "check",
+    "chevron",
+    "file",
+    "hand",
+    "mic",
+    "paperclip",
+    "pause",
+    "play",
+    "send",
+    "skip",
+    "stop",
+    "volume",
+    "x"
+  ],
+  "workspace.jsx": [
+    "activity",
+    "alert",
+    "bolt",
+    "check",
+    "gear",
+    "hand",
+    "monitor",
+    "plus",
+    "shield",
+    "update",
+    "x"
+  ]
+}

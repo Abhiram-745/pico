@@ -229,15 +229,15 @@ assert.equal(limitWait(null, { error: { message: 'Slow down.' } }), null);
 
 {
   // Prefer OpenAI when several keys exist; model overrides apply only to it.
-  Object.assign(process.env, { APINEX_API_KEY: 'apx-test', OPENAI_API_KEY: 'sk-test', XKIRO_API_KEY: 'xk-test', PICO_PROVIDER: '', PICO_FALLBACK: '', PICO_MODEL: 'gpt-4o-mini', PICO_MODEL_SEE: 'gpt-4.1-mini' });
-  const made = await LLM.fromEnv();
+  const env = { APINEX_API_KEY: 'apx-test', OPENAI_API_KEY: 'sk-test', XKIRO_API_KEY: 'xk-test', PICO_PROVIDER: '', PICO_FALLBACK: '', PICO_MODEL: 'gpt-4o-mini', PICO_MODEL_SEE: 'gpt-4.1-mini' };
+  const made = await LLM.fromEnv({ env });
   assert.equal(made.provider, 'openai');
   assert.equal(made.tiers.plan, 'gpt-4o-mini');
   assert.equal(made.tiers.see, 'gpt-4.1-mini', 'but not for pictures');
   assert.equal(made.fallback?.provider, 'xkiro');
   assert.equal(made.fallback.tiers.see, x.tiers.see);
-  process.env.PICO_PROVIDER = 'apinex';
-  const explicit = await LLM.fromEnv();
+  env.PICO_PROVIDER = 'apinex';
+  const explicit = await LLM.fromEnv({ env });
   assert.equal(explicit.provider, 'apinex');
   assert.equal(explicit.tiers.fast, 'free/gpt-6-luna');
   assert.equal(explicit.fallback?.provider, 'openai');

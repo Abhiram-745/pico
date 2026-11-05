@@ -78,6 +78,9 @@ function buildKeyMap(Key) {
   return map;
 }
 
+/** Shown in the UI (via agent.blockedReason) when the desktop cannot be driven. */
+export const DESKTOP_UNSUPPORTED = 'Chat and desktop watching work here. Mouse and keyboard control needs Windows.';
+
 /**
  * @param {object} opts
  * @param {(p:{x:number,y:number,done:boolean})=>void} [opts.onPointer]
@@ -86,7 +89,7 @@ function buildKeyMap(Key) {
  */
 export async function loadComputer({ onPointer, sense = null } = {}) {
   if (process.platform !== 'win32') {
-    console.warn('[bridge] desktop control is Windows-only — running without it');
+    console.warn(`[bridge] ${DESKTOP_UNSUPPORTED} — running without it`);
     return null;
   }
 

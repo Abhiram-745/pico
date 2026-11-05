@@ -98,7 +98,7 @@ export function namedNavigation(goal, space, history = []) {
     if (!rows.length) return null;
     if (rows.length !== 1) return null;
     const row = rows[0];
-    if (history.some(line => /^(clicked|opened|selected)\b/i.test(line) && norm(line).includes(norm(row.label)))) continue;
+    if (history.some(line => /^(clicked|opened|selected)\b/i.test(line) && (` ${norm(line)} `).includes(` ${norm(row.label)} `))) continue;
     if (row.selected) continue;
     const element = space.targets.CLICK[row.index];
     if (!element) return null;
@@ -630,7 +630,7 @@ export async function addressFor(llm, { goal, history = [], opened = [] }) {
       role: 'user',
       content: JSON.stringify({ goal, alreadyOpened: opened, alreadyDone: history.slice(-6) }),
     },
-  ], { model: llm.tiers.text ?? llm.tiers.fast, maxTokens: 200, signal: AbortSignal.timeout(20_000) }).catch(() => null);
+  ], { model: llm.tiers.text ?? llm.tiers.fast, maxTokens: 200, signal: AbortSignal.timeout(5000) }).catch(() => null);
 
   const raw = String(out ?? '').trim();
   const body = raw.startsWith('{') ? raw : (raw.match(/\{[\s\S]*\}/)?.[0] ?? '');
@@ -706,7 +706,7 @@ export async function fieldText(llm, { goal, field, window: win, history = [], s
         alreadyDone: history.slice(-6),
       }),
     },
-  ], { model: llm.tiers.text ?? llm.tiers.fast, maxTokens: 300, signal: AbortSignal.timeout(20_000) }).catch(() => null);
+  ], { model: llm.tiers.text ?? llm.tiers.fast, maxTokens: 300, signal: AbortSignal.timeout(5000) }).catch(() => null);
 
   const raw = String(out ?? '').trim();
   const body = raw.startsWith('{') ? raw : (raw.match(/\{[\s\S]*\}/)?.[0] ?? '');

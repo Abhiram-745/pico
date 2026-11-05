@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { store } from '../src/store.js';
+import { monitorRequest } from '../src/monitor-client.js';
 
 export const desktopExcerpt = value => String(value || '')
   .replace(/!?\[([^\]]*)\]\((?:<[^>]*>|[^)]*)\)/g, '$1')
@@ -7,14 +7,7 @@ export const desktopExcerpt = value => String(value || '')
   .replace(/\s+/g, ' ').trim();
 
 export async function desktopRequest(path, body, signal) {
-  const response = await fetch(`/desktop-monitor${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : AbortSignal.timeout(25000),
-  });
-  const state = await response.json();
-  if (!response.ok) throw new Error(state.error || 'Could not update desktop progress.');
-  if (Array.isArray(state.apps)) store.set({ desktopMonitor: state }, { type: 'desktopMonitor' });
-  return state;
+  return monitorRequest(`/desktop-monitor${path}`, { body: body || {}, signal, timeoutMs: 25000 });
 }
 
 export function DesktopResultActions({ id }) {

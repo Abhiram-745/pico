@@ -28,7 +28,9 @@ import { route } from './intent.mjs';
 import { runJob, planJob } from './job.mjs';
 import { matchShortcut, runShortcut } from './shortcuts.mjs';
 import * as apps from './apps.mjs';
+import { assessComposio } from './policy.mjs';
 import { ALLOW } from './policy.mjs';
+import { DESKTOP_UNSUPPORTED } from './computer.mjs';
 import { memory as defaultMemory, detect as detectMemory } from './memory.mjs';
 import { routines as defaultRoutines, Routines } from './routines.mjs';
 
@@ -139,10 +141,29 @@ export class HostAgent extends MockAgent {
 
   async gateFor(token) {
     const open = await this.gate();
-    return open && token === this.runToken;
+    return open && !this.superseded(token);
   }
 
   attachComputer(computer) { this.computer = computer; }
+
+  attachComposio(composio) { this.composio = composio; }
+
+  async integrationTool(name, args, token) {
+    if (!this.composio || this.superseded(token)) throw new Error('Integration tool blocked.');
+    return this.composio.agentTool(name, args);
+  }
+
+  async integrationGuardian({ name, args, accountId }) {
+    const token = this.runToken;
+    const risk = assessComposio(name);
+    if (!this.composio || risk.decision !== 'RequireConfirmation' || this.superseded(token)) return false;
+    // Arm before publishing; deliberately does not consult autoApproveAll.
+    let resolver;
+    const approved = new Promise(resolve => { this._approveResolve = resolver = resolve; });
+    this.emit('approval', { id: `composio_${Date.now()}`, summary: `${risk.reason} Review arguments: ${JSON.stringify(args).slice(0, 2000)}`, target: `Selected Gmail connection (${String(accountId || '').slice(-6)})`, risk });
+    const decision = await approved; if (this._approveResolve === resolver) this._approveResolve = null;
+    return Boolean(decision && !this.superseded(token));
+  }
 
   /* Guide mode's cursor, when the bridge has one. A function rather than the
      thing itself: it is built the first time guide mode is switched on, and
@@ -164,6 +185,7 @@ export class HostAgent extends MockAgent {
 
   /** Why not, in words the interface can show without inventing any. */
   blockedReason() {
+    if (!this.computer && process.platform !== 'win32') return DESKTOP_UNSUPPORTED;
     if (!this.llm) return 'No model is configured, so Halo cannot plan anything yet.';
     if (!this.computer) {
       return 'Halo cannot reach the screen or the mouse on this machine, so it '
@@ -178,7 +200,15 @@ export class HostAgent extends MockAgent {
      resume, so the island always says what is really true. */
   setPhase(phase) {
     if (this.paused && !SETTLED.has(phase)) { this._heldPhase = phase; return; }
+    clearTimeout(this._settleTimer);
     super.setPhase(phase);
+    if (['Completed', 'Stopped'].includes(phase)) {
+      const token = this.runToken;
+      this._settleTimer = setTimeout(() => {
+        if (this.runToken === token && this.phase === phase) this.setPhase('Idle');
+      }, 1200);
+      this._settleTimer.unref?.();
+    }
   }
 
   tryResume(source) {
@@ -190,8 +220,29 @@ export class HostAgent extends MockAgent {
     }
   }
 
+  cancelPending() {
+    this._routeAbort?.abort();
+    this._chatAbort?.abort();
+    if (this._chatMessage) this.emit('message', { id: this._chatMessage, text: '', done: true, remove: true });
+    this._chatMessage = null;
+    this._driverAbort?.abort();
+    this.emit('question', null);
+    this.emit('approval', null);
+    this.emit('takeover', null);
+    this._answerResolve?.({ text: '', choice: null });
+    this._approveResolve?.(false);
+    this._takeoverResolve?.();
+    this._answerResolve = this._approveResolve = this._takeoverResolve = null;
+  }
+
   handle(msg) {
-    if (['stop', 'newChat'].includes(msg?.command)) this._chatAbort?.abort();
+    if (msg?.command === 'deny') msg = { ...msg, command: 'stop' };
+    if (['stop', 'newChat'].includes(msg?.command)) {
+      this.runToken += 1;
+      this.cancelled = true;
+      this.cancelPending();
+      this._heldPhase = null;
+    }
     const payload = msg?.payload ?? {};
     switch (msg?.command) {
       case 'setName':
@@ -227,6 +278,9 @@ export class HostAgent extends MockAgent {
           .slice(-CHAT_MEMORY);
         this.plan = null;
         this.emit('plan', null);
+        // Nothing from the old chat is still waiting on anyone: back to rest,
+        // not parked on a banner like "Your turn" from the thread just left.
+        this.setPhase('Idle');
         return;
       }
 
@@ -310,9 +364,12 @@ export class HostAgent extends MockAgent {
    * is not lost.
    */
   async ask({ id = `q_${Date.now()}`, text, options = null }) {
+    const token = this.runToken;
+    if (this.superseded(token)) return { text: '', choice: null };
     const answered = new Promise((res) => { this._answerResolve = res; });
     this.emit('question', { id, text, options: Array.isArray(options) && options.length ? options : undefined });
     const answer = await answered;
+    if (this.superseded(token)) return { text: '', choice: null };
     this._answerResolve = null;
     this.emit('question', null);
 
@@ -347,8 +404,8 @@ export class HostAgent extends MockAgent {
 
     // Cancel anything still in flight. Without this a second message leaves
     // the first run's loop going and the two interleave phase changes.
-    this._chatAbort?.abort();
     this.cancelled = true;
+    this.cancelPending();
     this.paused = false;
     this._heldPhase = null;
     const token = ++this.runToken;
@@ -397,19 +454,33 @@ export class HostAgent extends MockAgent {
     // fixed list of app names, and anything off it went to a model to be
     // classified — which could, and did, call it conversation.
     const hint = opts.mode || 'auto';
-    let decision = hint === 'auto' && task && apps.parseOpen(task)
-      ? { mode: 'agent', why: 'asks to open something', source: 'rules' }
-      : await route(task, { hint, llm: this.llm, attachments, installed: apps.installedNamed });
+    // Classification owns the foreground too: Escape and Workspace must see it.
+    this.setPhase('Starting');
+    const routeAbort = new AbortController();
+    this._routeAbort = routeAbort;
+    let decision;
+    try {
+      decision = hint === 'auto' && task && apps.parseOpen(task)
+        ? { mode: 'agent', why: 'asks to open something', source: 'rules' }
+        : await route(task, { hint, llm: this.llm, attachments, installed: apps.installedNamed, signal: routeAbort.signal });
+    } finally {
+      // A delayed prior classifier cannot clear the foreground request's owner.
+      if (this._routeAbort === routeAbort) this._routeAbort = null;
+    }
     /* Something attached and no words at all, with the switch on "do it":
        there is no job in that — nothing says where it goes or what to do
        with it — so it is answered, as the router would have answered it. */
     if (decision.mode === 'agent' && !task) {
       decision = { mode: 'chat', why: 'something was attached with nothing said about it', source: 'rules' };
     }
+    if (this.superseded(token)) return;
     this.emit('routed', { mode: decision.mode, why: decision.why, source: decision.source });
 
     if (token !== this.runToken) return;
-    if (decision.mode === 'chat') return this.converse(task, token, attachments);
+    if (decision.mode === 'chat') {
+      this.setPhase('Idle');
+      return this.converse(task, token, attachments);
+    }
     return this.work(task, { token, attachments });
   }
 
@@ -418,7 +489,7 @@ export class HostAgent extends MockAgent {
      mode" and then do nothing, because chat cannot touch the desktop and
      nothing ever switched. Now it names the job, and the job is started. */
   async handOff(job, token, attachments = []) {
-    if (token !== this.runToken) return;
+    if (this.superseded(token)) return;
     this.emit('routed', { mode: 'agent', why: 'the conversation asked for it', source: 'model' });
     this.history.pop();                      // the user turn; work() adds it again
     // What was attached goes with the job: "put this in my notes" is about it.
@@ -431,7 +502,9 @@ export class HostAgent extends MockAgent {
       this.cancelled = true;
       this.paused = false;
       token = ++this.runToken;
-      await new Promise((r) => setTimeout(r, 160));
+      this.cancelPending();
+      this._heldPhase = null;
+      await Promise.resolve();
       if (token !== this.runToken) return;
       this.cancelled = false;
       this.steering = [];
@@ -469,13 +542,14 @@ export class HostAgent extends MockAgent {
 
     // Chat has no phases — it must not drive the mascot through Observing and
     // Acting for a run that never touches the desktop.
+    this._chatMessage = id;
     this.emit('message', { id, text: '', done: false });
 
     let full = '';
     // A reply that starts "TASK:" is a hand-off, not something to show.
     const maybeTask = () => /^\s*T(?:A(?:S(?:K(?::.*)?)?)?)?$/is.test(full) || /^\s*TASK:/i.test(full);
     let timedOut = false;
-    const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, 90_000);
+    const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, 30_000);
     try {
       const live = this.statusFacts ? await this.statusFacts().catch(() => '') : '';
       if (abort.signal.aborted || this.superseded(token)) return;
@@ -492,7 +566,7 @@ export class HostAgent extends MockAgent {
       });
     } catch (err) {
       if ((!timedOut && abort.signal.aborted) || this.superseded(token)) {
-        this.emit('message', { id, text: '', done: true, remove: true });
+        if (!this.superseded(token)) this.emit('message', { id, text: '', done: true, remove: true });
         return;
       }
       this.emit('message', {
@@ -503,6 +577,7 @@ export class HostAgent extends MockAgent {
       return;
     } finally {
       clearTimeout(deadline);
+      if (this._chatAbort === abort) { this._chatAbort = null; this._chatMessage = null; }
     }
 
     if (this.superseded(token)) return;
@@ -520,6 +595,16 @@ export class HostAgent extends MockAgent {
      ---------------------------------------------------------------------- */
   async work(task, context = {}) {
     if (context.token == null) context = { ...context, token: this.runToken };
+    if (this.superseded(context.token)) return;
+    this.setPhase('Starting');
+    /* Watching observes; it never takes the mouse. Chat has already been
+       answered by this point — only a real job ends up here. */
+    if (this.isWatching?.()) {
+      const text = 'Desktop watching is on, so I can chat and keep an eye on your apps, but I won\'t take over the mouse and keyboard. Switch to Agent mode to give me a job.';
+      this.emit('message', { id: `msg_${Date.now()}`, text, done: true });
+      this.setPhase('Idle');
+      return;
+    }
     if (!this.canAct()) {
       // Say what is actually wrong instead of running a scripted stand-in
       // that looks like success. Pretending was the whole problem.
@@ -540,6 +625,7 @@ export class HostAgent extends MockAgent {
     // Locked, behind a screen saver, or at a UAC prompt: nothing Halo sends
     // can reach the desktop, so say so instead of starting anything.
     const reachable = await this.computer.available?.().catch(() => null) ?? { ok: true };
+    if (this.superseded(context.token)) return;
     if (!reachable.ok) {
       const why = `Halo can't use the mouse or keyboard right now — ${reachable.why}. Unlock the screen and try again.`;
       this.emit('message', { id: `msg_${Date.now()}`, text: why, done: true });
@@ -562,9 +648,12 @@ export class HostAgent extends MockAgent {
          Notepad opened once, not once per line. */
       const chatJob = planJob(task, attachments)?.how === 'chat';
       if (!chatJob && await this.tryOpen(task, context)) return;
+      if (this.superseded(context.token)) return;
       if (!chatJob && !context.routine && await this.tryShortcut(task, context.token)) return;
+      if (this.superseded(context.token)) return;
       await this.drive(task, context);
     } catch (err) {
+      if (this.superseded(context.token)) return;
       console.error('[bridge] run crashed:', err);
       this.setPhase('Failed');
       this.audit('run_failed', { metadata: { failure_class: 'internal' } });
@@ -602,12 +691,14 @@ export class HostAgent extends MockAgent {
    * is asked twice, and with a truthful account of what came to the front.
    */
   async tryOpen(task, context = {}) {
+    if (this.superseded(context.token)) return true;
     const parsed = apps.parseOpen(task);
     if (!parsed) return false;
 
     // Only what is certainly an app or a site is opened here.
     if (!parsed.url) {
       const decision = await apps.resolve(parsed.name, task).catch(() => null);
+      if (this.superseded(context.token)) return true;
       if (!decision || decision.kind === 'unknown') return false;
     }
 
@@ -623,17 +714,20 @@ export class HostAgent extends MockAgent {
         task,
         choices,
         ask: async (question, options) => {
+          if (this.superseded(context.token)) return { text: '', choice: null };
           this.setPhase('AwaitingApproval');
           const answer = await this.ask({ text: question, options });
-          this.setPhase('Acting');
+          if (!this.superseded(context.token)) this.setPhase('Acting');
           return answer;
         },
+        integrationTool: this.composio?.state().enabled ? (name, args) => this.integrationTool(name, args, context.token) : null,
         gate: () => this.gateFor(context.token),
-        onAction: (a) => this.emit('action', a),
+        onAction: (a) => { if (!this.superseded(context.token)) this.emit('action', a); },
         before: await this.computer.foreground().catch(() => null),
         ...this.openHelpers(),
       });
     } catch (err) {
+      if (this.superseded(context.token)) return true;
       this.audit('open_failed', { metadata: { reason: String(err.message) } });
       return false;     // the planner gets a go instead
     }
@@ -699,6 +793,7 @@ export class HostAgent extends MockAgent {
    * tryOpen opens apps by their Start-menu ID instead.
    */
   async tryShortcut(task, token = this.runToken) {
+    if (this.superseded(token)) return true;
     const sc = matchShortcut(task);
     if (!sc || sc.kind !== 'url') return false;
 
@@ -708,6 +803,7 @@ export class HostAgent extends MockAgent {
 
     const ok = await runShortcut(sc, this.computer, {
       onAction: (a) => {
+        if (this.superseded(token)) return;
         this.audit('action_executed', { action_type: a.type, risk: ALLOW });
         this.emit('action', a);
       },
@@ -736,6 +832,10 @@ export class HostAgent extends MockAgent {
    * part after "open X and".
    */
   async drive(task, context = {}, whole = task) {
+    if (this.superseded(context.token)) return;
+    this._driverAbort?.abort();
+    const driverAbort = new AbortController();
+    this._driverAbort = driverAbort;
     const helpers = this.openHelpers();
     /* runJob, not runTask: most jobs go straight through it to the loop,
        unchanged; a list, or a single message for an assistant app, is sent
@@ -747,6 +847,7 @@ export class HostAgent extends MockAgent {
       llm: this.llm,
       context: {
         ...context,
+        signal: driverAbort.signal,
         memory: this.memory.forPrompt(),
         guide: await this.guideFor(),
         browser: helpers.browser,
@@ -754,15 +855,16 @@ export class HostAgent extends MockAgent {
       },
       maxTurns: Math.max(1, Number(this.settings.maximumComputerTurns) || 24),
       hooks: {
+        integrationTool: this.composio?.state().enabled ? (name, args) => this.integrationTool(name, args, context.token) : null,
         gate: () => this.gateFor(context.token),
         onPhase: (phase) => { if (!this.superseded(context.token)) this.setPhase(phase); },
-        onStep: (step) => this.emit('step', step),
+        onStep: (step) => { if (!this.superseded(context.token)) this.emit('step', step); },
         onPlan: (plan) => {
           if (this.superseded(context.token)) return;
           this.plan = plan;
           this.emit('plan', plan);
         },
-        onAction: (a) => this.emit('action', a),
+        onAction: (a) => { if (!this.superseded(context.token)) this.emit('action', a); },
         onAudit: (event, extra) => this.audit(event, extra),
         onSummary: (text) => {
           if (this.superseded(context.token)) return;
@@ -770,12 +872,13 @@ export class HostAgent extends MockAgent {
           this.history.push({ role: 'assistant', content: said });
           this.emit('summary', { text: said });
         },
-        onError: (e) => this.emit('error', e),
+        onError: (e) => { if (!this.superseded(context.token)) this.emit('error', e); },
         steer: () => this.steering.splice(0),
         remembered: helpers.remembered,
         remember: helpers.remember,
 
         onApproval: async (card) => {
+          if (this.superseded(context.token)) return false;
           if (this.settings.autoApproveAll) {
             this.audit('action_assessed', {
               action_type: 'Approval',
@@ -786,27 +889,30 @@ export class HostAgent extends MockAgent {
           }
           // Arm before emitting: the interface can answer on the same tick
           // when the user has auto-approval on, and the answer would be lost.
-          const decision = new Promise((res) => { this._approveResolve = res; });
+          let resolver;
+          const decision = new Promise((res) => { this._approveResolve = resolver = res; });
           this.emit('approval', card);
           const approved = await decision;
-          this._approveResolve = null;
+          if (this._approveResolve === resolver) this._approveResolve = null;
           return approved && !this.superseded(context.token);
         },
 
-        onQuestion: (q) => this.ask(q),
+        onQuestion: (q) => this.superseded(context.token) ? { text: '', choice: null } : this.ask(q),
 
         onHandover: async (card) => {
-          const done = new Promise((res) => { this._takeoverResolve = res; });
+          if (this.superseded(context.token)) return;
+          let resolver;
+          const done = new Promise((res) => { this._takeoverResolve = resolver = res; });
           this.emit('takeover', card);
           await done;
-          this._takeoverResolve = null;
+          if (this._takeoverResolve === resolver) this._takeoverResolve = null;
         },
       },
     });
 
     // However the loop ended — finished, stopped, failed, replaced — the
     // guide arrow does not belong on screen afterwards.
-    (await this.guideFor())?.hide();
+    if (!this.superseded(context.token)) (await this.guideFor())?.hide();
 
     if (result && !this.superseded(context.token)) {
       const steps = [

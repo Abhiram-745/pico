@@ -11,6 +11,7 @@
    ========================================================================== */
 
 import { store } from './store.js';
+import { acceptMonitorSnapshot } from './monitor-client.js';
 
 /** Messages the host pushes down to the UI. */
 export const HOST_EVENTS = [
@@ -181,7 +182,7 @@ class Bridge {
         break;
 
       case 'desktopMonitor':
-        store.set({ desktopMonitor: payload }, { type: 'desktopMonitor' });
+        acceptMonitorSnapshot(payload, { source: 'stream' });
         break;
 
       case 'appearance':
@@ -362,6 +363,7 @@ export class WebSocketTransport {
     this.ws = ws;
 
     ws.addEventListener('open', () => {
+      if (this.ws !== ws) return;
       this._retry = 0;
       // Prefer a stored token; fall back to the code the user just entered.
       const token = this.opts.token?.();
@@ -370,6 +372,7 @@ export class WebSocketTransport {
     });
 
     ws.addEventListener('message', (e) => {
+      if (this.ws !== ws) return;
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
 
@@ -391,6 +394,7 @@ export class WebSocketTransport {
     });
 
     ws.addEventListener('close', () => {
+      if (this.ws !== ws) return;
       this.paired = false;
       if (!this._closed) { this._status('reconnecting'); this._scheduleReconnect(); }
     });

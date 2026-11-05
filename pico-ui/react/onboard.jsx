@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { bridge } from '../src/bridge.js';
+import { isWindows } from '../src/platform.js';
 import { TAUGHT, matches } from '../src/keybinds.js';
 import { useStoreEvent } from './hooks.js';
 import { Keyboard, useKeysDown } from './keyboard.jsx';
@@ -268,7 +269,7 @@ export function Onboard({ onDone }) {
               {last ? 'Start using Halo' : 'Next'}
             </MetalButton>
             <span className="h-onboard__nudge">
-              {beat === 'done' ? '' : 'Every one of these works from anywhere on your desktop.'}
+              {beat === 'done' ? '' : isWindows ? 'Every one of these works from anywhere on your desktop.' : 'Try the keys with Halo in front of you.'}
             </span>
           </div>
         </div>

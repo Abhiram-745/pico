@@ -44,6 +44,8 @@ const FRESH_FOR = 5 * 60 * 1000;
  * opens in the browser.
  */
 export const SITES = new Map([
+  ['gemini', { url: 'https://gemini.google.com/', label: 'Gemini web', app: true }],
+  ['google gemini', { url: 'https://gemini.google.com/', label: 'Gemini web', app: true }],
   ['whatsapp', { url: 'https://web.whatsapp.com', label: 'WhatsApp Web', app: true }],
   ['claude', { url: 'https://claude.ai', label: 'claude.ai', app: true }],
   ['chatgpt', { url: 'https://chatgpt.com', label: 'chatgpt.com', app: true }],
@@ -601,13 +603,17 @@ export function openUrl(url, browser = null) {
  * raising, which is what `focus` is for. Opening something is a request to
  * have it in front, so put it there.
  */
-export async function waitForWindow({ name, foreground, windows = null, focus = null, before = null, timeout = 12_000 }) {
+export async function waitForWindow({ name, foreground, windows = null, focus = null, before = null, timeout = 12_000, gate = async () => true }) {
   const words = norm(name).split(' ').filter((w) => w.length > 2 && !['microsoft', 'google', 'the'].includes(w));
   const until = Date.now() + timeout;
+  let first = true;
   while (Date.now() < until) {
-    await new Promise((r) => setTimeout(r, 250));
+    if (!first) await new Promise((r) => setTimeout(r, 250));
+    first = false;
+    if (!(await gate())) return null;
     let fg = null;
     try { fg = await foreground(); } catch { /* keep waiting */ }
+    if (!(await gate())) return null;
     if (!fg) continue;
     const said = norm(`${fg.title ?? ''} ${fg.process ?? ''}`);
     if (words.some((w) => said.includes(w))) return fg;
@@ -621,9 +627,11 @@ export async function waitForWindow({ name, foreground, windows = null, focus = 
      look for the window itself: something else holding the foreground is a
      different problem from the app not starting, and only one of the two is
      worth stopping for. */
+  if (!(await gate())) return null;
   if (windows) {
     try {
       const list = (await windows()) ?? [];
+      if (!(await gate())) return null;
       const found = list.find((w) => w && !w.minimized && !w.tool
         && words.some((x) => norm(`${w.title ?? ''} ${w.process ?? ''}`).includes(x)));
       if (found) {
@@ -715,6 +723,8 @@ export async function open(what, io = {}) {
     onAction = () => {}, before = null, remembered = () => null, remember = () => {},
     browser = null, unknown = 'fail',
   } = io;
+  const stopped = () => ({ outcome: 'stopped', ok: false, stop: true, summary: '', note: '' });
+  if (!(await gate())) return stopped();
   const foreground = () => computer?.foreground?.() ?? null;
   const windows = computer?.sense ? () => computer.sense.windows() : null;
   const focus = (h) => computer?.focus?.(h);
@@ -742,9 +752,11 @@ export async function open(what, io = {}) {
         name = known[0];
         url = null;
       } else {
+        if (!(await gate())) return stopped();
         onAction({ type: 'Keypress', detail: `Open ${host}` });
         const href = await openUrl(url, browser);
-        const fg = await waitForWindow({ name: host.split('.')[0], foreground, before, timeout: 6000, windows, focus });
+        const fg = await waitForWindow({ name: host.split('.')[0], foreground, before, timeout: 6000, windows, focus, gate });
+        if (!(await gate())) return stopped();
         return {
           outcome: 'opened', ok: true, kind: 'url', key: null, pick: 'site', label: host, window: fg ?? null,
           said: `opened ${href} in the browser`,
@@ -758,6 +770,7 @@ export async function open(what, io = {}) {
   /* --- a name ----------------------------------------------------------- */
   const key = norm(name);
   let decision = await resolve(key, task);
+  if (!(await gate())) return stopped();
   /* A kept answer ("open Spotify as the website") applies only when this
      request says nothing itself: "open the Spotify app", "the desktop app",
      "the installed one" all beat it, through resolve() above. */
@@ -814,9 +827,11 @@ export async function open(what, io = {}) {
   }
 
   if (decision.kind === 'site') {
+    if (!(await gate())) return stopped();
     onAction({ type: 'Keypress', detail: `Open ${decision.site.label}` });
     const href = await openUrl(decision.site.url, browser);
-    const fg = await waitForWindow({ name: decision.site.label, foreground, before, timeout: 6000, windows, focus });
+    const fg = await waitForWindow({ name: decision.site.label, foreground, before, timeout: 6000, windows, focus, gate });
+    if (!(await gate())) return stopped();
     return {
       outcome: 'opened', ok: true, kind: 'site', key, pick: 'site', label: decision.site.label, window: fg ?? null,
       said: `opened ${href} in the browser`,
@@ -836,9 +851,11 @@ export async function open(what, io = {}) {
      is not a small mistake. So find out first, and say which it was — to
      the model and to the person, in the same breath. */
   const already = await openWindowOf(app.name, windows);
+  if (!(await gate())) return stopped();
   onAction({ type: 'Keypress', detail: already ? `Bring ${app.name} to the front` : `Open ${app.name}` });
   await launchApp(app);
-  const fg = await waitForWindow({ name: app.name, foreground, before, windows, focus });
+  const fg = await waitForWindow({ name: app.name, foreground, before, windows, focus, gate });
+  if (!(await gate())) return stopped();
 
   if (!fg) {
     return {

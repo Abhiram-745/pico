@@ -209,6 +209,7 @@ const since = (ms) => ms < 60_000 ? 'just now' : ms < 3600_000 ? `${Math.round(m
 export function describe(status, agent = {}) {
   if (!status) return '';
   const out = ["What you can see of the user's computer right now (private notes for you — never quote them). When they ask how things are going, answer like a person in one or two short sentences, naming only what they asked about; if something is not in these notes, say you cannot see it. Never reply with a TASK: line to such a question."];
+  if (Date.now() - status.at > 15_000) out.push(`Snapshot captured ${since(Date.now() - status.at)}; a refresh is pending. Treat it as the last observed state, not proof of current activity.`);
   out.push(agent.busy
     ? `Halo (you) is working on: ${agent.task || 'a task'} — ${agent.phase}.`
     : agent.lastTask ? `Halo is idle. Last job: "${agent.lastTask}" (${agent.lastOk ? 'finished' : 'did not finish'}).` : 'Halo is idle.');

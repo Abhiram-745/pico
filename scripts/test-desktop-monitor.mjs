@@ -179,3 +179,43 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(changing.snapshot().summary.source, 'local');
 assert.match(changing.snapshot().summary.text, /fixed the focus bug/, 'an old briefing cannot replace newer result evidence');
 changing.stop();
+
+// Finished evidence stays useful while another session streams commentary.
+let liveText = 'Starting', briefingCount = 0;
+const mixed = new DesktopMonitor({ now: () => clock,
+  readWindows: async () => [],
+  readSessions: async () => [
+    { ...resultSessions[0], latest: 'Fixed focus. Checks passed.' },
+    { ...resultSessions[0], sessionId: 'live', state: 'working', latest: liveText, lastActivity: clock + 1 },
+  ],
+  summarize: async () => { briefingCount++; return 'Fixed focus. Another session is working.'; },
+});
+mixed.configure({ enabled: true, selectedApps: ['codex'] });
+await mixed.refresh();
+assert.match(mixed.snapshot().summary.text, /Fixed focus/, 'finished results outrank generic working copy');
+mixed.configure({ aiSummaries: true });
+await mixed.refresh();
+assert.equal(briefingCount, 1);
+clock += 61_000; liveText = 'Reading another file';
+await mixed.refresh();
+assert.equal(briefingCount, 1, 'working commentary cannot trigger repeated briefings');
+assert.equal(mixed.snapshot().summary.source, 'openai');
+mixed.stop();
+
+// Independent sources start together, and collection does not mutate provider arrays.
+let releaseWindows;
+let watchStarted = false;
+const providerRows = Object.freeze([]);
+const parallelMonitor = new DesktopMonitor({
+  readWindows: () => new Promise(resolve => { releaseWindows = resolve; }),
+  readSessions: async () => [],
+  watchSignals: async () => { watchStarted = true; return providerRows; },
+});
+parallelMonitor.configure({ enabled: true, selectedApps: ['chrome'], aiSummaries: false });
+const collection = parallelMonitor.refresh();
+assert.equal(watchStarted, true, 'integration reads start before window discovery completes');
+releaseWindows({ available: true, windows: [{ title: 'Chrome', process: 'chrome' }] });
+await collection;
+assert.equal(parallelMonitor.snapshot().error, null);
+assert.equal(providerRows.length, 0);
+parallelMonitor.stop();

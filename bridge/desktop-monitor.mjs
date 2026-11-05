@@ -2,8 +2,9 @@
    from watched content. Transcript formats are best-effort local adapters;
    an open window alone never proves that a job is running or finished. */
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { open, readdir, stat } from 'node:fs/promises';
+import { platform } from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +17,8 @@ const STALE = 10 * 60_000;
 const MAX_EVENTS = 60;
 const MAX_ROWS = 36;
 const APPS = [
+  { id: 'gemini', label: 'Gemini', matches: matchesGeminiWindow },
+  { id: 'whatsapp', label: 'WhatsApp', process: /^whatsapp$/i, title: /\bwhatsapp\b/i },
   { id: 'claude', label: 'Claude', process: /^(claude|claude-code)$/i, title: /\bclaude\b/i },
   { id: 'codex', label: 'Codex', process: /^codex$/i, title: /\bcodex\b/i },
   { id: 'chrome', label: 'Chrome', process: /^(chrome|msedge|firefox|brave)$/i, title: / - (Google Chrome|Microsoft.? Edge|Mozilla Firefox|Brave)$/i },
@@ -25,6 +28,29 @@ const APPS = [
   { id: 'vscode', label: 'VS Code', process: /^code$/i, title: /visual studio code/i },
   { id: 'chatgpt', label: 'ChatGPT', process: /^chatgpt$/i, title: /\bchatgpt\b/i },
 ];
+/** Product identity from the observed window only; this cannot verify sign-in. */
+export function matchesGeminiWindow(window) {
+  const process = String(window?.process ?? window?.name ?? '').trim().replace(/\.exe$/i, '');
+  if (/^gemini(?:setup|desktop|app)?$/i.test(process)) return true;
+  if (!/^(chrome|msedge|brave|firefox)$/i.test(process)) return false;
+  const title = String(window?.title ?? '').trim();
+  const page = title.replace(/\s[-–—|]\s(?:Google Chrome|Microsoft Edge|Brave(?: Browser)?|(?:Mozilla )?Firefox)$/i, '').trim();
+  // Exact host at the start, never a lookalike host or a URL mentioned in prose.
+  if (/^(?:https?:\/\/)?gemini\.google\.com(?:\/[^\s]*)?$/i.test(page)) return true;
+  // Product landing/PWA title, or a chat title ending in Google's product name.
+  return /^(?:Google )?Gemini(?:$|\s[-–—|]\s.+$)/i.test(page)
+    || /^.+\s[-–—|]\sGoogle Gemini$/i.test(page);
+}
+
+function geminiAccessibilitySignal(elements) {
+  const controls = (Array.isArray(elements) ? elements : []).filter(item =>
+    /^(Button|StatusBar|ProgressBar)$/i.test(item?.type || '') && item.enabled !== false && !item.password && !item.isPassword);
+  if (controls.some(item => /^Button$/i.test(item.type) && /^Stop$/i.test(String(item.name ?? '').trim()))) {
+    return { state: 'working', detail: 'A live generation control is visible in the app.', confidence: 'high', source: 'accessibility' };
+  }
+  return accessibilitySignal(controls);
+}
+
 const hash = (value) => createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
 
 /** Keep UI text short and strip common credentials before publishing or AI. */
@@ -38,6 +64,35 @@ export function monitorText(value, max = 220) {
 const textContent = (content) => typeof content === 'string' ? content
   : Array.isArray(content) ? content.filter((part) => part?.type === 'text' || part?.type === 'output_text' || part?.type === 'input_text').map((part) => part.text ?? '').join(' ') : '';
 const projectName = (cwd) => monitorText(String(cwd ?? '').replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || 'Untitled session', 70);
+
+/** One short, credential-free line for the latest thing an agent is doing. */
+export function describeTool(name, input) {
+  const n = String(name || '').trim();
+  let args = input;
+  if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+  args = args && typeof args === 'object' ? args : {};
+  const base = (value) => monitorText(String(value ?? '').split(/[\\/]/).filter(Boolean).at(-1) || '', 60);
+  const file = args.file_path || args.path || args.notebook_path;
+  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch)$/i.test(n)) return file ? `Editing ${base(file)}` : 'Editing files';
+  if (/^Read$/i.test(n)) return file ? `Reading ${base(file)}` : 'Reading files';
+  if (/^(Bash|shell|exec_command|local_shell)$/i.test(n)) return args.description ? monitorText(args.description, 80) : 'Running a command';
+  if (/^(Grep|Glob)$/i.test(n)) return 'Searching the project';
+  if (/^(WebSearch|WebFetch)$/i.test(n)) return 'Looking something up';
+  if (/^(Task|Agent)$/i.test(n)) return 'Working with a helper';
+  if (/^(TodoWrite|update_plan)$/i.test(n)) return 'Updating its plan';
+  return n ? `Using ${monitorText(n, 40)}` : 'Working';
+}
+
+/** Plan progress from Claude's TodoWrite or Codex's update_plan, when present. */
+export function planProgress(name, input) {
+  let args = input;
+  if (typeof args === 'string') { try { args = JSON.parse(args); } catch { return null; } }
+  const items = Array.isArray(args?.todos) ? args.todos : Array.isArray(args?.plan) ? args.plan : null;
+  if (!items?.length) return null;
+  const done = items.filter((item) => /^(completed|done)$/i.test(item?.status)).length;
+  const current = items.find((item) => /^(in_progress|inProgress)$/i.test(item?.status));
+  return { done, total: items.length, current: monitorText(current?.activeForm || current?.content || current?.step || '', 90) };
+}
 
 export function jsonLines(raw) {
   const rows = [];
@@ -53,7 +108,7 @@ export function parseCodexSession(raw, mtime, now = Date.now(), metadata = {}) {
   const rows = jsonLines(raw);
   let state = 'unknown', detail = 'Session activity is available; current task state is unknown.', confidence = 'limited';
   let cwd = metadata.cwd || '', asked = '', latest = '', id = metadata.id || '', lastActivity = mtime;
-  let sawSignal = false;
+  let sawSignal = false, step = '', progress = null;
   const inferActivity = (timestamp) => {
     const activityAt = Date.parse(timestamp);
     if (Number.isFinite(activityAt)) lastActivity = activityAt;
@@ -86,12 +141,15 @@ export function parseCodexSession(raw, mtime, now = Date.now(), metadata = {}) {
       if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'local_shell_call') {
         inferActivity(row.timestamp);
         detail = p.name ? `Using ${monitorText(p.name, 60)}` : 'Running a local tool';
+        step = describeTool(p.name || p.type, p.arguments ?? p.input);
+        progress = planProgress(p.name, p.arguments ?? p.input) || progress;
       }
     }
   }
   if (!sawSignal && !id && !rows.some((row) => row.type === 'session_meta')) return null;
   if (state === 'working' && now - lastActivity > STALE) { state = 'unknown'; confidence = 'limited'; detail = 'No recent lifecycle signal. The session may still be working.'; }
-  return { sessionId: hash(id || cwd || raw.slice(-300)), project: projectName(cwd), state, detail, confidence, asked: monitorText(asked, 160), latest: monitorText(latest), lastActivity };
+  if (state !== 'working') step = '';
+  return { sessionId: hash(id || cwd || raw.slice(-300)), project: projectName(cwd), state, detail, confidence, asked: monitorText(asked, 160), latest: monitorText(latest), lastActivity, step, progress };
 }
 
 /** Claude end_turn is a finished reply, not proof the user's whole job passed. */
@@ -99,6 +157,7 @@ export function parseClaudeSession(raw, mtime, now = Date.now(), metadata = {}) 
   const rows = jsonLines(raw).filter((row) => !row.isSidechain);
   let state = 'unknown', detail = 'Current Claude task state is unknown.', confidence = 'limited';
   let cwd = metadata.cwd || '', id = metadata.id || '', asked = '', latest = '', sawTurn = false, lastActivity = mtime;
+  let step = '', progress = null;
   for (const row of rows) {
     cwd = row.cwd || cwd; id = row.sessionId || id;
     if (!['user', 'assistant'].includes(row.type) || !row.message) continue;
@@ -114,13 +173,17 @@ export function parseClaudeSession(raw, mtime, now = Date.now(), metadata = {}) 
       latest = text || latest;
       const stop = row.message.stop_reason;
       if (stop === 'end_turn' || stop === 'stop_sequence') { state = 'completed'; confidence = 'high'; detail = 'Reply ended. No result excerpt was exposed; review it in the app.'; }
-      else if (Array.isArray(content) && content.some((p) => p?.type === 'tool_use')) { state = 'working'; confidence = 'inferred'; detail = 'Claude requested a tool; completion has not been observed.'; }
+      else if (Array.isArray(content) && content.some((p) => p?.type === 'tool_use')) {
+        state = 'working'; confidence = 'inferred'; detail = 'Claude requested a tool; completion has not been observed.';
+        for (const part of content) if (part?.type === 'tool_use') { step = describeTool(part.name, part.input); progress = planProgress(part.name, part.input) || progress; }
+      }
       else { state = 'unknown'; confidence = 'limited'; detail = 'Claude wrote a reply; no end-of-turn signal is available.'; }
     }
   }
   if (!sawTurn && !id) return null;
   if (state === 'working' && now - lastActivity > STALE) { state = 'unknown'; confidence = 'limited'; detail = 'No recent transcript signal. Claude may still be working.'; }
-  return { sessionId: hash(id || cwd || raw.slice(-300)), project: projectName(cwd), state, detail, confidence, asked: monitorText(asked, 160), latest: monitorText(latest), lastActivity };
+  if (state !== 'working') step = '';
+  return { sessionId: hash(id || cwd || raw.slice(-300)), project: projectName(cwd), state, detail, confidence, asked: monitorText(asked, 160), latest: monitorText(latest), lastActivity, step, progress };
 }
 
 /** Metadata lives at the start; huge session instructions may make even the
@@ -180,32 +243,139 @@ async function recentFiles(root, { depth = 1, now = Date.now() } = {}) {
   return { available, files: found.sort((a, b) => b.mtime - a.mtime).slice(0, 12) };
 }
 
-export async function readAgentSessions(selectedApps, now = Date.now()) {
+/* --- Claude Desktop and Codex's own bookkeeping ---------------------------
+   Both keep a small index beside the transcripts: Claude Desktop writes one
+   JSON per session (title, archived, last activity) under its app-data
+   folder, and Codex keeps a `threads` table in state_5.sqlite. They are read
+   for names and archive flags only — never auth files or tokens — and read
+   only: the sqlite is opened with mode=ro through the system's own python,
+   since Node here has no sqlite of its own. Each is optional; without it the
+   transcript still shows, just under its folder name. */
+export function claudeDesktopRoots() {
+  const home = homedir();
+  if (process.env.CLAUDE_DESKTOP_DIR) return [process.env.CLAUDE_DESKTOP_DIR];
+  const os = platform();
+  if (os === 'win32') return [join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'Claude')];
+  if (os === 'darwin') return [join(home, 'Library', 'Application Support', 'Claude')];
+  return [join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'Claude')];
+}
+
+export async function readClaudeDesktopIndex() {
+  const byCliId = new Map();
+  let found = false;
+  for (const root of claudeDesktopRoots()) {
+    const base = join(root, 'claude-code-sessions');
+    const queue = [{ path: base, depth: 0 }];
+    let visited = 0;
+    while (queue.length && visited < 400) {
+      const dir = queue.shift();
+      let entries;
+      try { entries = await readdir(dir.path, { withFileTypes: true }); found = true; } catch { continue; }
+      for (const entry of entries) {
+        if (++visited > 400) break;
+        const path = join(dir.path, entry.name);
+        if (entry.isDirectory() && dir.depth < 3 && entry.name !== 'waiting-input') queue.push({ path, depth: dir.depth + 1 });
+        else if (entry.isFile() && /^local_.*\.json$/.test(entry.name)) {
+          try {
+            const meta = JSON.parse(await readFile(path, 'utf8'));
+            if (meta?.cliSessionId) byCliId.set(meta.cliSessionId, {
+              title: monitorText(meta.title, 80), archived: Boolean(meta.isArchived),
+              lastActivityAt: Number(meta.lastActivityAt) || 0, cwd: meta.cwd || '',
+            });
+          } catch { /* being rewritten */ }
+        }
+      }
+    }
+  }
+  return { found, byCliId };
+}
+
+const PY_THREADS = "import sqlite3,sys,json\nc=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True,timeout=2)\nr=c.execute('select id,title,archived,updated_at_ms,tokens_used from threads order by updated_at_ms desc limit 150').fetchall()\nprint(json.dumps(r))";
+let threadCache = { at: 0, value: null };
+export async function readCodexThreads(now = Date.now()) {
+  if (threadCache.value && now - threadCache.at < 10_000) return threadCache.value;
+  const db = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'state_5.sqlite');
+  const value = await new Promise((resolve) => {
+    execFile(platform() === 'win32' ? 'python' : 'python3', ['-I', '-c', PY_THREADS, db], { timeout: 4000, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve({ found: false, byId: new Map() });
+      try {
+        const byId = new Map(JSON.parse(stdout).map(([id, title, archived, updatedAt, tokens]) => [id, { title: monitorText(String(title||'').split('\n')[0], 60), archived: Boolean(archived), updatedAt: Number(updatedAt) || 0, tokens: Number(tokens) || 0 }]));
+        resolve({ found: true, byId });
+      } catch { resolve({ found: false, byId: new Map() }); }
+    });
+  });
+  threadCache = { at: now, value };
+  return value;
+}
+
+const tilde = (path) => String(path).replace(homedir(), '~');
+
+/** @param {object} [report] filled with one entry per source: what was found. */
+export async function readAgentSessions(selectedApps, now = Date.now(), report = {}) {
   const result = [];
+  const claudeRoot = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  const codexRoot = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions');
   const sources = [
-    ['claude', join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'), 1, parseClaudeSession],
-    ['codex', join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'), 3, parseCodexSession],
+    ['claude', claudeRoot, 1, parseClaudeSession],
+    ['codex', codexRoot, 3, parseCodexSession],
   ];
+  const [desktop, threads] = await Promise.all([
+    selectedApps.includes('claude') ? readClaudeDesktopIndex() : { found: false, byCliId: new Map() },
+    selectedApps.includes('codex') ? readCodexThreads(now) : { found: false, byId: new Map() },
+  ]);
   for (const [appId, root, depth, parse] of sources) {
     if (!selectedApps.includes(appId)) continue;
-    const { files } = await recentFiles(root, { depth, now });
+    const { files, available } = await recentFiles(root, { depth, now });
+    let count = 0;
     for (const file of files) {
       try {
         const content = await tail(file.path);
         const metadata = metadataFromHeader(content.header, appId);
         const session = parse(content.raw, content.mtime, now, metadata);
-        if (session) result.push({ appId, ...session, sessionId: hash(metadata.id || file.path) });
+        if (!session) continue;
+        // Names and archive flags from the app's own index, when it has one.
+        const index = appId === 'claude' ? desktop.byCliId.get(metadata.id) : threads.byId.get(metadata.id);
+        if (index?.archived) continue;
+        if (index?.title) session.project = index.title;
+        count++;
+        const origin = appId === 'claude' ? (index ? 'Claude Desktop' : 'Claude Code') : (index ? 'Codex app' : 'Codex CLI');
+        result.push({ appId, ...session, linked: Boolean(index), origin, ref: String(metadata.id || '').slice(0, 8), sessionId: hash(metadata.id || file.path) });
       } catch { /* being replaced */ }
     }
+    report[appId] = {
+      available, sessions: count, path: tilde(root),
+      linked: appId === 'claude' ? desktop.found : threads.found,
+      linkedLabel: appId === 'claude' ? 'Claude Desktop app index' : 'Codex thread index',
+    };
   }
   return result;
 }
 
 const WINDOW_SCRIPT = "$ErrorActionPreference='SilentlyContinue';Get-Process|Where-Object {$_.MainWindowTitle}|ForEach-Object {[pscustomobject]@{process=$_.ProcessName;title=$_.MainWindowTitle;hwnd=$_.MainWindowHandle.ToString()}}|ConvertTo-Json -Compress";
+/** X11 only, through wmctrl when it is installed: title and owning process. */
+function readLinuxWindows() {
+  if (!process.env.DISPLAY) return Promise.resolve({ windows: [], available: false });
+  return new Promise((resolve) => {
+    execFile('wmctrl', ['-lp'], { timeout: 3000 }, async (error, stdout) => {
+      if (error) return resolve({ windows: [], available: false });
+      const windows = [];
+      for (const line of String(stdout).split('\n')) {
+        const m = line.match(/^(0x[0-9a-f]+)\s+(-?\d+)\s+(\d+)\s+\S+\s+(.*)$/i);
+        if (!m || !m[4]) continue;
+        let name = '';
+        try { name = (await readFile(`/proc/${m[3]}/comm`, 'utf8')).trim(); } catch { /* process gone */ }
+        windows.push({ process: name, title: m[4], hwnd: String(parseInt(m[1], 16)) });
+      }
+      resolve({ windows, available: true });
+    });
+  });
+}
+
 async function readWindows(sense) {
   if (sense?.windows) {
     try { const windows = await sense.windows(); if (Array.isArray(windows)) return { windows, available: true }; } catch { /* use process window titles */ }
   }
+  if (process.platform === 'linux') return readLinuxWindows();
   if (process.platform !== 'win32') return { windows: [], available: false };
   return new Promise((resolve) => {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOW_SCRIPT], { windowsHide: true, timeout: 8000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
@@ -249,15 +419,15 @@ export function normalizeMonitorSettings(input = {}, previous = DEFAULT_MONITOR_
   return settings;
 }
 
-const monitorFingerprint = apps => hash(apps.map(app => `${app.id}:${app.state}:${app.latest || app.detail}:${Boolean(app.dismissed)}`).join('|'));
+const monitorFingerprint = apps => hash([...apps].sort((a, b) => a.id.localeCompare(b.id)).map(app => `${app.id}:${app.project || ''}:${app.state}:${app.contentKey || ''}:${TERMINAL.has(app.state) ? app.latest || app.detail : ''}:${Boolean(app.dismissed)}`).join('|'));
 const TERMINAL = new Set(['completed', 'failed', 'waiting']);
 // Result identity is content based so mirrored rollouts / repeated observations
 // of the same reply do not become separate cards. Distinct prompts stay separate.
-const resultId = (app) => hash(JSON.stringify([app.appId, app.project || '', app.state, app.asked || '', app.latest || (app.source === 'transcript' ? '' : app.detail)]));
+const resultId = (app) => hash(JSON.stringify([app.source === 'composio' ? app.id : app.appId, app.project || '', app.state, app.asked || '', app.contentKey || app.latest || (app.source === 'transcript' ? '' : app.detail)]));
 export function distinctMonitorApps(apps) {
   const unique = new Map();
   const identities = new Set();
-  for (const app of [...apps].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0))) {
+  for (const app of [...apps].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0) || String(a.id).localeCompare(String(b.id)))) {
     if (identities.has(app.id)) continue;
     identities.add(app.id);
     const key = TERMINAL.has(app.state) ? resultId(app) : app.id;
@@ -269,20 +439,29 @@ export function distinctMonitorApps(apps) {
 function localSummary(apps, enabled, paused) {
   if (!enabled) return 'Choose the apps to watch, then start Desktop mode.';
   if (paused) return 'Watching is paused. Your last updates are still here.';
+  apps = apps.filter(app => !app.dismissed);
   const waiting = apps.filter((app) => app.state === 'waiting');
   const working = apps.filter((app) => app.state === 'working');
+  const observed = waiting.filter(app => ['composio', 'window-title'].includes(app.source)).sort((a,b) => (b.lastActivity || 0) - (a.lastActivity || 0))[0];
+  if (observed) return `${observed.label}: ${observed.latest || observed.detail}`;
   if (waiting.length) return `${waiting.length} ${waiting.length === 1 ? 'app needs' : 'apps need'} your attention. ${working.length ? `${working.length} still working.` : 'Open the app to continue.'}`;
-  if (working.length) return `${working.length} ${working.length === 1 ? 'session is' : 'sessions are'} working. You can get on with something else.`;
+  const failed = apps.find(app => app.state === 'failed');
+  if (failed) return `${failed.label}${failed.project ? ` · ${failed.project}` : ''}: ${failed.latest || failed.detail}`;
+  if (working.length && !apps.some(app => app.state === 'completed')) return `${working.length} ${working.length === 1 ? 'session is' : 'sessions are'} working. You can get on with something else.`;
   const finished = apps.find((app) => app.state === 'completed' && !app.dismissed);
   if (finished) return `${finished.label}${finished.project ? ` · ${finished.project}` : ''}: ${finished.latest || `Reply finished${finished.asked ? ` for ${finished.asked}` : ''}. Open the app to review the result.`}`;
+  const unavailable = apps.find(app => app.state === 'unavailable');
+  if (unavailable) return `${unavailable.label}: ${unavailable.detail || 'Watch unavailable'}`;
   if (!apps.length) return 'No selected apps found yet. Open an app or add its name to your watch list.';
   return 'Your selected apps are open. Waiting for a clear progress signal.';
 }
 
 export class DesktopMonitor {
-  constructor({ sense = null, onUpdate = () => {}, summarize = null, readWindows: windowReader = null, readSessions = readAgentSessions, now = Date.now } = {}) {
-    this.sense = sense; this.onUpdate = onUpdate; this.summarize = summarize;
-    this.windowReader = windowReader || (() => readWindows(this.sense)); this.sessionReader = readSessions; this.now = now;
+  constructor({ openWatch = async () => false, watchSignals = async () => [], watchCadence = () => null, sense = null, onUpdate = () => {}, summarize = null, readWindows: windowReader = null, readSessions = readAgentSessions, now = Date.now, scheduler = { setTimeout, clearTimeout } } = {}) {
+    this.instanceId = randomUUID(); this.revision = 0;
+    this.scheduler = scheduler; this._cadenceFingerprint = null; this._sourceFaults = 0; this._burst = 0; this._quietPolls = 0; this._sourcePending = new Map(); this.nextRefreshAt = null;
+    this.watchCadence = watchCadence; this.openWatch = openWatch; this.watchSignals = watchSignals; this.sense = sense; this.onUpdate = onUpdate; this.summarize = summarize;
+    this.windowReader = windowReader || (() => readWindows(this.sense)); this.sessionReader = readSessions; this.now = now; this.sources = {};
     this.settings = normalizeMonitorSettings();
     this.enabled = false; this.paused = false; this.apps = []; this.events = [];
     this._dismissed = new Set();
@@ -291,14 +470,31 @@ export class DesktopMonitor {
     this._epoch = 0; this._timer = null; this._busy = null; this._previous = new Map(); this._lastAiAt = 0; this._lastAiFingerprint = ''; this._aiController = null;
   }
   snapshot() {
-    return structuredClone({ enabled: this.enabled, paused: this.paused, apps: this.apps, events: this.events, summary: this.summary, updatedAt: this.updatedAt, error: this.error, summaryError: this.summaryError, settings: this.settings });
+    return structuredClone({ instanceId: this.instanceId, revision: this.revision, enabled: this.enabled, paused: this.paused, apps: this.apps, events: this.events, summary: this.summary, sources: this.sources, updatedAt: this.updatedAt, error: this.error, summaryError: this.summaryError, settings: this.settings, remoteCadence: this.watchCadence(), cadence: { nextRefreshAt: this.nextRefreshAt, intervalMs: this._delay ?? this.settings.intervalSeconds * 1000, minIntervalMs: 5000, maxIntervalMs: 120000 } });
+  }
+  syncWatchSources(state) {
+    this._epoch++;
+    this._aiController?.abort(); this._aiController = null;
+    this.summaryError = null;
+    const keep = app => app.source !== 'composio' || (!app.id?.startsWith(`composio:${state.disconnectedId}:`) && state.enabled && state.watchApps.includes(app.appId) && app.id?.startsWith(`composio:${state.selectedAccounts[app.appId]}:`));
+    this.apps = this.apps.filter(keep);
+    // Event ids are result ids, so resolve them against the remaining cards.
+    this.events = this.events.filter(event => event.source !== 'composio' || this.apps.some(app => app.resultId === event.id));
+    this.summary = { text: localSummary(this.apps, this.enabled, this.paused), source: 'local', at: this.now() };
+    this._schedule(0); this._publish();
   }
   dismiss(id) {
     if (!this.apps.some(app => app.resultId === id) && !this.events.some(event => event.id === id)) return false;
-    this._dismissed.add(id);
+    this._aiController?.abort();
+    this._aiController = null;
+    this.summaryError = null;
+    const target = this.apps.find(app => app.resultId === id);
+    // Gmail's unread and possible-reply cards describe the same sampled evidence.
+    const ids = new Set([id, ...this.apps.filter(app => target?.source === 'composio' && target.appId === 'gmail' && app.appId === target.appId && app.contentKey === target.contentKey && app.id?.split(':')[1] === target.id?.split(':')[1]).map(app => app.resultId)]);
+    for (const key of ids) this._dismissed.add(key);
     if (this._dismissed.size > 200) this._dismissed.delete(this._dismissed.values().next().value);
-    this.events = this.events.filter(event => event.id !== id);
-    this.apps = this.apps.map(app => app.resultId === id ? { ...app, dismissed: true } : app);
+    this.events = this.events.filter(event => !ids.has(event.id));
+    this.apps = this.apps.map(app => ids.has(app.resultId) ? { ...app, dismissed: true } : app);
     this.summary = { text: localSummary(this.apps, this.enabled, this.paused), source: 'local', at: this.now() };
     this._publish();
     return true;
@@ -307,81 +503,119 @@ export class DesktopMonitor {
   // never execute transcript links, commands or paths to open a result.
   async openResult(id) {
     const app = this.apps.find(app => app.resultId === id) || this.events.find(event => event.id === id);
+    if (app?.source === 'composio') return Boolean(await this.openWatch(app.appId));
     if (!app || !this.sense?.focus) return false;
     const inventory = await this.windowReader();
     const windows = Array.isArray(inventory) ? inventory : inventory?.windows || [];
     const definition = APPS.find(item => item.id === app.appId);
     const candidates = windows.filter(window => !/Halo Notch/i.test(window.title || '') && (definition
-      ? definition.process.test(window.process || '') || definition.title.test(window.title || '')
+      ? definition.matches ? definition.matches(window) : definition.process.test(window.process || '') || definition.title.test(window.title || '')
       : `${window.process || ''} ${window.title || ''}`.toLowerCase().includes(app.label.toLowerCase())));
     const named = app.project ? candidates.filter(window => String(window.title || '').toLowerCase().includes(app.project.toLowerCase())) : [];
     const matches = named.length ? named : candidates;
     if (matches.length !== 1 || !/^\d+$/.test(String(matches[0].hwnd))) return false;
     return Boolean((await this.sense.focus(matches[0].hwnd))?.ok);
   }
-  _publish() { try { this.onUpdate(this.snapshot()); } catch { /* a disconnected UI */ } }
+  _publish() { this.revision++; try { this.onUpdate(this.snapshot()); } catch { /* a disconnected UI */ } }
   configure(input = {}) {
     this._epoch++;
+    this._delay = undefined; this._sourceFaults = 0; this._burst = 0; this._quietPolls = 0; this.nextRefreshAt = null;
     this._aiController?.abort();
+    this._aiController = null;
     this.summaryError = null;
     this.settings = normalizeMonitorSettings(input, this.settings);
     if (typeof input.enabled === 'boolean') this.enabled = input.enabled;
     if (typeof input.paused === 'boolean') this.paused = input.paused;
-    clearTimeout(this._timer);
+    this.scheduler.clearTimeout(this._timer);
     // Removing a source immediately removes its retained snippets too.
-    const selected = new Set([...this.settings.selectedApps, ...this.settings.customApps.map((name) => `custom:${hash(name.toLowerCase())}`)]);
+    const selected = new Set([...this.apps.filter(app => app.source === 'composio').map(app => app.appId), ...this.settings.selectedApps, ...this.settings.customApps.map((name) => `custom:${hash(name.toLowerCase())}`)]);
     this.apps = this.apps.filter((app) => selected.has(app.appId));
     this.events = this.events.filter((event) => selected.has(event.appId));
     this.summary = { text: localSummary(this.apps, this.enabled, this.paused), source: 'local', at: this.now() };
+    this._schedule(0);
     this._publish();
-    if (this.enabled && !this.paused) this._schedule(0);
     return this.snapshot();
   }
   start() { this._schedule(0); return this.snapshot(); }
   stop() { return this.configure({ enabled: false }); }
-  _schedule(ms = this.settings.intervalSeconds * 1000) {
-    clearTimeout(this._timer);
-    if (!this.enabled || this.paused) return;
-    this._timer = setTimeout(() => { void this.refresh(); }, ms);
+  _nextDelay() {
+    const local = this._delay ?? this.settings.intervalSeconds * 1000;
+    const remote = this.watchCadence();
+    return remote?.active && !remote.inFlight ? Math.min(local, Math.max(5000, remote.nextPollAt - this.now())) : local;
+  }
+  _schedule(ms = this._nextDelay()) {
+    this.scheduler.clearTimeout(this._timer);
+    if (!this.enabled || this.paused) { this.nextRefreshAt = null; return; }
+    this.nextRefreshAt = this.now() + ms;
+    this._timer = this.scheduler.setTimeout(() => { this._timer = null; this.nextRefreshAt = null; void this.refresh(); }, ms);
     this._timer.unref?.();
   }
   async refresh() {
     if (!this.enabled || this.paused) return this.snapshot();
     if (this._busy) return this._busy;
     const epoch = this._epoch;
-    this._busy = this._refresh(epoch).finally(() => { this._busy = null; this._schedule(); });
+    this.scheduler.clearTimeout(this._timer); this._timer = null; this.nextRefreshAt = null;
+    this._busy = this._refresh(epoch).finally(() => {
+      this._busy = null;
+      this._schedule(epoch === this._epoch ? undefined : 0);
+      this._publish();
+    }).then(() => this.snapshot());
     return this._busy;
+  }
+  _collect(key, read) {
+    if (this._sourcePending.has(key)) return Promise.reject(new Error('Previous source still pending'));
+    let pending;
+    try { pending = Promise.resolve(read()); } catch (error) { pending = Promise.reject(error); }
+    this._sourcePending.set(key, pending);
+    pending.finally(() => { if (this._sourcePending.get(key) === pending) this._sourcePending.delete(key); }).catch(() => {});
+    return collectSource(() => pending, this.scheduler);
   }
   async _refresh(epoch) {
     const at = this.now();
+    const report = {};
     try {
-      const [inventory, sessions] = await Promise.all([this.windowReader(), this.sessionReader(this.settings.selectedApps, at)]);
+      const collected = await Promise.allSettled([this._collect('windows', () => this.windowReader()), this._collect('sessions', () => this.sessionReader(this.settings.selectedApps, at, report)), this._collect('watch', () => this.watchSignals())]);
+      const [inventory, sessions, watched] = collected.map((result, index) => {
+        if (result.status === 'fulfilled') return result.value;
+        report[['windows', 'sessions', 'watch'][index]] = { available: false, error: 'Source unavailable; other sources continue.' };
+        return index === 0 ? { available: false, windows: [] } : [];
+      });
       if (epoch !== this._epoch || !this.enabled || this.paused) return this.snapshot();
       const definitions = APPS.filter((app) => this.settings.selectedApps.includes(app.id)).concat(this.settings.customApps.map((name) => ({ id: `custom:${hash(name.toLowerCase())}`, label: name, matches: (window) => `${window.process ?? window.name ?? ''} ${window.title ?? ''}`.toLowerCase().includes(name.toLowerCase()) })));
       const windows = Array.isArray(inventory) ? inventory : inventory?.windows ?? [];
       const available = Array.isArray(inventory) || inventory?.available === true;
-      const apps = [];
+      const apps = Array.isArray(watched) ? [...watched] : [];
+      if (epoch !== this._epoch || !this.enabled || this.paused) return this.snapshot();
       const accessibilityCache = new Map();
       for (const app of definitions) {
-        const appSessions = sessions.filter((session) => session.appId === app.id).slice(0, 8);
-        for (const session of appSessions) apps.push({ id: `${app.id}:${session.sessionId}`, appId: app.id, label: app.label, project: session.project, state: session.state, detail: session.detail, latest: session.latest, asked: session.asked, sessionId: session.sessionId, source: 'transcript', confidence: session.confidence, lastActivity: session.lastActivity, updatedAt: at });
+        const appSessions = app.id === 'gemini' ? [] : sessions.filter((session) => session.appId === app.id).slice(0, 8);
+        for (const session of appSessions) apps.push({ id: `${app.id}:${session.sessionId}`, appId: app.id, label: app.label, project: session.project, state: session.state, detail: session.detail, latest: session.latest, asked: session.asked, sessionId: session.sessionId, source: 'transcript', confidence: session.confidence, lastActivity: session.lastActivity, step: session.step || '', progress: session.progress || null, linked: Boolean(session.linked), origin: session.origin || '', ref: session.ref || '', updatedAt: at });
         const own = windows.filter((window) => app.matches ? app.matches(window) : app.process.test(window.process ?? window.name ?? '') || app.title.test(window.title ?? ''));
         // A browser row describes a browser, never all its background tabs.
         for (const window of own.slice(0, appSessions.length ? 1 : 4)) {
           if (appSessions.length && !window.title) continue;
           let signal = null;
-          if (this.sense?.elements && window.hwnd && !window.minimized) {
-            if (accessibilityCache.has(window.hwnd)) signal = accessibilityCache.get(window.hwnd);
+          if (app.id !== 'whatsapp' && !/\bwhatsapp\b/i.test(window.title || '') && this.sense?.elements && window.hwnd && !window.minimized) {
+            const cacheKey = `${window.hwnd}:${app.id === 'gemini' ? 'gemini' : 'general'}`;
+            if (accessibilityCache.has(cacheKey)) signal = accessibilityCache.get(cacheKey);
             else if (accessibilityCache.size < 8) {
-              try { signal = accessibilitySignal(await this.sense.elements(window.hwnd, 90)); } catch { /* inaccessible window */ }
-              accessibilityCache.set(window.hwnd, signal);
+              try { const elements = await this.sense.elements(window.hwnd, 90); signal = app.id === 'gemini' ? geminiAccessibilitySignal(elements) : accessibilitySignal(elements); } catch { /* inaccessible window */ }
+              accessibilityCache.set(cacheKey, signal);
             }
           }
           if (epoch !== this._epoch || !this.enabled || this.paused) return this.snapshot();
-          apps.push({ id: `${app.id}:window:${hash(window.hwnd || window.title || app.id)}`, appId: app.id, label: app.label, state: signal?.state || 'open', detail: signal?.detail || 'Open · waiting for a progress signal', source: signal?.source || 'window', confidence: signal?.confidence || 'limited', windowTitle: monitorText(window.title, 120), lastActivity: signal ? at : null, updatedAt: at });
+          if (app.id === 'whatsapp') signal = whatsappTitleSignal(window.title);
+          apps.push({ contentKey: signal?.contentKey, id: `${app.id}:window:${hash(window.hwnd || window.title || app.id)}`, appId: app.id, label: app.label, state: signal?.state || 'open', detail: signal?.detail || 'Open · waiting for a progress signal', source: signal?.source || 'window', confidence: signal?.confidence || 'limited', windowTitle: monitorText(window.title, 120), lastActivity: signal ? at : null, updatedAt: at });
         }
       }
-      this.apps = distinctMonitorApps(apps).slice(0, MAX_ROWS).map(app => ({ ...app, dismissed: this._dismissed.has(app.resultId) }));
+      this.apps = distinctMonitorApps(apps).slice(0, MAX_ROWS).map(app => {
+        if (['composio', 'window-title'].includes(app.source) || app.appId === 'gemini') {
+          const previous = this.apps.find(old => old.resultId === app.resultId);
+          const changedAt = previous?.changedAt ?? Math.max(app.changedAt ?? app.lastActivity ?? at, this.apps.find(old => old.id === app.id)?.changedAt ?? 0);
+          return { ...app, changedAt, lastActivity: changedAt, observedAt: app.observedAt ?? at, dismissed: this._dismissed.has(app.resultId) };
+        }
+        return { ...app, dismissed: this._dismissed.has(app.resultId) };
+      });
       const next = new Map();
       for (const app of this.apps) {
         // Text streaming is not a new event each poll; only meaningful state transitions.
@@ -389,20 +623,35 @@ export class DesktopMonitor {
         next.set(app.id, fingerprint);
         if (this._previous.get(app.id) === fingerprint || !['working', 'waiting', 'completed', 'failed'].includes(app.state) || app.dismissed) continue;
         if (this.events.some(event => event.id === app.resultId)) continue;
-        const title = app.state === 'completed' ? 'Reply finished' : app.state === 'waiting' ? 'Needs your attention' : app.state === 'working' ? 'Working' : 'Reported an error';
+        const title = ['composio', 'window-title'].includes(app.source) ? 'Observed update' : app.state === 'completed' ? 'Reply finished' : app.state === 'waiting' ? 'Needs your attention' : app.state === 'working' ? 'Working' : 'Reported an error';
         const firstSeen = !this._previous.has(app.id);
         const eventAt = firstSeen && app.source === 'transcript' && app.lastActivity ? Math.min(at, app.lastActivity) : at;
-        this.events.unshift({ id: app.resultId, appId: app.appId, label: app.label, project: app.project, state: app.state, title, detail: app.latest || app.detail, latest: app.latest, asked: app.asked, source: app.source, confidence: app.confidence, at: eventAt, observedAt: at });
+        this.events.unshift({ id: app.resultId, appId: app.appId, label: app.label, project: app.project, state: app.state, title, detail: app.latest || app.detail, latest: app.latest, asked: app.asked, step: app.step, progress: app.progress, source: app.source, confidence: app.confidence, at: eventAt, observedAt: at });
       }
       this._previous = next;
-      this.events = this.events.sort((a, b) => b.at - a.at).slice(0, MAX_EVENTS);
-      this.updatedAt = at; this.error = available ? null : 'Window discovery is unavailable. Local agent sessions can still appear.';
+      this.events = this.events.filter(event => !['composio', 'window-title'].includes(event.source) || this.apps.some(app => app.resultId === event.id && !app.dismissed));
+      this.events = this.events.sort((a, b) => b.at - a.at || String(a.id).localeCompare(String(b.id))).slice(0, MAX_EVENTS);
+      this.sources = report; this.updatedAt = at; this.error = available ? null : 'Window discovery is unavailable. Local agent sessions can still appear.';
       const fingerprint = monitorFingerprint(this.apps);
       if (this.summary.source !== 'openai' || !this.settings.aiSummaries || fingerprint !== this._lastAiFingerprint) {
         this.summary = { text: localSummary(this.apps, true, false), source: 'local', at };
       }
+      const cadenceKey = monitorFingerprint(this.apps);
+      const failed = Object.values(report).some(source => source?.available === false) || !available;
+      const base = this.settings.intervalSeconds * 1000;
+      if (failed) { this._burst = 0; this._quietPolls = 0; this._sourceFaults++; this._delay = Math.min(120000, base * 2 ** Math.min(5, this._sourceFaults)); }
+      else {
+        this._sourceFaults = 0;
+        if (cadenceKey !== this._cadenceFingerprint && (this._cadenceFingerprint !== null || this.apps.length > 0)) { this._burst = 3; this._quietPolls = 0; }
+        if (this._burst > 0) { this._burst--; this._delay = 5000; }
+        else { this._quietPolls++; this._delay = Math.min(120000, base * (this._quietPolls >= 4 ? 2 : 1)); }
+      }
+      this._cadenceFingerprint = cadenceKey;
+      this._schedule();
       this._publish();
-      if (!this._aiController && this.settings.aiSummaries && this.summarize && this.apps.some(app => !app.dismissed) && this.now() - this._lastAiAt >= 60_000 && fingerprint !== this._lastAiFingerprint) {
+      if (!this._aiController && this.settings.aiSummaries && this.summarize && this.apps.some(app => !app.dismissed && app.state !== 'open') && this.now() - this._lastAiAt >= 60_000 && fingerprint !== this._lastAiFingerprint) {
+        // A stable copy keeps collection and chat independent of the request.
+        this.summaryError = null;
         void this._refreshBriefing(epoch, at, fingerprint);
       }
     } catch {
@@ -411,7 +660,7 @@ export class DesktopMonitor {
         this.apps = this.apps.map((app) => app.state === 'working' && this.now() - (app.lastActivity || app.updatedAt || 0) > STALE
           ? { ...app, state: 'unknown', confidence: 'limited', detail: 'The last progress signal is stale. The app may still be working.' } : app);
         this.summary = { text: localSummary(this.apps, true, false), source: 'local', at: this.now() };
-        this._publish();
+        this._schedule(); this._publish();
       }
     }
     return this.snapshot();
@@ -420,10 +669,10 @@ export class DesktopMonitor {
     this._lastAiAt = this.now();
     const controller = new AbortController();
     this._aiController = controller;
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+    const timeout = this.scheduler.setTimeout(() => controller.abort(), 20_000);
     timeout.unref?.();
     try {
-      const result = await this.summarize({ apps: this.apps.filter(app => !app.dismissed).map(({ label, project, state, detail, latest, source, confidence }) => ({ label, project, state, detail, latest, source, confidence })), updatedAt: at }, { signal: controller.signal });
+      const result = await this.summarize({ apps: this.apps.filter(app => !app.dismissed && app.state !== 'open').sort((a, b) => Number(TERMINAL.has(b.state)) - Number(TERMINAL.has(a.state))).map(({ label, project, state, detail, latest, source, confidence, lastActivity }) => ({ label, project, state, detail, latest, source, confidence, lastActivity })), updatedAt: at }, { signal: controller.signal });
       if (epoch !== this._epoch || !this.enabled || this.paused || controller.signal.aborted || monitorFingerprint(this.apps) !== fingerprint) return;
       const text = monitorText(typeof result === 'string' ? result : result?.text, 500);
       if (text) { this.summary = { text, source: 'openai', at: this.now() }; this.summaryError = null; this._lastAiFingerprint = fingerprint; this._publish(); }
@@ -434,9 +683,29 @@ export class DesktopMonitor {
         this._publish();
       }
     } finally {
-      clearTimeout(timeout);
+      this.scheduler.clearTimeout(timeout);
       if (this._aiController === controller) this._aiController = null;
     }
   }
 
+}
+
+// Title badges are observations only, never message content or proof of new mail.
+export function whatsappTitleSignal(title) {
+  const text = String(title || '');
+  // ASCII decimal badges only: reject overflow, signs, decimals and unsupported localization.
+  const count = text.match(/^(?:\((\d{1,4})\)|\[(\d{1,4})\])\s*WhatsApp\b/i) || text.match(/^WhatsApp\s*\((\d{1,4})\)($|\s| -)/i);
+  const unread = Number(count?.[1] || count?.[2] || 0);
+  if (!Number.isInteger(unread) || unread < 1 || unread > 9999) return null;
+  return { state: 'waiting', source: 'window-title', confidence: 'observed', contentKey: String(unread), detail: `${unread} unread indicated by the WhatsApp window title. Open WhatsApp to review; message content is unavailable.` };
+}
+
+// Bound hung providers without delaying healthy sources indefinitely.
+function collectSource(read, scheduler = { setTimeout, clearTimeout }) {
+  return new Promise((resolve, reject) => {
+    const timer = scheduler.setTimeout(() => reject(new Error('Source timed out')), 8000);
+    timer.unref?.();
+    try { Promise.resolve(read()).then(resolve, reject).finally(() => scheduler.clearTimeout(timer)); }
+    catch (error) { scheduler.clearTimeout(timer); reject(error); }
+  });
 }

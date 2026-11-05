@@ -1,3 +1,6 @@
+import { ProviderSettings } from './provider-settings.jsx';
+import { monitorRequest } from '../src/monitor-client.js';
+import { ConnectionsCard } from './connections.jsx';
 /* ==========================================================================
    Halo — the app window
 
@@ -24,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { store, isActive, PHASE_COPY } from '../src/store.js';
 import { bridge, connect } from '../src/bridge.js';
+import { isWindows } from '../src/platform.js';
 import { chats } from '../src/chats.js';
 import { permissions, LEVELS } from '../src/permissions.js';
 import { renderTimeline } from '../src/timeline.js';
@@ -32,6 +36,7 @@ import { installHotkeys } from '../src/hotkeys.js';
 import { useStore, useStoreEvent, sel, usePetName, useDebounced, ago } from './hooks.js';
 import { Beam, MetalButton, Orb } from './fx.jsx';
 import { Onboard } from './onboard.jsx';
+import { WatchSources } from './watch.jsx';
 import { WorkspaceView, ModeSwitch } from './workspace.jsx';
 import { AppearanceControl } from './appearance.jsx';
 import { KEYBINDS } from '../src/keybinds.js';
@@ -210,7 +215,7 @@ function ChatView({ petName }) {
       <header className="h-chatview__head">
         <div className="h-chatview__title">{empty ? 'New chat' : (title || 'This chat')}</div>
         <div className="h-chatview__state">
-          {running ? PHASE_COPY[phase]?.title : guardian.canAct === false ? 'Chat only' : ''}
+          {running ? PHASE_COPY[phase]?.title : guardian.canAct === false ? 'Chat ready' : ''}
         </div>
       </header>
 
@@ -611,6 +616,9 @@ function SettingsView({ demo, petName, setPetName }) {
         </div>
       </div>
 
+      <WatchSources demo={demo} />
+      <ConnectionsCard demo={demo} />
+
       <div className="h-card">
         <div className="h-card__title">Name</div>
         <div className="h-form h-form--row">
@@ -671,7 +679,7 @@ function SettingsView({ demo, petName, setPetName }) {
 
       <div className="h-card">
         <div className="h-card__title">Keyboard</div>
-        <div className="h-card__sub">Every one of these works while you are in something else — Windows hands them to Halo directly.</div>
+        <div className="h-card__sub">{isWindows ? 'Every one of these works while you are in something else — Windows hands them to Halo directly.' : 'These work while Halo is in front of you.'}</div>
         {KEYBINDS.filter((b) => b.id !== 'toggleVoice' || voiceShortcut).map((b) => (
           <div className="h-kv h-kv--keys" key={b.id}>
             <span>{b.label}<i>{b.hint}</i></span>
@@ -680,11 +688,12 @@ function SettingsView({ demo, petName, setPetName }) {
         ))}
       </div>
 
+      <ProviderSettings demo={demo} />
       <div className="h-card">
-        <div className="h-card__title">Model</div>
-        <div className="h-card__sub">Jev makes most decisions from what Windows reports, in about a third of a second. gpt-4.1-mini reads the screen only when it has to, picking numbered controls rather than guessing pixels; gpt-4o-mini plans and writes. Multi-step jobs get a short timeline.</div>
+        <div className="h-card__title">Current Halo provider</div>
+        <div className="h-card__sub">Halo uses the configured provider for replies and screen-based actions. Watching Gemini windows does not select a model provider. Optional desktop AI briefings remain direct OpenAI only.</div>
         <div className="h-kv"><span>In use</span><code>{settings.model || 'not configured'}</code></div>
-        <div className="h-kv"><span>Provider</span><span>{settings.hasApiKey ? (settings.provider || 'Connected') : 'Starting…'}</span></div>
+        <div className="h-kv"><span>Provider</span><span>{settings.provider || 'Environment'} · {settings.hasApiKey ? 'API key configured; access not verified' : 'API key missing'}</span></div>
       </div>
     </div>
   );
@@ -901,10 +910,7 @@ function App({ demo, conn }) {
     if (demo) { go(next === 'desktop' ? 'workspace' : 'chat'); return; }
     setModeBusy(true); setModeError('');
     try {
-      const response = await fetch('/desktop-monitor/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next === 'desktop' }) });
-      const state = await response.json();
-      if (!response.ok) throw new Error(state.error || 'Could not switch modes.');
-      store.set({ desktopMonitor: state }, { type: 'desktopMonitor' });
+      await monitorRequest('/desktop-monitor/settings', { body: { enabled: next === 'desktop' } });
       go(next === 'desktop' ? 'workspace' : 'chat');
     } catch (err) { setModeError(err.message); }
     finally { setModeBusy(false); }
@@ -967,7 +973,7 @@ function App({ demo, conn }) {
 
         <ModeSwitch mode={monitor?.enabled ? 'desktop' : 'agent'} onChange={changeMode} disabled={modeBusy} />
         {modeError && <p className="h-mode-error" role="alert">{modeError}</p>}
-        {!monitor?.enabled ? <>
+        <>
         <MetalButton hero className="h-newchat" onClick={() => { chats.newChat(); go('chat'); }}>
           <Icon name="plus" size={15} /> New chat
         </MetalButton>
@@ -975,7 +981,8 @@ function App({ demo, conn }) {
         <IslandToggle demo={demo} />
 
         <ChatList onOpen={(id) => { chats.open(id); go('chat'); }} />
-        </> : <div className="h-companion-note"><Icon name="monitor" size={17} /><div><b>Your desktop companion</b><span>Useful changes, at your pace.</span></div></div>}
+        </>
+        {monitor?.enabled && <div className="h-companion-note"><Icon name="monitor" size={17} /><div><b>Watching your desktop</b><span>You can still chat with Halo.</span></div></div>}
 
         <nav className="h-nav">
           {SECTIONS.map((s) => (
@@ -1035,7 +1042,7 @@ if (mode !== 'mock') {
   const { needsSetup, mountSetup } = await import('../src/setup.js');
   if (await needsSetup()) {
     mountSetup(document.body, { onDone: () => location.reload() });
-    document.body.dataset.ready = '1';
+    document.body.dataset.ready = '1';   // "Skip for now" remembers the choice and reloads without the gate
   }
 }
 

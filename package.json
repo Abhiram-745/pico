@@ -1,7 +1,7 @@
 {
   "name": "halo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Halo desktop agent — bridge and interface",
   "type": "module",
   "engines": {
@@ -13,11 +13,17 @@
     "check": "node scripts/check.mjs",
     "check:desktop": "node scripts/test-desktop-monitor.mjs && node scripts/test-desktop-summary.mjs && node scripts/test-desktop-routes.mjs",
     "ui": "node scripts/build-ui.mjs",
-    "ui:watch": "node scripts/build-ui.mjs --watch"
+    "ui:watch": "node scripts/build-ui.mjs --watch",
+    "check:gemini": "node scripts/test-gemini.mjs",
+    "check:providers": "node scripts/test-fallback.mjs",
+    "check:composio": "node scripts/test-composio.mjs",
+    "check:workspace": "node scripts/test-workspace-email-whatsapp.mjs && node scripts/test-workspace-cadence.mjs && node scripts/test-monitor-ingress.mjs"
   },
   "dependencies": {
+    "@composio/core": "^0.28.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "border-beam": "^1.3.0",
+    "bot-avatars": "^0.2.2",
     "esbuild": "^0.28.2",
     "jimp": "^0.22.10",
     "metal-fx": "^2.0.10",

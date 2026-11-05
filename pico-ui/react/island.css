@@ -120,10 +120,10 @@ body {
 .h-island__panel > .h-decision-beam, .h-island__panel > .h-run { flex: none; }
 
 /* Content comes in with the frame, rather than after it. */
-.h-island__bar, .h-island__panel, .h-rail, .h-island__after { animation: h-island-in .38s var(--h-out) both; }
-.h-island__panel { animation-delay: .04s; }
+.h-island__bar, .h-island__panel, .h-rail, .h-island__after { animation: h-island-in .19s var(--h-out) both; }
+.h-island__panel { animation-delay: .015s; }
 @keyframes h-island-in {
-  from { opacity: 0; transform: translateY(-5px) scale(.985); filter: blur(6px); }
+  from { opacity: 0; transform: translateY(-5px) scale(.985); filter: blur(2px); }
   to   { opacity: 1; transform: none; filter: none; }
 }
 
@@ -394,7 +394,7 @@ body {
   background: linear-gradient(180deg, #0b0c0e, #060607);
   border: 1px solid rgba(255, 255, 255, .075);
   box-shadow: 0 30px 70px -28px rgba(0, 0, 0, .95), inset 0 1px 0 rgba(255, 255, 255, .04);
-  animation: h-card-in .42s var(--h-spring) both;
+  animation: h-card-in .2s var(--h-spring) both;
 }
 @keyframes h-card-in {
   from { opacity: 0; transform: translateY(-10px) scale(.97); }
@@ -493,7 +493,7 @@ body {
 .h-island[data-mode="agent"] { --island-tint: #b4caff; }
 .h-island__title { letter-spacing: -.025em; }
 .h-island__sub { letter-spacing: .005em; }
-.h-island__panel { animation: h-panel-reveal .24s ease-out both; }
+.h-island__panel { animation: h-panel-reveal .18s ease-out both; }
 @keyframes h-panel-reveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .h-mode-switch {
   position: relative;
@@ -515,7 +515,7 @@ body {
   border-radius: 10px;
   background: linear-gradient(160deg, #ffffff20, #ffffff09);
   box-shadow: inset 0 1px 0 #ffffff26, 0 2px 5px #00000030;
-  transition: transform .28s cubic-bezier(.2,.8,.2,1);
+  transition: transform .18s cubic-bezier(.2,.8,.2,1);
 }
 .h-mode-switch__selection[data-desktop="true"] { transform: translateX(100%); }
 .h-mode-switch button {
@@ -537,6 +537,132 @@ body {
 @keyframes h-sensing { 50% { opacity: .45; transform: scale(.8); } }
 @media (prefers-reduced-motion: reduce) {
   .h-island, .h-island *, .h-island *::before, .h-island *::after {
+    animation: none !important; transition: none !important;
+  }
+}
+
+/* Halo's living face (react/bot.jsx) */
+.h-bot { display: inline-flex; align-items: center; justify-content: center; flex: none; line-height: 0; }
+.h-bot canvas { display: block; }
+.h-empty__face { display: flex; justify-content: center; margin-bottom: 6px; }
+
+/* The thread under the desktop peek: chat keeps working while Halo watches */
+.h-island .h-island__panel.h-island__panel--chat { flex: none; margin-bottom: 8px; min-height: 64px; max-height: 150px; overflow-y: auto; }
+.h-island .h-island__panel--chat .h-thread { flex: none; max-height: 140px; height: auto; }
+
+/* --- pythe-v2 glyph polish: stroked tick / cross, soft glow ---------------- */
+.h-glyph[data-mark="tick"], .h-glyph[data-mark="cross"] { position: relative; }
+.h-glyph[data-mark="tick"]::after, .h-glyph[data-mark="cross"]::after {
+  content: ""; position: absolute; inset: 4px; background: currentColor;
+  -webkit-mask: var(--h-glyph-svg) center / contain no-repeat; mask: var(--h-glyph-svg) center / contain no-repeat;
+}
+.h-glyph[data-mark="tick"] { --h-glyph-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.4l3 3 6-6.8'/%3E%3C/svg%3E"); box-shadow: 0 0 14px color-mix(in srgb, var(--h-good) 55%, transparent); }
+.h-glyph[data-mark="cross"] { --h-glyph-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M4.5 4.5l7 7M11.5 4.5l-7 7'/%3E%3C/svg%3E"); box-shadow: 0 0 14px color-mix(in srgb, var(--h-bad) 55%, transparent); }
+.h-glyph[data-mark="attention"]::before { box-shadow: 0 0 10px rgba(255, 178, 87, .6); }
+
+/* Halo polish: one rounded-stroke status family, scoped to the island. */
+.h-island .h-glyph {
+  position: relative;
+  flex: none;
+  height: 22px;
+  border-radius: 7px;
+  color: var(--island-tint, var(--h-ink));
+  background: transparent;
+  box-shadow: none;
+}
+.h-island .h-glyph::before,
+.h-island .h-glyph > svg,
+.h-island .h-glyph__bars { display: none; }
+.h-island .h-glyph::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  -webkit-mask: var(--h-status-icon) center / 18px 18px no-repeat;
+  mask: var(--h-status-icon) center / 18px 18px no-repeat;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 32%, transparent));
+}
+.h-island .h-glyph[data-mark="tick"],
+.h-island .h-glyph[data-mark="busy"] { color: var(--h-good); }
+.h-island .h-glyph[data-mark="cross"] { color: var(--h-bad); }
+.h-island .h-glyph[data-mark="attention"] { color: var(--h-approve, #f0b24a); }
+.h-island .h-glyph[data-mark="busy"]::after,
+.h-island .h-glyph[data-mark="attention"]::after { animation: h-status-glimmer 2.4s ease-in-out infinite; }
+@keyframes h-status-glimmer { 50% { opacity: .55; } }
+.h-island .h-glyph[data-mark="busy"] { --h-status-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%209v2M6.5%205.5v9M10%203v14M13.5%206v8M17%208v4%22%2F%3E%3C%2Fsvg%3E"); }
+.h-island .h-glyph[data-mark="dot"] { --h-status-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2210%22%20cy%3D%2210%22%20r%3D%223%22%2F%3E%3C%2Fsvg%3E"); }
+.h-island .h-glyph[data-mark="tick"] { --h-status-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4.5%2010l3.5%203.5%207.5-8%22%2F%3E%3C%2Fsvg%3E"); }
+.h-island .h-glyph[data-mark="cross"] { --h-status-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M5%205l10%2010M15%205L5%2015%22%2F%3E%3C%2Fsvg%3E"); }
+.h-island .h-glyph[data-mark="attention"] { --h-status-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M8.5%203.6%202.6%2014a1.7%201.7%200%200%200%201.5%202.5h11.8a1.7%201.7%200%200%200%201.5-2.5L11.5%203.6a1.7%201.7%200%200%200-3%200ZM10%207v4M10%2013.7v.1%22%2F%3E%3C%2Fsvg%3E"); }
+@media (prefers-reduced-motion: reduce) {
+  .h-island .h-glyph, .h-island .h-glyph::after { animation: none !important; }
+}
+
+/* Light follows the native clipped notch without changing its measurements. */
+.h-island:not([data-view="card"]) { box-shadow: inset 1px 0 0 #dce7ff12, inset -1px 0 0 #dce7ff12, inset 0 -1px 0 #dce7ff24; }
+.h-island__bar { transition: background .2s ease; }
+.h-island__bar:hover { background: #ffffff03; }
+.h-island__lead { transition: transform .16s cubic-bezier(.22, 1.2, .36, 1); }
+.h-island__bar:hover .h-island__lead { transform: translateY(-1px) scale(1.045); }
+.h-island__bar:active .h-island__lead { transform: scale(.96); }
+.h-island__sub { color: color-mix(in srgb, var(--h-dim) 85%, var(--h-ink)); line-height: 1.4; }
+.h-island[data-view="peek"] .h-island__text { gap: 3px; }
+.h-island .h-glyph::after { filter: drop-shadow(0 0 3px color-mix(in srgb, currentColor 20%, transparent)); }
+.h-island .h-glyph[data-mark="dot"]::after { opacity: .85; }
+.h-island .h-glyph[data-mark="tick"], .h-island .h-glyph[data-mark="cross"] { background: color-mix(in srgb, currentColor 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 15%, transparent); }
+.h-island :is(button, input, textarea, [tabindex]):focus-visible { outline: 2px solid var(--island-tint, #b4caff); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .h-island__bar:hover .h-island__lead, .h-island__bar:active .h-island__lead { transform: none; } }
+
+.h-island .h-island__bar:focus-visible { outline-offset: -3px; border-radius: inherit; }
+
+/* ==========================================================================
+   Notch polish: one-line rest, morphing corners, a calmer trail
+   ========================================================================== */
+/* Registered, so the corner eases from 16px at rest to 22px open instead of
+   snapping when data-view changes; the window springs round it meanwhile. */
+@property --r { syntax: "<length>"; inherits: true; initial-value: 16px; }
+.h-island { transition: --r .19s var(--h-out), border-radius .19s var(--h-out); }
+
+/* At rest: face · "Halo · Ready" · light, in one 36px line (the mode switch
+   and Quit now only arrive with the pointer). Face and light sit the same
+   distance in from their edges, so the line reads as centred in the notch. */
+.h-island[data-view="compact"] .h-island__bar { gap: 8px; padding: 0 10px 0 9px; }
+.h-island[data-view="compact"] .h-island__trail { gap: 0; }
+.h-island[data-view="compact"] .h-glyph { width: 18px; }
+
+/* The switch lines up with what is under it: the panel's 14px gutter when
+   open, the bar's own when it is only a hover. It arrives with the frame. */
+.h-island .h-mode-switch { animation: h-island-in .19s var(--h-out) both; animation-delay: .015s; }
+.h-island:is([data-view="open"], [data-view="card"]) .h-mode-switch { margin: 0 14px 10px; }
+.h-island[data-view="peek"] .h-mode-switch { margin: 0 12px 10px; }
+
+/* Quit is a power glyph now — the × beside the chevron read as "close" and
+   quit Halo instead. Quiet until meant, and plainly red when it is. */
+.h-island .h-island__quit { color: var(--h-faint); transition: color .18s ease, background .18s ease; }
+.h-island .h-island__quit:hover, .h-island .h-island__quit:focus-visible { color: var(--h-bad); background: color-mix(in srgb, var(--h-bad) 12%, transparent); }
+
+/* The pill already lights on focus; a second ring drawn round the textarea
+   inside it looked like a box in a box. The pill keeps the visible focus,
+   in the island's own tint. */
+.h-island .h-composer.h-clicky .h-composer__input:focus-visible { outline: none; }
+.h-island .h-composer.h-clicky:focus-within {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--island-tint, #b4caff) 50%, transparent),
+              inset 0 1px 0 #ffffff0d,
+              0 0 0 3px color-mix(in srgb, var(--island-tint, #b4caff) 12%, transparent);
+}
+/* Chat while watching, on a short screen: the thread and the desktop peek
+   share what room there is, so the box you type in is never the part that
+   gets pushed out of the island. They keep their normal sizes otherwise. */
+.h-island[data-mode="desktop"] .h-island__panel.h-island__panel--chat { flex: 0 1 auto; min-height: min(64px, 12vh); }
+.h-island[data-mode="desktop"] .h-island__panel { min-height: 0; }
+@media (prefers-reduced-motion: reduce) { .h-island { transition: none; } }
+
+/* Press feedback stays inside the native frame, so it never remeasures. */
+.h-island__bar:active { background: #ffffff0a; }
+.h-island__bar:focus-visible { background: #ffffff06; }
+.h-island__sub { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  .h-island *, .h-island *::before, .h-island *::after {
     animation: none !important; transition: none !important;
   }
 }

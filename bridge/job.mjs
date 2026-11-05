@@ -1,3 +1,4 @@
+import { cancellableModel } from './driver-cancellation.mjs';
 /* ==========================================================================
    Halo — one job, whatever shape it is.
 
@@ -51,7 +52,17 @@ const ENDS_LIST = /\b(?:stop|enough|no more|last one|finish (?:after|with)|leave
  * Takes exactly what runTask takes, plus `attachments`, and resolves to what
  * runTask resolves to: { succeeded, steps } or undefined when stopped.
  */
-export async function runJob({ task, attachments = [], computer, llm, maxTurns = 24, hooks = {}, context = {} }) {
+export async function runJob(options) {
+  const signal = options.signal ?? options.context?.signal;
+  try {
+    signal?.throwIfAborted();
+    return await runJobInner({ ...options, context: { ...options.context, signal }, llm: cancellableModel(options.llm, signal) });
+  } catch (err) {
+    if (!signal?.aborted) throw err;
+  }
+}
+
+async function runJobInner({ task, attachments = [], computer, llm, maxTurns = 24, hooks = {}, context = {} }) {
   const list = Array.isArray(attachments) ? attachments : [];
   const ordinary = () => runTask({ task, computer, llm, maxTurns, hooks, context: { ...context, attachments: list } });
   /* Guide mode is the person's hands on the mouse, never Halo's: the loop
@@ -511,9 +522,11 @@ async function eachByLoop({ shape, rows, items, computer, llm, maxTurns, hooks, 
 const BROWSERS = /^(?:chrome|msedge|firefox|brave|opera|vivaldi|arc)$/i;
 
 async function findTarget({ computer, sense, shape, context, task, gate, onPhase, onAction, onQuestion, remembered, remember }) {
+  if (!(await gate())) return null;
   const listed = ((await sense.windows().catch(() => null)) ?? [])
     .filter((w) => w?.hwnd && !w.tool && !apps.isHaloWindow(w.title) && w.title && w.title !== 'Program Manager');
 
+  if (!(await gate())) return null;
   if (!shape.target) {
     // "In the chat": the window the person was using, which is the one in
     // front once Halo's own are set aside.
